@@ -1,27 +1,103 @@
-# Beispiel-Skizze: Lector als zusätzlicher Service im bestehenden Paperless-ngx-Compose.
-# Lector teilt sich den consume-Ordner mit dem Paperless-webserver.
+# Full-Stack-Beispiel: Paperless-ngx + Lector (Document-AI-OCR) + paperless-gpt (KI-Tagging)
+# Gedacht fuer ZettLab / ZettOS, laeuft aber auf jedem Docker-Host.
 #
-# WICHTIG: Am Paperless-webserver muss zusätzlich `PAPERLESS_OCR_MODE: skip` gesetzt sein,
-# damit Tesseract den von Lector eingebetteten Document-AI-Textlayer NICHT überschreibt.
+# Ablauf:
+#   scan-in  --(Lector: Document-AI-OCR + Sandwich-PDF)-->  consume
+#   consume  --(Paperless importiert + indexiert Text)-->   Archiv
+#   Paperless-Workflow setzt Tag "paperless-gpt-auto"  -->  paperless-gpt ergaenzt Titel/Tags/Korrespondent
+#
+# Vor dem Start:
+#   1. `cp .env.example .env` und alle Werte ausfuellen (Passwoerter, Keys, GCP-IDs).
+#   2. Document-AI-Service-Account-JSON nach ./lector/secrets/ legen.
+#   3. In Paperless einen API-Token erzeugen (Profil -> API-Token) und als
+#      PAPERLESS_API_TOKEN in die .env eintragen.
+#   4. In Paperless einen Workflow anlegen: Trigger "Document added" ->
+#      Aktion "Assign tag: paperless-gpt-auto"  (sonst wird paperless-gpt nie aktiv).
+#
+# Alle Pfade sind relativ (./), d.h. relativ zum Ordner dieser Datei.
 
 services:
+  broker:
+    image: docker.io/library/redis:8
+    restart: unless-stopped
+    volumes:
+      - ./redisdata:/data
+
+  db:
+    image: docker.io/library/postgres:18
+    restart: unless-stopped
+    volumes:
+      - ./pgdata:/var/lib/postgresql
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  webserver:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    restart: unless-stopped
+    depends_on:
+      - db
+      - broker
+      - gotenberg
+      - tika
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/usr/src/paperless/data
+      - ./media:/usr/src/paperless/media
+      - ./export:/usr/src/paperless/export
+      - ./consume:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_REDIS: redis://broker:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
+      PAPERLESS_TIME_ZONE: Europe/Berlin
+      PAPERLESS_OCR_LANGUAGE: deu
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_TIKA_ENABLED: 1
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      # WICHTIG: skip, damit Tesseract den von Lector eingebetteten
+      # Document-AI-Textlayer NICHT ueberschreibt.
+      PAPERLESS_OCR_MODE: skip
+      USERMAP_UID: 1000
+      USERMAP_GID: 1000
+
+  gotenberg:
+    image: docker.io/gotenberg/gotenberg:8.25
+    restart: unless-stopped
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=true"
+      - "--chromium-allow-list=file:///tmp/.*"
+
+  tika:
+    image: docker.io/apache/tika:latest
+    restart: unless-stopped
+
   lector:
-    build: ./lector            # oder image: <eigenes-image>
+    build: .                      # baut Lector aus dem Dockerfile dieses Repos
+    image: lector:latest          # Tag fuer das gebaute Image
+    # Liegt diese Compose ausserhalb des Repos, stattdessen den Build-Kontext
+    # auf den Repo-Pfad zeigen lassen, z.B.  build: ./lector
     restart: unless-stopped
     ports:
-      - "8001:8001"            # Web-UI / API (nur LAN)
+      - "8001:8001"               # Web-UI / API (nur LAN)
     volumes:
       - ./scan-in:/scan-in
-      - ./consume:/consume     # geteilt mit Paperless (webserver-Service)
+      - ./consume:/consume        # geteilt mit Paperless (webserver-Service)
       - ./lector/processed:/processed
       - ./lector/error:/error
       - ./lector/data:/data
       - ./lector/secrets:/secrets:ro
     environment:
       OCR_PROVIDER: documentai
-      GCP_PROJECT_ID: BITTE_AENDERN
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID}
       DOCAI_LOCATION: eu
-      DOCAI_PROCESSOR_ID: BITTE_AENDERN
+      DOCAI_PROCESSOR_ID: ${DOCAI_PROCESSOR_ID}
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/docai-sa.json
       WATCH_DIR: /scan-in
       CONSUME_DIR: /consume
@@ -42,7 +118,29 @@ services:
       PUID: 1000
       PGID: 1000
 
-  # Ausschnitt zur Erinnerung — am bestehenden Paperless-webserver ergänzen:
-  # webserver:
-  #   environment:
-  #     PAPERLESS_OCR_MODE: skip
+  # KI-Tagging/Titel ueber paperless-gpt. NUR Tagging, KEIN OCR:
+  # Die OCR-Pipeline startet ausschliesslich beim Tag "paperless-gpt-ocr-auto" —
+  # diesen Tag nie vergeben, dann braucht es keine OCR_*-Variablen.
+  paperless-gpt:
+    image: icereed/paperless-gpt:latest
+    restart: unless-stopped
+    depends_on:
+      - webserver
+    ports:
+      - "8002:8080"               # Review-UI (nur LAN)
+    volumes:
+      - ./paperless-gpt/prompts:/app/prompts   # optional: eigene Prompt-Templates
+    environment:
+      PAPERLESS_BASE_URL: http://webserver:8000
+      PAPERLESS_API_TOKEN: ${PAPERLESS_API_TOKEN}
+      LLM_PROVIDER: anthropic
+      LLM_MODEL: claude-sonnet-4-5
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LLM_LANGUAGE: German
+      AUTO_GENERATE_TITLE: "true"
+      AUTO_GENERATE_TAGS: "true"
+      AUTO_GENERATE_CORRESPONDENTS: "true"
+      AUTO_GENERATE_DOCUMENT_TYPE: "true"
+      AUTO_GENERATE_CREATED_DATE: "true"
+      CREATE_NEW_TAGS: "false"    # auf "true", wenn die KI neue Tags anlegen darf
+      LOG_LEVEL: info
