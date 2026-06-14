@@ -17,5 +17,12 @@ graphify-out/
 raw/
 app/static/tailwind.css
 
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
 # Token-Protokoll (nur lokal, nicht nach GitHub)
 prd/token-log.csv
