@@ -14,4 +14,8 @@ secrets/
 .pytest_cache/
 .ruff_cache/
 graphify-out/
+raw/
 app/static/tailwind.css
+
+# Token-Protokoll (nur lokal, nicht nach GitHub)
+prd/token-log.csv
