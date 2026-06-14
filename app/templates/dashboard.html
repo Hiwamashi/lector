@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="tiles">
+  {% set tile_order = ["processing", "pending", "done", "skipped_erechnung", "failed"] %}
+  {% for key in tile_order %}
+  <a class="tile tile--{{ key }}" href="/?status={{ key }}">
+    <span class="tile-count">{{ counts.get(key, 0) }}</span>
+    <span class="tile-label">{{ status_labels[key] }}</span>
+  </a>
+  {% endfor %}
+</section>
+
+<form class="filters" method="get" action="/">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Dateiname suchen…" />
+  <select name="status">
+    <option value="">Alle Status</option>
+    {% for key, label in status_labels.items() %}
+    <option value="{{ key }}" {% if filters.status == key|string %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <select name="period">
+    <option value="">Gesamter Zeitraum</option>
+    <option value="24h" {% if filters.period == "24h" %}selected{% endif %}>Letzte 24 h</option>
+    <option value="7d" {% if filters.period == "7d" %}selected{% endif %}>Letzte 7 Tage</option>
+    <option value="30d" {% if filters.period == "30d" %}selected{% endif %}>Letzte 30 Tage</option>
+  </select>
+  <button type="submit">Filtern</button>
+</form>
+
+<table class="history"
+       data-fragment="/fragment/history?status={{ filters.status }}&q={{ filters.q }}&period={{ filters.period }}">
+  <thead>
+    <tr>
+      <th>Datei</th><th>Status</th><th>Typ</th><th>Fortschritt</th>
+      <th>Versuche</th><th>Erstellt</th><th></th>
+    </tr>
+  </thead>
+  <tbody id="history-body">
+    {% include "partials/history_rows.html" %}
+  </tbody>
+</table>
+{% endblock %}

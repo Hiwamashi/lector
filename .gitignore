@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.db
+*.db-wal
+*.db-shm
+data/
+processed/
+error/
+scan-in/
+consume/
+secrets/
+.pytest_cache/
+.ruff_cache/
+graphify-out/
+app/static/tailwind.css

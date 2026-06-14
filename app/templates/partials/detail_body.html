@@ -1,0 +1,41 @@
+<header class="detail-head">
+  <h1>{{ doc.original_filename }}</h1>
+  <span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span>
+</header>
+
+{% if doc.status == "processing" and doc.total_pages %}
+{% set pct = (doc.processed_pages / doc.total_pages * 100) | round(0, 'floor') | int %}
+<div class="progress">
+  <div class="progress-bar" style="width: {{ pct }}%"></div>
+  <span class="progress-label">Seite {{ doc.processed_pages }} von {{ doc.total_pages }}</span>
+</div>
+{% endif %}
+
+{% if doc.status == "failed" and doc.error_message %}
+<div class="alert">{{ doc.error_message }}</div>
+{% endif %}
+
+<dl class="meta">
+  <dt>Typ</dt><dd>{{ doc.doc_type or "—" }}</dd>
+  <dt>OCR-Engine</dt><dd>{{ doc.ocr_engine or "—" }}</dd>
+  <dt>Seiten</dt><dd>{% if doc.total_pages %}{{ doc.total_pages }}{% else %}—{% endif %}</dd>
+  <dt>Versuche</dt><dd>{{ doc.attempt_count }}</dd>
+  <dt>Nächster Versuch</dt><dd>{{ doc.next_retry_at | fmt_dt }}</dd>
+  <dt>Erstellt</dt><dd>{{ doc.created_at | fmt_dt }}</dd>
+  <dt>Gestartet</dt><dd>{{ doc.started_at | fmt_dt }}</dd>
+  <dt>Fertiggestellt</dt><dd>{{ doc.finished_at | fmt_dt }}</dd>
+  <dt>Ausgabe</dt><dd>{{ doc.output_path or "—" }}</dd>
+</dl>
+
+<h2>Verlauf</h2>
+<ol class="events">
+  {% for ev in events %}
+  <li>
+    <span class="event-time">{{ ev.timestamp }}</span>
+    <span class="event-type event-type--{{ ev.event_type }}">{{ ev.event_type }}</span>
+    <span class="event-msg">{{ ev.message or "" }}</span>
+  </li>
+  {% else %}
+  <li class="empty">Noch keine Ereignisse.</li>
+  {% endfor %}
+</ol>

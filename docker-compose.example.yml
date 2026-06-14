@@ -1,0 +1,48 @@
+# Beispiel-Skizze: Lector als zusätzlicher Service im bestehenden Paperless-ngx-Compose.
+# Lector teilt sich den consume-Ordner mit dem Paperless-webserver.
+#
+# WICHTIG: Am Paperless-webserver muss zusätzlich `PAPERLESS_OCR_MODE: skip` gesetzt sein,
+# damit Tesseract den von Lector eingebetteten Document-AI-Textlayer NICHT überschreibt.
+
+services:
+  lector:
+    build: ./lector            # oder image: <eigenes-image>
+    restart: unless-stopped
+    ports:
+      - "8001:8001"            # Web-UI / API (nur LAN)
+    volumes:
+      - ./scan-in:/scan-in
+      - ./consume:/consume     # geteilt mit Paperless (webserver-Service)
+      - ./lector/processed:/processed
+      - ./lector/error:/error
+      - ./lector/data:/data
+      - ./lector/secrets:/secrets:ro
+    environment:
+      OCR_PROVIDER: documentai
+      GCP_PROJECT_ID: BITTE_AENDERN
+      DOCAI_LOCATION: eu
+      DOCAI_PROCESSOR_ID: BITTE_AENDERN
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/docai-sa.json
+      WATCH_DIR: /scan-in
+      CONSUME_DIR: /consume
+      PROCESSED_DIR: /processed
+      ERROR_DIR: /error
+      DB_PATH: /data/lector.db
+      PROCESSED_RETENTION_DAYS: 30
+      RETRY_DELAY_MINUTES: 15
+      RETRY_MAX: 3
+      CHUNK_SIZE_PAGES: 15
+      PREPROCESS_DESKEW: "true"
+      PREPROCESS_AUTOROTATE: "true"
+      PREPROCESS_CONTRAST: "true"
+      POLL_INTERVAL_SECONDS: "2.0"
+      STABILITY_WINDOW_SECONDS: "6.0"
+      DOCAI_MAX_PAGES_PER_MINUTE: 120
+      TZ: Europe/Berlin
+      PUID: 1000
+      PGID: 1000
+
+  # Ausschnitt zur Erinnerung — am bestehenden Paperless-webserver ergänzen:
+  # webserver:
+  #   environment:
+  #     PAPERLESS_OCR_MODE: skip

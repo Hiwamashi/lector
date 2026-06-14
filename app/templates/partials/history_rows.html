@@ -1,0 +1,16 @@
+{% if not documents %}
+<tr class="empty"><td colspan="7">Keine Dokumente.</td></tr>
+{% endif %}
+{% for doc in documents %}
+<tr>
+  <td class="filename"><a href="/documents/{{ doc.id }}">{{ doc.original_filename }}</a></td>
+  <td><span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span></td>
+  <td>{{ doc.doc_type or "—" }}</td>
+  <td>
+    {% if doc.total_pages %}{{ doc.processed_pages }}/{{ doc.total_pages }}{% else %}—{% endif %}
+  </td>
+  <td>{{ doc.attempt_count }}</td>
+  <td>{{ doc.created_at | fmt_dt }}</td>
+  <td><a class="link" href="/documents/{{ doc.id }}">Details</a></td>
+</tr>
+{% endfor %}

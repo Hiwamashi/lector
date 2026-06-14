@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.original_filename }} — Lector{% endblock %}
+{% block content %}
+<a class="link back" href="/">← Zurück zur Übersicht</a>
+<div id="detail" data-fragment="/fragment/documents/{{ doc.id }}">
+  {% include "partials/detail_body.html" %}
+</div>
+{% endblock %}
