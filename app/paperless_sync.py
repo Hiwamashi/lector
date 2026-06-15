@@ -112,6 +112,10 @@ class PaperlessSync:
                     ids = await self._resolve(client)
                     await self._sync_invoices(client, ids)
                     await self._sync_sevdesk_tag(client, ids)
+            except httpx.ConnectError as exc:
+                # Paperless (noch) nicht erreichbar — typisch beim Start, wenn der
+                # webserver-Container später hochfährt. Nächster Lauf greift erneut.
+                log.warning("Paperless nicht erreichbar, überspringe Sync: %s", exc)
             except Exception:
                 log.exception("Paperless-Sync fehlgeschlagen")
 
