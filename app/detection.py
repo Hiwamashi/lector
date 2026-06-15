@@ -7,6 +7,7 @@ E-Rechnungen werden ohne KI/OCR rein anhand von Struktur und Metadaten erkannt:
 
 from __future__ import annotations
 
+import io
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,25 @@ def pdf_has_embedded_invoice(path: Path) -> bool:
     except Exception:
         return False
     return False
+
+
+def extract_embedded_invoice_xml(data: bytes) -> bytes | None:
+    """Liest die eingebettete Rechnungs-XML aus einem ZUGFeRD/Factur-X-PDF (Bytes)."""
+    try:
+        with pikepdf.open(io.BytesIO(data)) as pdf:
+            try:
+                attachments = pdf.attachments
+            except Exception:
+                return None
+            for name in attachments:
+                if name.lower() in _EMBEDDED_INVOICE_NAMES:
+                    try:
+                        return bytes(attachments[name].get_file().read_bytes())
+                    except Exception:
+                        return None
+    except Exception:
+        return None
+    return None
 
 
 def detect(path: Path) -> Detection:

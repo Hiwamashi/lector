@@ -28,6 +28,7 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 | [pipeline-lifecycle-retry.md](pipeline-lifecycle-retry.md) | `app/pipeline.py`, `app/fileops.py` | Pipeline, Lifecycle, Auto-Retry |
 | [retention.md](retention.md) | `app/retention.py` | Retention-Job |
 | [web-ui-sse.md](web-ui-sse.md) | `app/main.py`, `app/events.py`, `app/templates/`, `app/static/` | Web-UI & Live-Updates |
+| [paperless-integration/](paperless-integration/README.md) | `app/paperless.py`, `app/girocode.py`, `app/sevdesk.py`, `app/paperless_sync.py` | GiroCode-Anzeige & SevDesk-Export (entkoppelt) |
 | [docker-deployment.md](docker-deployment.md) | `Dockerfile`, `docker-compose.example.yml` | Deployment |
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack

@@ -64,6 +64,59 @@ class DocumentEvent:
     message: str | None = None
 
 
+class GiroStatus(StrEnum):
+    """Status der GiroCode-Zahldaten zu einer Rechnung."""
+
+    NONE = "none"        # noch keine Zahldaten ermittelt
+    READY = "ready"      # automatisch ermittelt
+    EDITED = "edited"    # manuell im UI korrigiert
+    FAILED = "failed"    # Extraktion fehlgeschlagen
+
+
+class SevdeskStatus(StrEnum):
+    NONE = "none"            # nicht für Export vorgemerkt
+    QUEUED = "queued"        # vorgemerkt (Tag erkannt), Bestätigung ausstehend
+    EXPORTING = "exporting"  # transienter Claim während des laufenden Uploads
+    EXPORTED = "exported"    # erfolgreich als Beleg nach SevDesk übertragen
+    FAILED = "failed"        # eindeutig fehlgeschlagen (kein Beleg angelegt) → retrybar
+    UNCERTAIN = "uncertain"  # mehrdeutig (Beleg evtl. angelegt) → kein Auto-Retry
+
+
+class InvoiceEventType(StrEnum):
+    SYNCED = "synced"
+    GIRO_EXTRACTED = "giro_extracted"
+    GIRO_EDITED = "giro_edited"
+    SEVDESK_QUEUED = "sevdesk_queued"
+    SEVDESK_EXPORTED = "sevdesk_exported"
+    SEVDESK_FAILED = "sevdesk_failed"
+    WRITTEN_BACK = "written_back"
+    MARKED_PAID = "marked_paid"
+
+
+@dataclass
+class PaperlessInvoice:
+    id: int
+    paperless_id: int
+    title: str | None = None
+    correspondent: str | None = None
+    creditor_name: str | None = None
+    iban: str | None = None
+    bic: str | None = None
+    amount: float | None = None
+    currency: str = "EUR"
+    purpose: str | None = None
+    source: str | None = None
+    giro_status: GiroStatus = GiroStatus.NONE
+    sevdesk_status: SevdeskStatus = SevdeskStatus.NONE
+    sevdesk_voucher_id: str | None = None
+    paid: bool = False
+    exported_at: datetime | None = None
+    written_back_at: datetime | None = None
+    last_synced_at: datetime | None = None
+    error_message: str | None = None
+    created_at: datetime | None = None
+
+
 @dataclass
 class OcrToken:
     """Ein erkanntes Text-Token mit Bounding-Box in normalisierten Seitenkoordinaten (0..1)."""

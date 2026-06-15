@@ -1,0 +1,87 @@
+<header class="detail-head">
+  <h1>{{ inv.title or ("Rechnung #" ~ inv.paperless_id) }}</h1>
+  <span class="badge badge--giro-{{ inv.giro_status }}">GiroCode: {{ giro_labels[inv.giro_status] }}</span>
+  <span class="badge badge--sevdesk-{{ inv.sevdesk_status }}">SevDesk: {{ sevdesk_labels[inv.sevdesk_status] }}</span>
+</header>
+
+{% if inv.error_message %}
+<div class="alert">{{ inv.error_message }}</div>
+{% endif %}
+
+<div class="invoice-grid">
+  <section class="giro-card">
+    <h2>GiroCode</h2>
+    {% if giro_svg %}
+    <div class="giro-qr">{{ giro_svg | safe }}</div>
+    <p class="giro-hint">Mit der Banking-App scannen, um die Überweisung vorauszufüllen.</p>
+    {% else %}
+    <p class="empty">Kein GiroCode — Empfängername und gültige IBAN erforderlich.</p>
+    {% endif %}
+  </section>
+
+  <section class="giro-form">
+    <h2>Zahldaten</h2>
+    <form method="post" action="/invoices/{{ inv.id }}/giro">
+      <label>Empfänger
+        <input type="text" name="creditor_name" value="{{ inv.creditor_name or '' }}" />
+      </label>
+      <label>IBAN
+        <input type="text" name="iban" value="{{ inv.iban or '' }}" />
+      </label>
+      <label>BIC
+        <input type="text" name="bic" value="{{ inv.bic or '' }}" />
+      </label>
+      <label>Betrag ({{ inv.currency }})
+        <input type="text" name="amount" value="{% if inv.amount is not none %}{{ '%.2f'|format(inv.amount) }}{% endif %}" />
+      </label>
+      <label>Verwendungszweck
+        <input type="text" name="purpose" value="{{ inv.purpose or '' }}" />
+      </label>
+      <button type="submit">Speichern &amp; GiroCode neu erzeugen</button>
+    </form>
+  </section>
+</div>
+
+<section class="invoice-actions">
+  {% set already_exported = inv.sevdesk_status == "exported" and inv.sevdesk_voucher_id %}
+  {% set uncertain = inv.sevdesk_status == "uncertain" %}
+  <form method="post" action="/invoices/{{ inv.id }}/export">
+    <button type="submit"
+      {% if not feature_sevdesk %}disabled title="FEATURE_SEVDESK_EXPORT=false"
+      {% elif already_exported %}disabled title="Bereits als Beleg exportiert"
+      {% elif uncertain %}disabled title="Mehrdeutiger Fehler — erst in SevDesk prüfen"{% endif %}>
+      {% if already_exported %}Bereits exportiert
+      {% elif uncertain %}Export unklar – in SevDesk prüfen
+      {% else %}Nach SevDesk exportieren{% endif %}
+    </button>
+  </form>
+  {% if inv.sevdesk_voucher_id %}
+  <span class="muted">Beleg-ID: {{ inv.sevdesk_voucher_id }}</span>
+  {% endif %}
+  <form method="post" action="/invoices/{{ inv.id }}/paid">
+    <input type="hidden" name="paid" value="{{ 'false' if inv.paid else 'true' }}" />
+    <button type="submit">{{ "Überweisung zurücksetzen" if inv.paid else "Als überwiesen markieren" }}</button>
+  </form>
+</section>
+
+<dl class="meta">
+  <dt>Paperless-ID</dt><dd>{{ inv.paperless_id }}</dd>
+  <dt>Quelle Zahldaten</dt><dd>{{ inv.source or "—" }}</dd>
+  <dt>Überwiesen</dt><dd>{{ "Ja" if inv.paid else "Nein" }}</dd>
+  <dt>SevDesk-Export</dt><dd>{{ inv.exported_at | fmt_dt }}</dd>
+  <dt>Rückschrieb</dt><dd>{{ inv.written_back_at | fmt_dt }}</dd>
+  <dt>Zuletzt synchronisiert</dt><dd>{{ inv.last_synced_at | fmt_dt }}</dd>
+</dl>
+
+<h2>Verlauf</h2>
+<ol class="events">
+  {% for ev in events %}
+  <li>
+    <span class="event-time">{{ ev.timestamp }}</span>
+    <span class="event-type">{{ ev.event_type }}</span>
+    <span class="event-msg">{{ ev.message or "" }}</span>
+  </li>
+  {% else %}
+  <li class="empty">Noch keine Ereignisse.</li>
+  {% endfor %}
+</ol>

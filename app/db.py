@@ -37,6 +37,46 @@ CREATE TABLE IF NOT EXISTS document_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_document ON document_events(document_id);
+
+-- ----------------------------------------------------------------------------
+-- Entkoppeltes Zusatz-Feature: aus Paperless gelesene Rechnungen (Dokumententyp),
+-- daraus erzeugte GiroCode-Zahldaten und SevDesk-Export-Status.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS paperless_invoices (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    paperless_id      INTEGER NOT NULL UNIQUE,
+    title             TEXT,
+    correspondent     TEXT,
+    creditor_name     TEXT,
+    iban              TEXT,
+    bic               TEXT,
+    amount            REAL,
+    currency          TEXT    NOT NULL DEFAULT 'EUR',
+    purpose           TEXT,
+    source            TEXT,
+    giro_status       TEXT    NOT NULL DEFAULT 'none',
+    sevdesk_status    TEXT    NOT NULL DEFAULT 'none',
+    sevdesk_voucher_id TEXT,
+    paid              INTEGER NOT NULL DEFAULT 0,
+    exported_at       TEXT,
+    written_back_at   TEXT,
+    last_synced_at    TEXT,
+    error_message     TEXT,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_paperless ON paperless_invoices(paperless_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_sevdesk ON paperless_invoices(sevdesk_status);
+
+CREATE TABLE IF NOT EXISTS invoice_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id  INTEGER NOT NULL REFERENCES paperless_invoices(id) ON DELETE CASCADE,
+    timestamp   TEXT    NOT NULL DEFAULT (datetime('now')),
+    event_type  TEXT    NOT NULL,
+    message     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_events_invoice ON invoice_events(invoice_id);
 """
 
 

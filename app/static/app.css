@@ -40,7 +40,10 @@ body {
 }
 .brand { font-size: 1.2rem; font-weight: 600; color: var(--ink); text-decoration: none; }
 .brand-mark { color: var(--accent); }
-.brand-sub { color: var(--ink-soft); font-size: 0.85rem; }
+.brand-sub { color: var(--ink-soft); font-size: 0.85rem; margin-left: auto; }
+.topnav { display: flex; gap: 1rem; }
+.topnav a { color: var(--ink-soft); text-decoration: none; font-size: 0.9rem; font-weight: 500; }
+.topnav a:hover { color: var(--accent); }
 
 .container { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
 
@@ -86,9 +89,39 @@ body {
 .badge--skipped_erechnung { background: var(--accent-soft); color: var(--accent); }
 .badge--failed { background: var(--red-bg); color: var(--red); }
 
+/* GiroCode-/SevDesk-Status-Badges */
+.badge--giro-none, .badge--sevdesk-none { background: var(--bg); color: var(--ink-soft); }
+.badge--giro-ready, .badge--giro-edited { background: var(--green-bg); color: var(--green); }
+.badge--giro-failed { background: var(--amber-bg); color: var(--amber); }
+.badge--sevdesk-queued { background: var(--amber-bg); color: var(--amber); }
+.badge--sevdesk-exporting { background: var(--accent-soft); color: var(--accent); }
+.badge--sevdesk-exported { background: var(--green-bg); color: var(--green); }
+.badge--sevdesk-failed { background: var(--red-bg); color: var(--red); }
+.badge--sevdesk-uncertain { background: var(--amber-bg); color: var(--amber); }
+
 .link { color: var(--accent); text-decoration: none; }
 .link:hover { text-decoration: underline; }
 .back { display: inline-block; margin-bottom: 1rem; }
+
+/* Rechnungs-Detail: GiroCode + Formular nebeneinander */
+.invoice-grid { display: grid; grid-template-columns: minmax(220px, 280px) 1fr; gap: 1rem; margin: 1rem 0; }
+.giro-card, .giro-form { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow); }
+.giro-card h2, .giro-form h2 { margin: 0 0 0.8rem; font-size: 1rem; }
+.giro-qr { width: 100%; max-width: 240px; }
+.giro-qr svg { width: 100%; height: auto; }
+.giro-hint { color: var(--ink-soft); font-size: 0.8rem; margin: 0.6rem 0 0; }
+.giro-form label { display: block; font-size: 0.85rem; color: var(--ink-soft); margin-bottom: 0.6rem; }
+.giro-form input { display: block; width: 100%; margin-top: 0.2rem; padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; color: var(--ink); }
+.giro-form button, .invoice-actions button {
+  padding: 0.5rem 0.9rem; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 0.9rem; cursor: pointer; }
+.invoice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; margin: 1rem 0; }
+.invoice-actions form { margin: 0; }
+.invoice-actions button:disabled { background: var(--ink-soft); border-color: var(--ink-soft); cursor: not-allowed; }
+.muted { color: var(--ink-soft); font-size: 0.85rem; }
+@media (max-width: 720px) { .invoice-grid { grid-template-columns: 1fr; } }
 
 /* Detailansicht */
 .detail-head { display: flex; align-items: center; gap: 0.8rem; }

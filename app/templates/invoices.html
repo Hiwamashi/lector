@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Rechnungen — Lector{% endblock %}
+{% block content %}
+<h1>Rechnungen</h1>
+
+{% if not feature_sync %}
+<div class="alert">
+  Paperless-Sync ist deaktiviert. Setze <code>FEATURE_PAPERLESS_SYNC=true</code> und die
+  Paperless-Zugangsdaten, damit Rechnungen automatisch eingelesen werden.
+</div>
+{% endif %}
+
+<form class="filters" method="get" action="/invoices">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Titel / Korrespondent suchen…" />
+  <select name="sevdesk">
+    <option value="">Alle SevDesk-Status</option>
+    {% for key, label in sevdesk_labels.items() if key != "none" %}
+    <option value="{{ key }}" {% if filters.sevdesk == key|string %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filtern</button>
+</form>
+
+<table class="history"
+       data-fragment="/fragment/invoices?sevdesk={{ filters.sevdesk }}&q={{ filters.q }}">
+  <thead>
+    <tr>
+      <th>Titel</th><th>Korrespondent</th><th>Betrag</th>
+      <th>GiroCode</th><th>SevDesk</th><th>Überwiesen</th><th></th>
+    </tr>
+  </thead>
+  <tbody id="invoice-body">
+    {% include "partials/invoice_rows.html" %}
+  </tbody>
+</table>
+{% endblock %}

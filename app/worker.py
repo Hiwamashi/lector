@@ -23,6 +23,7 @@ from .detection import is_supported
 from .events import EventBus
 from .fileops import file_hash
 from .ocr.base import OcrAdapter
+from .paperless_sync import PaperlessSync
 from .pipeline import run_pipeline
 from .repository import Repository
 from .retention import purge_processed
@@ -44,12 +45,18 @@ class _WakeHandler(FileSystemEventHandler):
 
 class Worker:
     def __init__(
-        self, settings: Settings, repo: Repository, adapter: OcrAdapter, bus: EventBus
+        self,
+        settings: Settings,
+        repo: Repository,
+        adapter: OcrAdapter,
+        bus: EventBus,
+        paperless_sync: PaperlessSync | None = None,
     ) -> None:
         self.settings = settings
         self.repo = repo
         self.adapter = adapter
         self.bus = bus
+        self.paperless_sync = paperless_sync
         self.queue: asyncio.Queue[int] = asyncio.Queue()
         self.tracker = StabilityTracker(
             settings.partial_suffix_list, settings.stability_window_seconds
@@ -75,6 +82,14 @@ class Worker:
             asyncio.create_task(self._retry_loop(), name="retry"),
             asyncio.create_task(self._retention_loop(), name="retention"),
         ]
+        if self.paperless_sync is not None and self.paperless_sync.enabled:
+            self._tasks.append(
+                asyncio.create_task(self._paperless_loop(), name="paperless-sync")
+            )
+            log.info(
+                "Paperless-Sync aktiv (Intervall %ss)",
+                self.settings.paperless_sync_interval_seconds,
+            )
         log.info("Worker gestartet, überwacht %s", self.settings.watch_dir)
 
     async def stop(self) -> None:
@@ -186,3 +201,12 @@ class Worker:
             except Exception:
                 log.exception("Fehler im Retention-Loop")
             await asyncio.sleep(_RETENTION_POLL_SECONDS)
+
+    async def _paperless_loop(self) -> None:
+        assert self.paperless_sync is not None
+        while not self._stop.is_set():
+            try:
+                await self.paperless_sync.sync_once()
+            except Exception:
+                log.exception("Fehler im Paperless-Sync-Loop")
+            await asyncio.sleep(self.settings.paperless_sync_interval_seconds)

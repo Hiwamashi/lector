@@ -55,6 +55,44 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8001, alias="PORT")
 
+    # ---- Paperless-Integration (entkoppeltes Feature-Set: GiroCode + SevDesk) ----
+    # Schaltet den periodischen Abgleich gegen die Paperless-API frei.
+    feature_paperless_sync: bool = Field(default=False, alias="FEATURE_PAPERLESS_SYNC")
+    paperless_url: str = Field(default="", alias="PAPERLESS_URL")
+    paperless_token: str = Field(default="", alias="PAPERLESS_TOKEN")
+    # Name des Paperless-Dokumententyps, der Rechnungen kennzeichnet.
+    paperless_invoice_doctype: str = Field(default="Rechnung", alias="PAPERLESS_INVOICE_DOCTYPE")
+    paperless_sync_interval_seconds: float = Field(
+        default=300.0, alias="PAPERLESS_SYNC_INTERVAL_SECONDS"
+    )
+    # Wenn Custom Fields / Tags in Paperless fehlen, legt Lector sie automatisch an.
+    paperless_auto_create_fields: bool = Field(
+        default=True, alias="PAPERLESS_AUTO_CREATE_FIELDS"
+    )
+
+    # GiroCode: Gläubigername aus dem Paperless-Korrespondenten ableiten, falls nicht im Beleg.
+    girocode_creditor_from_correspondent: bool = Field(
+        default=True, alias="GIROCODE_CREDITOR_FROM_CORRESPONDENT"
+    )
+
+    # SevDesk-Export
+    feature_sevdesk_export: bool = Field(default=False, alias="FEATURE_SEVDESK_EXPORT")
+    sevdesk_api_token: str = Field(default="", alias="SEVDESK_API_TOKEN")
+    sevdesk_base_url: str = Field(default="https://my.sevdesk.de/api/v1", alias="SEVDESK_BASE_URL")
+    # Paperless-Tag, der den Export nach SevDesk auslöst.
+    sevdesk_tag: str = Field(default="sevdesk", alias="SEVDESK_TAG")
+    # true = automatischer Export beim Sync, false = nur Vormerken (manuelle Bestätigung im UI).
+    sevdesk_auto_export: bool = Field(default=False, alias="SEVDESK_AUTO_EXPORT")
+
+    # Namen der Paperless-Custom-Fields / -Tags für den Rückschrieb.
+    cf_giro_iban: str = Field(default="Zahlung IBAN", alias="CF_GIRO_IBAN")
+    cf_giro_amount: str = Field(default="Zahlbetrag", alias="CF_GIRO_AMOUNT")
+    cf_sevdesk_id: str = Field(default="SevDesk-Beleg", alias="CF_SEVDESK_ID")
+    cf_exported_at: str = Field(default="SevDesk-Export am", alias="CF_EXPORTED_AT")
+    cf_paid: str = Field(default="Überwiesen", alias="CF_PAID")
+    tag_sevdesk_done: str = Field(default="sevdesk-exportiert", alias="TAG_SEVDESK_DONE")
+    tag_paid: str = Field(default="überwiesen", alias="TAG_PAID")
+
     @property
     def partial_suffix_list(self) -> list[str]:
         return [s.strip().lower() for s in self.partial_suffixes.split(",") if s.strip()]

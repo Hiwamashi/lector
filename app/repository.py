@@ -14,7 +14,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .db import connect, init_db
-from .models import DocStatus, DocType, Document, EventType
+from .models import (
+    DocStatus,
+    DocType,
+    Document,
+    EventType,
+    GiroStatus,
+    InvoiceEventType,
+    PaperlessInvoice,
+    SevdeskStatus,
+)
+
+_INVOICE_COLUMNS = (
+    "id, paperless_id, title, correspondent, creditor_name, iban, bic, amount, currency, "
+    "purpose, source, giro_status, sevdesk_status, sevdesk_voucher_id, paid, exported_at, "
+    "written_back_at, last_synced_at, error_message, created_at"
+)
 
 _DOC_COLUMNS = (
     "id, original_filename, source_path, file_hash, status, doc_type, ocr_engine, "
@@ -54,22 +69,53 @@ def _row_to_document(row: sqlite3.Row) -> Document:
     )
 
 
+def _parse_invoice(row: sqlite3.Row) -> PaperlessInvoice:
+    return PaperlessInvoice(
+        id=row["id"],
+        paperless_id=row["paperless_id"],
+        title=row["title"],
+        correspondent=row["correspondent"],
+        creditor_name=row["creditor_name"],
+        iban=row["iban"],
+        bic=row["bic"],
+        amount=row["amount"],
+        currency=row["currency"] or "EUR",
+        purpose=row["purpose"],
+        source=row["source"],
+        giro_status=GiroStatus(row["giro_status"]),
+        sevdesk_status=SevdeskStatus(row["sevdesk_status"]),
+        sevdesk_voucher_id=row["sevdesk_voucher_id"],
+        paid=bool(row["paid"]),
+        exported_at=_parse_dt(row["exported_at"]),
+        written_back_at=_parse_dt(row["written_back_at"]),
+        last_synced_at=_parse_dt(row["last_synced_at"]),
+        error_message=row["error_message"],
+        created_at=_parse_dt(row["created_at"]),
+    )
+
+
 class Repository:
-    def __init__(self, db_path: Path, notifier: Callable[[int], None] | None = None) -> None:
+    def __init__(self, db_path: Path, notifier: Callable[[str], None] | None = None) -> None:
         self._conn = connect(db_path)
         init_db(self._conn)
         self._lock = threading.Lock()
         self._notifier = notifier
 
-    def set_notifier(self, notifier: Callable[[int], None]) -> None:
+    def set_notifier(self, notifier: Callable[[str], None]) -> None:
         self._notifier = notifier
 
-    def _notify(self, document_id: int) -> None:
+    def _emit(self, token: str) -> None:
         if self._notifier:
             try:
-                self._notifier(document_id)
+                self._notifier(token)
             except Exception:
                 pass
+
+    def _notify(self, document_id: int) -> None:
+        self._emit(f"doc:{document_id}")
+
+    def _notify_invoice(self, invoice_id: int) -> None:
+        self._emit(f"inv:{invoice_id}")
 
     def close(self) -> None:
         with self._lock:
@@ -243,5 +289,180 @@ class Repository:
                 "SELECT id, document_id, timestamp, event_type, message "
                 "FROM document_events WHERE document_id = ? ORDER BY id ASC",
                 (document_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- paperless_invoices (entkoppeltes GiroCode/SevDesk-Feature) ------
+
+    def upsert_invoice(
+        self, *, paperless_id: int, title: str | None, correspondent: str | None
+    ) -> int:
+        """Legt eine Rechnung an bzw. aktualisiert Titel/Korrespondent + Sync-Zeitpunkt.
+
+        Bereits ermittelte Zahldaten und der Export-/Bezahlt-Status bleiben unangetastet.
+        """
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO paperless_invoices (paperless_id, title, correspondent, "
+                "last_synced_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(paperless_id) DO UPDATE SET title=excluded.title, "
+                "correspondent=excluded.correspondent, last_synced_at=excluded.last_synced_at",
+                (paperless_id, title, correspondent, now),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id FROM paperless_invoices WHERE paperless_id = ?", (paperless_id,)
+            ).fetchone()
+            invoice_id = int(row["id"]) if row else int(cur.lastrowid)
+        self._notify_invoice(invoice_id)
+        return invoice_id
+
+    def get_invoice(self, invoice_id: int) -> PaperlessInvoice | None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {_INVOICE_COLUMNS} FROM paperless_invoices WHERE id = ?", (invoice_id,)
+            ).fetchone()
+        return _parse_invoice(row) if row else None
+
+    def get_invoice_by_paperless(self, paperless_id: int) -> PaperlessInvoice | None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {_INVOICE_COLUMNS} FROM paperless_invoices WHERE paperless_id = ?",
+                (paperless_id,),
+            ).fetchone()
+        return _parse_invoice(row) if row else None
+
+    def list_invoices(
+        self,
+        *,
+        sevdesk_status: SevdeskStatus | None = None,
+        search: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[PaperlessInvoice]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if sevdesk_status:
+            clauses.append("sevdesk_status = ?")
+            params.append(sevdesk_status.value)
+        if search:
+            clauses.append("(title LIKE ? OR correspondent LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%"])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([limit, offset])
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_INVOICE_COLUMNS} FROM paperless_invoices {where} "
+                "ORDER BY id DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+        return [_parse_invoice(r) for r in rows]
+
+    def update_invoice(self, invoice_id: int, **fields: object) -> None:
+        if not fields:
+            return
+        clean = {k: (v.value if hasattr(v, "value") else v) for k, v in fields.items()}
+        assignments = ", ".join(f"{k} = ?" for k in clean)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE paperless_invoices SET {assignments} WHERE id = ?",
+                [*clean.values(), invoice_id],
+            )
+            self._conn.commit()
+        self._notify_invoice(invoice_id)
+
+    def set_giro_data(
+        self,
+        invoice_id: int,
+        *,
+        creditor_name: str | None,
+        iban: str | None,
+        bic: str | None,
+        amount: float | None,
+        currency: str,
+        purpose: str | None,
+        source: str,
+        giro_status: GiroStatus,
+    ) -> None:
+        self.update_invoice(
+            invoice_id,
+            creditor_name=creditor_name,
+            iban=iban,
+            bic=bic,
+            amount=amount,
+            currency=currency,
+            purpose=purpose,
+            source=source,
+            giro_status=giro_status,
+        )
+
+    def claim_for_export(self, invoice_id: int) -> bool:
+        """Beansprucht eine Rechnung atomar für den SevDesk-Export.
+
+        Setzt den Status nur dann auf ``exporting``, wenn er nicht bereits ``exported``,
+        ``exporting`` oder ``uncertain`` ist. Liefert ``True``, wenn der Claim gewonnen wurde —
+        verhindert Doppel-Belege bei gleichzeitigen Export-Aufrufen (Race zwischen UI-Klick und
+        Sync) sowie automatische Wiederholung mehrdeutig fehlgeschlagener Exporte.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE paperless_invoices SET sevdesk_status = ? "
+                "WHERE id = ? AND sevdesk_status NOT IN (?, ?, ?)",
+                (
+                    SevdeskStatus.EXPORTING.value,
+                    invoice_id,
+                    SevdeskStatus.EXPORTED.value,
+                    SevdeskStatus.EXPORTING.value,
+                    SevdeskStatus.UNCERTAIN.value,
+                ),
+            )
+            self._conn.commit()
+            claimed = cur.rowcount == 1
+        if claimed:
+            self._notify_invoice(invoice_id)
+        return claimed
+
+    def set_sevdesk_status(
+        self,
+        invoice_id: int,
+        status: SevdeskStatus,
+        *,
+        voucher_id: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"sevdesk_status": status, "error_message": error_message}
+        if voucher_id is not None:
+            fields["sevdesk_voucher_id"] = voucher_id
+        if status == SevdeskStatus.EXPORTED:
+            fields["exported_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        self.update_invoice(invoice_id, **fields)
+
+    def set_paid(self, invoice_id: int, paid: bool) -> None:
+        self.update_invoice(invoice_id, paid=1 if paid else 0)
+
+    def mark_written_back(self, invoice_id: int) -> None:
+        self.update_invoice(
+            invoice_id,
+            written_back_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def add_invoice_event(
+        self, invoice_id: int, event_type: InvoiceEventType, message: str | None = None
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO invoice_events (invoice_id, event_type, message) VALUES (?, ?, ?)",
+                (invoice_id, event_type.value, message),
+            )
+            self._conn.commit()
+        self._notify_invoice(invoice_id)
+
+    def list_invoice_events(self, invoice_id: int) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, invoice_id, timestamp, event_type, message "
+                "FROM invoice_events WHERE invoice_id = ? ORDER BY id ASC",
+                (invoice_id,),
             ).fetchall()
         return [dict(r) for r in rows]

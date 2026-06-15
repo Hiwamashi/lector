@@ -1,0 +1,14 @@
+{% if not invoices %}
+<tr class="empty"><td colspan="7">Keine Rechnungen.</td></tr>
+{% endif %}
+{% for inv in invoices %}
+<tr>
+  <td class="filename"><a href="/invoices/{{ inv.id }}">{{ inv.title or ("#" ~ inv.paperless_id) }}</a></td>
+  <td>{{ inv.correspondent or "—" }}</td>
+  <td>{% if inv.amount is not none %}{{ "%.2f"|format(inv.amount) }} {{ inv.currency }}{% else %}—{% endif %}</td>
+  <td><span class="badge badge--giro-{{ inv.giro_status }}">{{ giro_labels[inv.giro_status] }}</span></td>
+  <td><span class="badge badge--sevdesk-{{ inv.sevdesk_status }}">{{ sevdesk_labels[inv.sevdesk_status] }}</span></td>
+  <td>{{ "✓" if inv.paid else "—" }}</td>
+  <td><a class="link" href="/invoices/{{ inv.id }}">Details</a></td>
+</tr>
+{% endfor %}

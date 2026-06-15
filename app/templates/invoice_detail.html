@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ inv.title or ("Rechnung #" ~ inv.paperless_id) }} — Lector{% endblock %}
+{% block content %}
+<a class="link back" href="/invoices">← Zurück zu den Rechnungen</a>
+<div id="detail" data-fragment="/fragment/invoices/{{ inv.id }}">
+  {% include "partials/invoice_detail_body.html" %}
+</div>
+{% endblock %}

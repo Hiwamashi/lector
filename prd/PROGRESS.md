@@ -3,7 +3,7 @@
 > Fortlaufend gepflegter Stand der MVP-Umsetzung (siehe `PRD_Lector.md`).
 > Legende: ✅ umgesetzt · 🚧 in Arbeit · ⬜ offen
 
-**Stand:** 2026-06-14
+**Stand:** 2026-06-15
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
 
@@ -36,6 +36,30 @@
 
 **MVP vollständig umgesetzt.** 41 Tests grün, `ruff` sauber, Docker-Image baut und startet.
 Feature-Doku unter `feature-documentation/`.
+
+## Zusatz-Feature: Paperless-Integration (GiroCode & SevDesk) — entkoppelt
+
+Unabhängig vom OCR-Veredelungspfad. Lector liest Rechnungen über den Paperless-Dokumententyp,
+erzeugt GiroCodes und exportiert getaggte Belege nach SevDesk; Status wird ans Paperless-
+Dokument zurückgeschrieben. Standardmäßig deaktiviert (`FEATURE_PAPERLESS_SYNC=false`).
+
+| Feature | Status |
+|---|---|
+| Paperless-REST-Client (lesen/zurückschreiben, `app/paperless.py`) | ✅ |
+| GiroCode-Extraktion E-Rechnung (UBL/CII) + OCR-Heuristik (`app/girocode.py`) | ✅ |
+| EPC069-12-QR-Erzeugung (segno, SVG) | ✅ |
+| SevDesk-Beleg-Upload (`app/sevdesk.py`) | ✅ |
+| Periodischer Sync + UI-Aktionen (`app/paperless_sync.py`, Worker-Loop) | ✅ |
+| Neue Tabellen `paperless_invoices` / `invoice_events` | ✅ |
+| Rückschrieb: Custom Fields + Tags + Notiz (Auto-Anlage) | ✅ |
+| Web-UI „Rechnungen" + GiroCode-Anzeige + Aktionen + SSE | ✅ |
+
+53 Tests grün (12 neue: GiroCode-Extraktion/EPC/Mod-97, Invoice-Repository). `ruff` sauber.
+Feature-Doku unter `feature-documentation/paperless-integration/`.
+
+**Zu verifizieren (benötigt Zugangsdaten):** End-to-End gegen echte Paperless-Instanz
+(Token/URL/Dokumententyp-Name) und echtes SevDesk-Konto (API-Token, Systemversion 2.0 für
+E-Rechnungs-Belege). Bisher offline + via TestClient verifiziert.
 
 ## Verbleibend / zu verifizieren
 
