@@ -423,6 +423,29 @@ class Repository:
             self._notify_invoice(invoice_id)
         return claimed
 
+    def reset_stale_exports(self) -> int:
+        """Bereinigt beim Start verwaiste ``exporting``-Claims.
+
+        Stirbt der Prozess mitten im Export, bliebe der Status auf ``exporting`` —
+        ``claim_for_export`` schließt diesen Wert dauerhaft aus, die Rechnung wäre also
+        nie wieder exportierbar. ``uncertain`` ist hier korrekt, weil unklar ist, ob bereits
+        ein Beleg angelegt wurde: kein Auto-Retry, sondern manuelle Prüfung in SevDesk.
+        Liefert die Anzahl der zurückgesetzten Rechnungen.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE paperless_invoices SET sevdesk_status = ?, error_message = ? "
+                "WHERE sevdesk_status = ?",
+                (
+                    SevdeskStatus.UNCERTAIN.value,
+                    "Export wurde durch einen Neustart unterbrochen — in SevDesk prüfen, "
+                    "ob der Beleg existiert, bevor erneut exportiert wird.",
+                    SevdeskStatus.EXPORTING.value,
+                ),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
     def set_sevdesk_status(
         self,
         invoice_id: int,

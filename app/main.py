@@ -27,6 +27,7 @@ from .repository import Repository
 from .worker import Worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("lector.main")
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -106,6 +107,9 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     bus = EventBus()
     repo = Repository(settings.db_path, notifier=bus.publish_threadsafe)
+    stale = repo.reset_stale_exports()
+    if stale:
+        log.warning("%s verwaiste SevDesk-Exporte auf 'uncertain' zurückgesetzt", stale)
     adapter = get_adapter(settings)
     sync = PaperlessSync(settings, repo)
     worker = Worker(settings, repo, adapter, bus, paperless_sync=sync)

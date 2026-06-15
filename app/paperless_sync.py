@@ -124,14 +124,20 @@ class PaperlessSync:
             )
             return
         for doc in await client.list_documents(document_type_id=doctype_id):
+            correspondent = await self._correspondent_name(client, doc)
+            # Stammdaten vor dem Upsert lesen, damit ein SYNCED-Event nur bei echter
+            # Änderung (Neuanlage/geänderter Titel/Korrespondent) entsteht — sonst würde
+            # invoice_events bei jedem Idle-Sync unbegrenzt wachsen.
+            before = self.repo.get_invoice_by_paperless(doc.id)
             invoice_id = self.repo.upsert_invoice(
                 paperless_id=doc.id,
                 title=doc.title,
-                correspondent=await self._correspondent_name(client, doc),
+                correspondent=correspondent,
             )
-            self.repo.add_invoice_event(invoice_id, InvoiceEventType.SYNCED)
-            existing = self.repo.get_invoice(invoice_id)
-            if existing and existing.giro_status == GiroStatus.NONE:
+            is_new = before is None
+            if is_new or before.title != doc.title or before.correspondent != correspondent:
+                self.repo.add_invoice_event(invoice_id, InvoiceEventType.SYNCED)
+            if is_new or before.giro_status == GiroStatus.NONE:
                 await self._extract_and_store(client, ids, invoice_id, doc)
 
     async def _sync_sevdesk_tag(self, client: PaperlessClient, ids: dict[str, int | None]) -> None:

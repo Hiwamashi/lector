@@ -290,3 +290,22 @@ def test_server_error_savevoucher_is_not_retryable(tmp_path):
 
     asyncio.run(sync.export_invoice(inv_id))
     assert saves["n"] == 1  # saveVoucher wurde NICHT erneut aufgerufen
+
+
+def test_reset_stale_exports_recovers_interrupted_claim(tmp_path):
+    """Ein durch Neustart verwaister 'exporting'-Claim wäre sonst dauerhaft blockiert."""
+    repo = make_repo(tmp_path)
+    inv_id = repo.upsert_invoice(paperless_id=99, title="Hängengeblieben", correspondent=None)
+    # Claim gewinnen, dann „Absturz" simulieren: Status bleibt auf exporting.
+    assert repo.claim_for_export(inv_id) is True
+    assert repo.get_invoice(inv_id).sevdesk_status == SevdeskStatus.EXPORTING
+    assert repo.claim_for_export(inv_id) is False  # exporting ist sonst nicht claim-bar
+
+    assert repo.reset_stale_exports() == 1
+    inv = repo.get_invoice(inv_id)
+    assert inv.sevdesk_status == SevdeskStatus.UNCERTAIN
+    assert inv.error_message  # erklärender Hinweis gesetzt
+    # uncertain bleibt bewusst nicht auto-retrybar (manuelle Prüfung in SevDesk).
+    assert repo.claim_for_export(inv_id) is False
+    # Idempotent: ein zweiter Lauf findet nichts mehr.
+    assert repo.reset_stale_exports() == 0

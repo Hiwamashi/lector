@@ -15,9 +15,12 @@ Läuft im Worker alle `PAPERLESS_SYNC_INTERVAL_SECONDS`, nur wenn `enabled` (Fea
 URL + Token). Per `asyncio.Lock` gegen Überlappung gesichert.
 
 1. `_sync_invoices` — Dokumente mit dem Rechnungs-Dokumententyp listen, je Dokument
-   `upsert_invoice`. Bei `giro_status == none`: Zahldaten extrahieren (E-Rechnung aus XML bzw.
-   eingebetteter XML via `detection.extract_embedded_invoice_xml`, sonst OCR-Heuristik),
-   speichern und — falls `ready` — IBAN/Betrag als Custom Fields zurückschreiben.
+   `upsert_invoice`. Ein `synced`-Event wird nur bei echter Änderung geschrieben (Neuanlage
+   bzw. geänderter Titel/Korrespondent — Vergleich mit `get_invoice_by_paperless` vor dem
+   Upsert), damit `invoice_events` bei Idle-Syncs nicht unbegrenzt wächst. Bei
+   `giro_status == none`: Zahldaten extrahieren (E-Rechnung aus XML bzw. eingebetteter XML via
+   `detection.extract_embedded_invoice_xml`, sonst OCR-Heuristik), speichern und — falls
+   `ready` — IBAN/Betrag als Custom Fields zurückschreiben.
 2. `_sync_sevdesk_tag` — Dokumente mit `SEVDESK_TAG` listen, als `queued` vormerken. Bei
    `SEVDESK_AUTO_EXPORT=true` direkt exportieren.
 
@@ -43,8 +46,11 @@ URL + Token). Per `asyncio.Lock` gegen Überlappung gesichert.
       ebenso Transportfehler/Timeout und eine fehlende Beleg-ID in einer 200-Antwort → Status
       `uncertain`, **nicht** auto-retrybar. Der Nutzer muss in SevDesk prüfen, ob der Beleg
       existiert, bevor erneut exportiert wird.
-  - Bei einem harten Absturz **während** des Uploads bleibt der Status auf `exporting` (kein
-    Auto-Retry — automatisches Zurücksetzen würde Doppel-Belege riskieren).
+  - Bei einem harten Absturz **während** des Uploads bleibt der Status auf `exporting`. Beim
+    nächsten Start bereinigt `repo.reset_stale_exports()` (Aufruf im Lifespan) solche
+    verwaisten Claims auf `uncertain` — nicht auf `failed`, weil unklar ist, ob bereits ein
+    Beleg angelegt wurde. So bleibt die Rechnung nicht dauerhaft in `exporting` blockiert,
+    wird aber bewusst **nicht** automatisch erneut exportiert (manuelle Prüfung in SevDesk).
 - `set_paid(id, paid)` — als überwiesen markieren; Rückschrieb (Custom Field `Überwiesen`,
   Tag `überwiesen`, Notiz).
 
