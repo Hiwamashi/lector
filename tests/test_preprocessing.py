@@ -3,7 +3,6 @@ from PIL import Image, ImageDraw
 
 from app.config import Settings
 from app.preprocessing import (
-    autorotate,
     deskew,
     enhance_contrast,
     estimate_skew_angle,
@@ -34,14 +33,6 @@ def test_deskew_corrects_rotation():
     assert abs(residual) < 2.0
 
 
-def test_autorotate_fixes_landscape():
-    page = _text_page()  # Hochformat mit horizontalen Zeilen
-    rotated = page.rotate(90, expand=True)  # jetzt Querformat
-    fixed = autorotate(rotated)
-    # nach Korrektur sollte es wieder höher als breit sein (Hochformat)
-    assert fixed.height > fixed.width
-
-
 def test_enhance_contrast_returns_grayscale():
     page = _text_page()
     out = enhance_contrast(page)
@@ -50,9 +41,7 @@ def test_enhance_contrast_returns_grayscale():
 
 def test_preprocess_page_respects_flags():
     page = _text_page()
-    settings = Settings(
-        PREPROCESS_DESKEW="false", PREPROCESS_AUTOROTATE="false", PREPROCESS_CONTRAST="false"
-    )
+    settings = Settings(PREPROCESS_DESKEW="false", PREPROCESS_CONTRAST="false")
     out = preprocess_page(page, settings)
     # Ohne aktive Schritte bleibt das Bild unverändert (gleiche Größe, RGB)
     assert out.size == page.size

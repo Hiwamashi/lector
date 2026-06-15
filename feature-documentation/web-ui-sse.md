@@ -34,3 +34,10 @@ gestoppt. Keine Authentifizierung (LAN-only, PRD §3.3).
 `app/static/app.css`: handgeschrieben, offline-fähig. Ruhiger „Werkstatt"-Look — neutrale
 Grautöne, ein Akzent, Ampelfarben (grün/orange/rot) ausschließlich für Status. Hell-Modus,
 Desktop-primär und responsive (PRD §5.1). Siehe Abweichungshinweis in [README.md](README.md).
+
+## Favicon
+
+`app/static/favicon.svg`: schlankes SVG-Favicon im Branding (Dokument-Glyph in der
+Akzentfarbe `#2f6f8f`, passend zur Brand-Mark „▤"). Eingebunden in `base.html` per
+`<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />`. SVG statt `.ico`,
+da kein Buildchain nötig ist und das Format im LAN-Browserumfeld ausreicht.

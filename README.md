@@ -31,6 +31,16 @@ uv run uvicorn app.main:app --reload --port 8001
 Konfiguration ausschließlich über Umgebungsvariablen (siehe `app/config.py` und PRD §4.5).
 Für lokale Entwicklung kann eine `.env` im Projektwurzelverzeichnis genutzt werden.
 
+### Seitenorientierung
+
+Lector dreht Seiten **nicht** selbst. Eine frühere lokale Auto-Rotate-Heuristik
+(`PREPROCESS_AUTOROTATE`) wurde entfernt, weil sie korrekt ausgerichtete Seiten zufällig auf
+den Kopf bzw. um 90° drehte: Ihr Maß (Varianz der Zeilensummen) ist für eine Seite und ihre
+180°-Drehung identisch, sodass die Entscheidung nur über den Fließkomma-Rundungsfehler fiel.
+Die Orientierung übernimmt nun die OCR-Engine (Document AI); die gerenderten Quellseiten sind
+ohnehin bereits korrekt ausgerichtet. Es gibt entsprechend kein `PREPROCESS_AUTOROTATE`-Flag
+mehr — nur noch `PREPROCESS_DESKEW` (Schieflagenkorrektur) und `PREPROCESS_CONTRAST`.
+
 ## Docker
 
 ```bash

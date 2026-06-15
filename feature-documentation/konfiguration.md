@@ -17,7 +17,7 @@ Entwicklung wird optional eine `.env` gelesen (`.env.example` als Vorlage).
 | `PROCESSED_RETENTION_DAYS` | 30 | Retention im processed-Ordner |
 | `RETRY_DELAY_MINUTES` / `RETRY_MAX` | 15 / 3 | Auto-Retry |
 | `CHUNK_SIZE_PAGES` | 15 | Obergrenze Block-Seiten (deckelt das Engine-Limit) |
-| `PREPROCESS_DESKEW`/`_AUTOROTATE`/`_CONTRAST` | true | Vorverarbeitungs-Flags |
+| `PREPROCESS_DESKEW`/`_CONTRAST` | true | Vorverarbeitungs-Flags (Orientierung übernimmt Document AI, kein Auto-Rotate) |
 | `POLL_INTERVAL_SECONDS` | 2.0 | Scan-Frequenz des Watch-Folders |
 | `STABILITY_WINDOW_SECONDS` | 6.0 | Größenstabilitäts-Fenster |
 | `PARTIAL_SUFFIXES` | `.tmp,.part,.crdownload` | nie-fertig-Suffixe |

@@ -1,13 +1,16 @@
 """Bildvorverarbeitung pro Seite vor der OCR (siehe PRD §3.1):
-Deskew (Schieflagenkorrektur), Auto-Rotate (Orientierung), Kontrast/Graustufen.
+Deskew (Schieflagenkorrektur) und Kontrast/Graustufen.
 
 Alle Schritte sind über die Settings-Flags einzeln schaltbar. Funktionen arbeiten auf
 PIL-Bildern; intern wird für OpenCV nach numpy konvertiert.
 
-Hinweis zu Auto-Rotate: Die Orientierung wird heuristisch über das horizontale
-Projektionsprofil bestimmt (Textzeilen erzeugen starke horizontale Bänderung). Das
-korrigiert zuverlässig Hoch-/Querformat-Verdrehungen (90°/270°); eine 180°-Drehung lässt
-sich ohne semantische Texterkennung nicht unterscheiden und bleibt unverändert.
+Hinweis zur Orientierung: Eine lokale Auto-Rotate-Heuristik gibt es bewusst nicht mehr.
+Die frühere Variante über das horizontale Projektionsprofil konnte 0° und 180° (bzw. 90°
+und 270°) prinzipiell nicht unterscheiden — die Varianz der Zeilensummen ist für eine Seite
+und ihre 180°-Drehung identisch, sodass die Entscheidung faktisch per Fließkomma-Rundung
+fiel und korrekt ausgerichtete Seiten zufällig auf den Kopf gestellt wurden. Die
+Seitenorientierung wird daher der OCR-Engine (Document AI) überlassen; die gerenderten
+Quellseiten sind ohnehin bereits korrekt ausgerichtet.
 """
 
 from __future__ import annotations
@@ -57,29 +60,6 @@ def deskew(img: Image.Image) -> Image.Image:
     return Image.fromarray(rotated)
 
 
-def _horizontal_band_variance(gray: np.ndarray) -> float:
-    """Varianz des zeilenweisen Tintenanteils. Hoch, wenn Textzeilen horizontal liegen."""
-    inverted = 255 - gray
-    row_sums = inverted.sum(axis=1, dtype=np.float64)
-    return float(np.var(row_sums))
-
-
-def autorotate(img: Image.Image) -> Image.Image:
-    """Wählt aus 0°/90°/180°/270° die Drehung mit der stärksten horizontalen Bänderung."""
-    gray = _pil_to_gray(img)
-    candidates = {
-        0: gray,
-        90: np.rot90(gray, k=-1),
-        180: np.rot90(gray, k=2),
-        270: np.rot90(gray, k=1),
-    }
-    best_angle = max(candidates, key=lambda a: _horizontal_band_variance(candidates[a]))
-    if best_angle == 0:
-        return img
-    # PIL.rotate dreht gegen den Uhrzeigersinn; expand=True erhält den Inhalt.
-    return img.rotate(-best_angle, expand=True)
-
-
 def enhance_contrast(img: Image.Image) -> Image.Image:
     """Graustufen-Umwandlung mit CLAHE (lokaler Kontrastausgleich)."""
     gray = _pil_to_gray(img)
@@ -90,8 +70,6 @@ def enhance_contrast(img: Image.Image) -> Image.Image:
 
 def preprocess_page(img: Image.Image, settings: Settings) -> Image.Image:
     result = img
-    if settings.preprocess_autorotate:
-        result = autorotate(result)
     if settings.preprocess_deskew:
         result = deskew(result)
     if settings.preprocess_contrast:

@@ -51,7 +51,6 @@ def _settings(tmp_path, **overrides):
         DB_PATH=str(tmp_path / "data" / "lector.db"),
         RETRY_MAX="3",
         PREPROCESS_DESKEW="false",
-        PREPROCESS_AUTOROTATE="false",
         PREPROCESS_CONTRAST="false",
     )
     base.update(overrides)

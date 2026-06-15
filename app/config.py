@@ -34,9 +34,8 @@ class Settings(BaseSettings):
     retry_max: int = Field(default=3, alias="RETRY_MAX")
     chunk_size_pages: int = Field(default=15, alias="CHUNK_SIZE_PAGES")
 
-    # Vorverarbeitung
+    # Vorverarbeitung (Orientierung übernimmt Document AI, kein lokales Auto-Rotate)
     preprocess_deskew: bool = Field(default=True, alias="PREPROCESS_DESKEW")
-    preprocess_autorotate: bool = Field(default=True, alias="PREPROCESS_AUTOROTATE")
     preprocess_contrast: bool = Field(default=True, alias="PREPROCESS_CONTRAST")
 
     # Watch-Folder-Vollständigkeitsprüfung

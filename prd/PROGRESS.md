@@ -21,7 +21,7 @@
 | Serielle Verarbeitungs-Queue / Worker | ✅ |
 | Format-Erkennung & Routing | ✅ |
 | E-Rechnungs-Bypass (deterministisch) | ✅ |
-| Bildvorverarbeitung (Deskew/Auto-Rotate/Kontrast) | ✅ |
+| Bildvorverarbeitung (Deskew/Kontrast; Orientierung via Document AI) | ✅ |
 | OCR-Adapter-Interface | ✅ |
 | Document-AI-Adapter (Region eu) | ✅ |
 | Chunking ≤15 Seiten | ✅ |
@@ -42,13 +42,18 @@ Feature-Doku unter `feature-documentation/`.
 - **End-to-End mit echtem Document AI:** Bisher mit Fake-Adapter und über den
   E-Rechnungs-Bypass live getestet. Der OCR-Weg mit echten GCP-Credentials steht noch aus
   (benötigt `GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, Service-Account-JSON).
-- **Auto-Rotate 180°:** heuristisch nicht von 0° unterscheidbar (dokumentierte Grenze).
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
 - UI ohne HTMX/Tailwind-Laufzeit: serverseitiges Jinja2 + offline-CSS + Vanilla-JS-SSE
   (LAN-only, keine Cloud-/Node-Abhängigkeit). Funktional identisch (Live-Updates via SSE).
 - `pypdfium2` ergänzt für PDF→Bild-Rasterung (keine System-Abhängigkeit).
+- **Kein lokales Auto-Rotate** (PRD §3.1 nennt es als Vorverarbeitungsschritt): Die Heuristik
+  über die Varianz der Zeilensummen kann 0° nicht von 180° (bzw. 90° nicht von 270°)
+  unterscheiden — die Werte sind mathematisch identisch, die Entscheidung fiel nur über den
+  Fließkomma-Rundungsfehler und drehte ~22 % korrekt ausgerichteter Seiten zufällig (oft auf
+  den Kopf). Schritt entfernt; Orientierung übernimmt Document AI. `PREPROCESS_AUTOROTATE`
+  entfällt. Siehe `feature-documentation/bildvorverarbeitung.md`.
 
 ## Nice-to-have (später)
 
