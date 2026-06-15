@@ -99,6 +99,64 @@ gcloud iam service-accounts keys create docai-sa.json \
 Damit hast du die drei Werte `GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, `DOCAI_LOCATION=eu`
 sowie die `docai-sa.json` — alles, was Lector zur OCR benötigt.
 
+## Paperless-Integration: GiroCode & SevDesk-Export
+
+Zusätzlich zum OCR-Veredelungspfad (`scan-in → consume`) bietet Lector ein **entkoppeltes
+Zusatz-Feature**, das die Richtung umdreht: Es liest Rechnungen **aus** Paperless, erzeugt
+GiroCode-QR-Codes für die Überweisung und exportiert getaggte Belege nach SevDesk — und schreibt
+den Status (Zahldaten, Export-Zeitpunkt, „überwiesen") an das Paperless-Dokument zurück. Ein
+Hintergrund-Worker gleicht dazu periodisch alle Dokumente des konfigurierten Rechnungs-
+Dokumententyps ab; die Bedienung läuft über die Lector-UI unter `/invoices`.
+
+Das Feature ist **standardmäßig deaktiviert** und stört den OCR-Pfad nicht. Es wird erst durch
+`FEATURE_PAPERLESS_SYNC=true` (GiroCode) bzw. zusätzlich `FEATURE_SEVDESK_EXPORT=true` (SevDesk)
+aktiv. Details: [`feature-documentation/paperless-integration/`](feature-documentation/paperless-integration/README.md).
+
+### Umgebungsvariablen
+
+Alle Variablen sind optional und haben Defaults — ohne `FEATURE_PAPERLESS_SYNC=true` bleiben sie
+wirkungslos. Vollständige Vorlage in `.env.example`.
+
+**Paperless-Abgleich (Voraussetzung für GiroCode und SevDesk):**
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `FEATURE_PAPERLESS_SYNC` | `false` | Haupt-Schalter. `true` aktiviert den periodischen Abgleich gegen die Paperless-API und die `/invoices`-UI. Bei `false` ist das gesamte Feature inaktiv. |
+| `PAPERLESS_URL` | — | Basis-URL der Paperless-Instanz **ohne** abschließendes `/api` (im Compose-Netz z. B. `http://webserver:8000`). |
+| `PAPERLESS_TOKEN` | — | API-Token aus Paperless (Profil → API-Token). Erforderlich für Lese- und Rückschreib-Zugriff. |
+| `PAPERLESS_INVOICE_DOCTYPE` | `Rechnung` | Name des Paperless-**Dokumententyps**, der ein Dokument als Rechnung kennzeichnet. Nur solche Dokumente werden abgeglichen. |
+| `PAPERLESS_SYNC_INTERVAL_SECONDS` | `300.0` | Intervall (Sekunden) zwischen zwei Abgleich-Läufen des Hintergrund-Workers. |
+| `PAPERLESS_AUTO_CREATE_FIELDS` | `true` | Legt fehlende Paperless-Custom-Fields/-Tags (s. u.) beim Start automatisch an. Bei `false` müssen sie manuell in Paperless existieren. |
+
+**GiroCode (EPC069-12-Überweisungs-QR):**
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `GIROCODE_CREDITOR_FROM_CORRESPONDENT` | `true` | Leitet den Gläubigernamen aus dem Paperless-**Korrespondenten** ab, falls er nicht aus dem Beleg (E-Rechnung-XML bzw. OCR-Heuristik) bestimmbar ist. |
+
+**SevDesk-Export:**
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `FEATURE_SEVDESK_EXPORT` | `false` | Schalter für den Beleg-Upload nach SevDesk. Setzt einen aktiven Paperless-Sync voraus. |
+| `SEVDESK_API_TOKEN` | — | API-Token deines SevDesk-Kontos. |
+| `SEVDESK_BASE_URL` | `https://my.sevdesk.de/api/v1` | API-Endpunkt von SevDesk (i. d. R. unverändert lassen). |
+| `SEVDESK_TAG` | `sevdesk` | Paperless-**Tag**, der ein Dokument für den Export vormerkt. Sobald ein Dokument diesen Tag trägt, wird es beim Sync erfasst. |
+| `SEVDESK_AUTO_EXPORT` | `false` | `true` = automatischer Upload direkt beim Sync; `false` = nur vormerken, der eigentliche Export wird manuell in der `/invoices`-UI bestätigt. |
+
+**Namen der Paperless-Custom-Fields / -Tags für den Rückschrieb** (anpassen, falls in Paperless
+andere Bezeichnungen verwendet werden):
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `CF_GIRO_IBAN` | `Zahlung IBAN` | Custom Field für die erkannte Zahlungs-IBAN. |
+| `CF_GIRO_AMOUNT` | `Zahlbetrag` | Custom Field für den Zahlbetrag. |
+| `CF_SEVDESK_ID` | `SevDesk-Beleg` | Custom Field für die SevDesk-Beleg-ID nach erfolgtem Export. |
+| `CF_EXPORTED_AT` | `SevDesk-Export am` | Custom Field für den Zeitpunkt des SevDesk-Exports. |
+| `CF_PAID` | `Überwiesen` | Custom Field für den Bezahlt-Status. |
+| `TAG_SEVDESK_DONE` | `sevdesk-exportiert` | Tag, der nach erfolgreichem Export am Dokument gesetzt wird. |
+| `TAG_PAID` | `überwiesen` | Tag, der ein als bezahlt markiertes Dokument kennzeichnet. |
+
 ## Einbindung in Paperless-ngx auf dem Zettlab NAS
 
 > **Hinweis zu Docker auf ZettaOS:** Der Zettlab NAS bringt eine Docker-Laufzeit mit, die sich

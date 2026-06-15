@@ -116,6 +116,30 @@ services:
       TZ: Europe/Berlin
       PUID: 1000
       PGID: 1000
+      # ---- Paperless-Integration (entkoppeltes Zusatz-Feature) ----
+      # GiroCode-Anzeige + SevDesk-Export. Standardmaessig AUS.
+      # Erst aktiv, wenn FEATURE_PAPERLESS_SYNC=true gesetzt ist.
+      FEATURE_PAPERLESS_SYNC: "false"
+      PAPERLESS_URL: http://webserver:8000     # Basis-URL der Paperless-Instanz (ohne /api)
+      PAPERLESS_TOKEN: ${PAPERLESS_API_TOKEN}  # API-Token aus Paperless (Profil -> API-Token)
+      PAPERLESS_INVOICE_DOCTYPE: Rechnung      # Dokumententyp, der Rechnungen markiert
+      PAPERLESS_SYNC_INTERVAL_SECONDS: "300.0" # Abgleich-Intervall des Hintergrund-Workers
+      PAPERLESS_AUTO_CREATE_FIELDS: "true"     # fehlende Custom Fields / Tags selbst anlegen
+      GIROCODE_CREDITOR_FROM_CORRESPONDENT: "true"  # Glaeubigername aus Korrespondent ableiten
+      # SevDesk-Export (leichtgewichtiger Beleg-Upload)
+      FEATURE_SEVDESK_EXPORT: "false"
+      SEVDESK_API_TOKEN: ${SEVDESK_API_TOKEN}
+      SEVDESK_BASE_URL: https://my.sevdesk.de/api/v1
+      SEVDESK_TAG: sevdesk                     # Paperless-Tag, der den Export ausloest
+      SEVDESK_AUTO_EXPORT: "false"             # true = auto, false = nur vormerken (manuell im UI)
+      # Namen der Paperless-Custom-Fields / -Tags fuer den Rueckschrieb ans Dokument
+      CF_GIRO_IBAN: Zahlung IBAN
+      CF_GIRO_AMOUNT: Zahlbetrag
+      CF_SEVDESK_ID: SevDesk-Beleg
+      CF_EXPORTED_AT: SevDesk-Export am
+      CF_PAID: Überwiesen
+      TAG_SEVDESK_DONE: sevdesk-exportiert
+      TAG_PAID: überwiesen
 
   # KI-Tagging/Titel ueber paperless-gpt. NUR Tagging, KEIN OCR:
   # Die OCR-Pipeline startet ausschliesslich beim Tag "paperless-gpt-ocr-auto" —
