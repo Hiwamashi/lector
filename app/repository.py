@@ -22,13 +22,15 @@ from .models import (
     GiroStatus,
     InvoiceEventType,
     PaperlessInvoice,
+    RecipientCache,
+    RecipientStatus,
     SevdeskStatus,
 )
 
 _INVOICE_COLUMNS = (
     "id, paperless_id, title, correspondent, creditor_name, iban, bic, amount, currency, "
     "purpose, source, giro_status, sevdesk_status, sevdesk_voucher_id, paid, exported_at, "
-    "written_back_at, last_synced_at, error_message, created_at"
+    "written_back_at, last_synced_at, error_message, document_date, created_at"
 )
 
 _DOC_COLUMNS = (
@@ -46,6 +48,23 @@ def _parse_dt(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value).replace(tzinfo=UTC)
     except ValueError:
         return None
+
+
+def _normalize_doc_date(value: str | None) -> str | None:
+    """Bringt ein Dokumentdatum auf eine kanonische, lexikografisch sortierbare Form.
+
+    Paperless liefert ``created`` als ISO-8601 mit Zeitzonen-Offset (z.B. ``+01:00`` bzw.
+    ``+02:00`` über die DST-Grenze). Da ``ORDER BY`` auf dem rohen TEXT arbeitet, würde der
+    Offset-Suffix die lexikografische Sortierung gegenüber der wahren Reihenfolge verfälschen.
+    Wir verwerfen den Offset (konsistent zu ``_parse_dt``, das die Wall-Clock-Zeit als UTC liest),
+    sodass die Sortierung der Wall-Clock-Zeit entspricht. Nicht parsebare Werte bleiben unverändert.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None).isoformat()
+    except ValueError:
+        return value
 
 
 def _row_to_document(row: sqlite3.Row) -> Document:
@@ -90,6 +109,7 @@ def _parse_invoice(row: sqlite3.Row) -> PaperlessInvoice:
         written_back_at=_parse_dt(row["written_back_at"]),
         last_synced_at=_parse_dt(row["last_synced_at"]),
         error_message=row["error_message"],
+        document_date=_parse_dt(row["document_date"]),
         created_at=_parse_dt(row["created_at"]),
     )
 
@@ -116,6 +136,10 @@ class Repository:
 
     def _notify_invoice(self, invoice_id: int) -> None:
         self._emit(f"inv:{invoice_id}")
+
+    def notify_recipient(self, paperless_id: int) -> None:
+        """Signalisiert der UI eine Änderung an der Empfänger-Übersicht (SSE-Token)."""
+        self._emit(f"rec:{paperless_id}")
 
     def close(self) -> None:
         with self._lock:
@@ -295,20 +319,27 @@ class Repository:
     # ---- paperless_invoices (entkoppeltes GiroCode/SevDesk-Feature) ------
 
     def upsert_invoice(
-        self, *, paperless_id: int, title: str | None, correspondent: str | None
+        self,
+        *,
+        paperless_id: int,
+        title: str | None,
+        correspondent: str | None,
+        document_date: str | None = None,
     ) -> int:
-        """Legt eine Rechnung an bzw. aktualisiert Titel/Korrespondent + Sync-Zeitpunkt.
+        """Legt eine Rechnung an bzw. aktualisiert Titel/Korrespondent/Datum + Sync-Zeitpunkt.
 
         Bereits ermittelte Zahldaten und der Export-/Bezahlt-Status bleiben unangetastet.
         """
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        doc_date = _normalize_doc_date(document_date)
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO paperless_invoices (paperless_id, title, correspondent, "
-                "last_synced_at) VALUES (?, ?, ?, ?) "
+                "document_date, last_synced_at) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(paperless_id) DO UPDATE SET title=excluded.title, "
-                "correspondent=excluded.correspondent, last_synced_at=excluded.last_synced_at",
-                (paperless_id, title, correspondent, now),
+                "correspondent=excluded.correspondent, document_date=excluded.document_date, "
+                "last_synced_at=excluded.last_synced_at",
+                (paperless_id, title, correspondent, doc_date, now),
             )
             self._conn.commit()
             row = self._conn.execute(
@@ -333,11 +364,24 @@ class Repository:
             ).fetchone()
         return _parse_invoice(row) if row else None
 
+    # Sortierbare Spalten der Rechnungsliste → SQL-Ausdruck (Whitelist gegen SQL-Injection).
+    INVOICE_SORT_COLUMNS = {
+        "date": "document_date",
+        "title": "title",
+        "correspondent": "correspondent",
+        "amount": "amount",
+        "giro": "giro_status",
+        "sevdesk": "sevdesk_status",
+        "paid": "paid",
+    }
+
     def list_invoices(
         self,
         *,
         sevdesk_status: SevdeskStatus | None = None,
         search: str | None = None,
+        sort: str | None = None,
+        descending: bool = True,
         limit: int = 200,
         offset: int = 0,
     ) -> list[PaperlessInvoice]:
@@ -350,11 +394,15 @@ class Repository:
             clauses.append("(title LIKE ? OR correspondent LIKE ?)")
             params.extend([f"%{search}%", f"%{search}%"])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        column = self.INVOICE_SORT_COLUMNS.get(sort or "", "document_date")
+        order_dir = "DESC" if descending else "ASC"
+        # Eindeutige Sekundärsortierung über id, damit die Reihenfolge stabil bleibt.
+        order_by = f"ORDER BY {column} {order_dir}, id DESC"
         params.extend([limit, offset])
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT {_INVOICE_COLUMNS} FROM paperless_invoices {where} "
-                "ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"{order_by} LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         return [_parse_invoice(r) for r in rows]
@@ -489,3 +537,70 @@ class Repository:
                 (invoice_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- document_recipients (KI-Empfänger-Vorschlag-Cache) --------------
+
+    @staticmethod
+    def _parse_recipient_cache(row: sqlite3.Row) -> RecipientCache:
+        return RecipientCache(
+            paperless_id=row["paperless_id"],
+            suggested_label=row["suggested_label"],
+            confidence=row["confidence"],
+            reasoning=row["reasoning"],
+            status=RecipientStatus(row["status"]),
+            updated_at=_parse_dt(row["updated_at"]),
+        )
+
+    def get_recipient_cache(self, paperless_id: int) -> RecipientCache | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT paperless_id, suggested_label, confidence, reasoning, status, updated_at "
+                "FROM document_recipients WHERE paperless_id = ?",
+                (paperless_id,),
+            ).fetchone()
+        return self._parse_recipient_cache(row) if row else None
+
+    def get_recipient_caches(self, paperless_ids: list[int]) -> dict[int, RecipientCache]:
+        """Lädt mehrere Cache-Einträge auf einmal (für die Übersicht)."""
+        if not paperless_ids:
+            return {}
+        placeholders = ",".join("?" for _ in paperless_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT paperless_id, suggested_label, confidence, reasoning, status, updated_at "
+                f"FROM document_recipients WHERE paperless_id IN ({placeholders})",
+                paperless_ids,
+            ).fetchall()
+        return {row["paperless_id"]: self._parse_recipient_cache(row) for row in rows}
+
+    def set_recipient_cache(
+        self,
+        paperless_id: int,
+        *,
+        suggested_label: str | None,
+        confidence: float | None,
+        reasoning: str | None,
+        status: RecipientStatus,
+    ) -> None:
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO document_recipients "
+                "(paperless_id, suggested_label, confidence, reasoning, status, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(paperless_id) DO UPDATE SET suggested_label=excluded.suggested_label, "
+                "confidence=excluded.confidence, reasoning=excluded.reasoning, "
+                "status=excluded.status, updated_at=excluded.updated_at",
+                (paperless_id, suggested_label, confidence, reasoning, status.value, now),
+            )
+            self._conn.commit()
+        self.notify_recipient(paperless_id)
+
+    def mark_recipient_applied(self, paperless_id: int) -> None:
+        self.set_recipient_cache(
+            paperless_id,
+            suggested_label=None,
+            confidence=None,
+            reasoning=None,
+            status=RecipientStatus.APPLIED,
+        )

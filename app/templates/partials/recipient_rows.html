@@ -1,0 +1,41 @@
+{% if not rows %}
+<tr class="empty"><td colspan="5">Keine Dokumente.</td></tr>
+{% endif %}
+{% for row in rows %}
+<tr>
+  <td class="invoice-date">{{ row.document_date | fmt_date }}</td>
+  <td class="filename">{{ row.title }}</td>
+  <td>{{ row.correspondent or "—" }}</td>
+  <td class="recipient-cell">
+    <form method="post" action="/empfaenger/{{ row.paperless_id }}" class="recipient-form">
+      <input type="hidden" name="page" value="{{ page }}" />
+      <input type="hidden" name="q" value="{{ filters.q }}" />
+      <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
+      <select name="recipient">
+        <option value="">— kein —</option>
+        {% for opt in options %}
+        <option value="{{ opt }}" {% if row.current_recipient == opt %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Setzen</button>
+    </form>
+    {% if row.cache and row.cache.status == "suggested" and not row.current_recipient %}
+    <span class="badge badge--suggestion" title="{{ row.cache.reasoning or '' }}">
+      KI: {{ row.cache.suggested_label }}{% if row.cache.confidence is not none %} ({{ (row.cache.confidence * 100) | round | int }}%){% endif %}
+    </span>
+    {% elif row.cache and row.cache.status == "unknown" and not row.current_recipient %}
+    <span class="badge badge--suggestion-unknown" title="{{ row.cache.reasoning or '' }}">KI: unklar</span>
+    {% endif %}
+  </td>
+  <td>
+    {% if feature_llm %}
+    <form method="post" action="/empfaenger/{{ row.paperless_id }}/suggest" class="recipient-form">
+      <input type="hidden" name="page" value="{{ page }}" />
+      <input type="hidden" name="q" value="{{ filters.q }}" />
+      <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
+      <button type="submit" class="link-button" title="KI-Vorschlag für dieses Dokument">KI-Vorschlag</button>
+    </form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}

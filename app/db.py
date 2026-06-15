@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS paperless_invoices (
     written_back_at   TEXT,
     last_synced_at    TEXT,
     error_message     TEXT,
+    document_date     TEXT,
     created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -77,6 +78,20 @@ CREATE TABLE IF NOT EXISTS invoice_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoice_events_invoice ON invoice_events(invoice_id);
+
+-- ----------------------------------------------------------------------------
+-- Empfänger-Zuordnung: Cache des KI-Vorschlags je Paperless-Dokument. Der
+-- maßgebliche Empfänger-Wert lebt im Paperless-Custom-Field; hier liegt nur der
+-- Vorschlag + Review-Status, damit die Übersicht ohne erneuten LLM-Aufruf lädt.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS document_recipients (
+    paperless_id    INTEGER PRIMARY KEY,
+    suggested_label TEXT,
+    confidence      REAL,
+    reasoning       TEXT,
+    status          TEXT    NOT NULL DEFAULT 'none',
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -91,6 +106,21 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+# Spalten, die nach dem ersten Release ergänzt wurden und in bestehenden DBs
+# per ALTER TABLE nachgezogen werden müssen (CREATE TABLE IF NOT EXISTS greift dort nicht).
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("paperless_invoices", "document_date", "TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _MIGRATIONS:
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()

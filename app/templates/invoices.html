@@ -21,12 +21,29 @@
   <button type="submit">Filtern</button>
 </form>
 
+{% macro sort_th(key, label) -%}
+  {%- set is_active = sort.key == key -%}
+  {%- set next_dir = "desc" if (is_active and sort.dir == "asc") else "asc" -%}
+  <th class="sortable {{ 'sorted' if is_active else '' }}">
+    <a href="/invoices?sort={{ key }}&dir={{ next_dir }}&q={{ filters.q|urlencode }}&sevdesk={{ filters.sevdesk|urlencode }}">
+      {{ label }}
+      <span class="sort-arrow">{% if is_active %}{{ "▲" if sort.dir == "asc" else "▼" }}{% else %}⇅{% endif %}</span>
+    </a>
+  </th>
+{%- endmacro %}
+
 <table class="history"
-       data-fragment="/fragment/invoices?sevdesk={{ filters.sevdesk }}&q={{ filters.q }}">
+       data-fragment="/fragment/invoices?sevdesk={{ filters.sevdesk|urlencode }}&q={{ filters.q|urlencode }}&sort={{ sort.key }}&dir={{ sort.dir }}">
   <thead>
     <tr>
-      <th>Titel</th><th>Korrespondent</th><th>Betrag</th>
-      <th>GiroCode</th><th>SevDesk</th><th>Überwiesen</th><th></th>
+      {{ sort_th("date", "Datum") }}
+      {{ sort_th("title", "Titel") }}
+      {{ sort_th("correspondent", "Korrespondent") }}
+      {{ sort_th("amount", "Betrag") }}
+      {{ sort_th("giro", "GiroCode") }}
+      {{ sort_th("sevdesk", "SevDesk") }}
+      {{ sort_th("paid", "Überwiesen") }}
+      <th></th>
     </tr>
   </thead>
   <tbody id="invoice-body">

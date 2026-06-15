@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     feature_paperless_sync: bool = Field(default=False, alias="FEATURE_PAPERLESS_SYNC")
     paperless_url: str = Field(default="", alias="PAPERLESS_URL")
     paperless_token: str = Field(default="", alias="PAPERLESS_TOKEN")
+    # Öffentliche, im Browser erreichbare Paperless-URL für den "In Paperless öffnen"-Link.
+    # Im Compose-Stack ist PAPERLESS_URL die container-interne Adresse (http://webserver:8000),
+    # die im Browser nicht auflösbar ist — daher hier die externe URL setzen.
+    # Leer = Fallback auf paperless_url.
+    paperless_public_url: str = Field(default="", alias="PAPERLESS_PUBLIC_URL")
     # Name des Paperless-Dokumententyps, der Rechnungen kennzeichnet.
     paperless_invoice_doctype: str = Field(default="Rechnung", alias="PAPERLESS_INVOICE_DOCTYPE")
     paperless_sync_interval_seconds: float = Field(
@@ -92,6 +97,21 @@ class Settings(BaseSettings):
     cf_paid: str = Field(default="Überwiesen", alias="CF_PAID")
     tag_sevdesk_done: str = Field(default="sevdesk-exportiert", alias="TAG_SEVDESK_DONE")
     tag_paid: str = Field(default="überwiesen", alias="TAG_PAID")
+
+    # ---- Empfänger-Zuordnung (Paperless-Custom-Field "Empfänger", Typ select) ----
+    # Name des kuratierten select-Custom-Fields in Paperless. Wird NICHT automatisch
+    # angelegt — die Auswahloptionen (Familienmitglieder) pflegst du in Paperless.
+    cf_recipient: str = Field(default="Empfänger", alias="CF_RECIPIENT")
+    # KI-gestützter Empfänger-Vorschlag (reaktiviert die paperless-gpt-Anthropic-Anbindung).
+    feature_recipient_llm: bool = Field(default=False, alias="FEATURE_RECIPIENT_LLM")
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    recipient_llm_model: str = Field(default="claude-sonnet-4-6", alias="RECIPIENT_LLM_MODEL")
+    # true = Vorschlag ab der Konfidenz-Schwelle direkt ins Paperless-Feld schreiben.
+    recipient_llm_auto_apply: bool = Field(default=True, alias="RECIPIENT_LLM_AUTO_APPLY")
+    # Mindest-Konfidenz (0..1) für das automatische Setzen; darunter nur vorschlagen.
+    recipient_llm_min_confidence: float = Field(
+        default=0.75, alias="RECIPIENT_LLM_MIN_CONFIDENCE"
+    )
 
     @property
     def partial_suffix_list(self) -> list[str]:

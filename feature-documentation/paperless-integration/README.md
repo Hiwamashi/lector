@@ -30,6 +30,8 @@ vorgemerkt (queued) ── manuell/auto ──► SevDesk-Beleg-Upload ──►
 | [paperless-client.md](paperless-client.md) | `app/paperless.py` — REST-Client (lesen/zurückschreiben) |
 | [sevdesk-export.md](sevdesk-export.md) | `app/sevdesk.py` — Beleg-Upload nach SevDesk |
 | [sync-und-aktionen.md](sync-und-aktionen.md) | `app/paperless_sync.py`, Worker-Loop, UI-Routen |
+| [rechnungs-ui.md](rechnungs-ui.md) | Rechnungs-UI: Dokumentdatum, Spalten-Sortierung, Dokumentvorschau |
+| [empfaenger-zuordnung.md](empfaenger-zuordnung.md) | Empfänger pro Dokument (select-Feld) + KI-Vorschlag (`app/recipient_llm.py`) |
 
 ## Aktivierung (ENV)
 

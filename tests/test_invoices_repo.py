@@ -51,6 +51,45 @@ def test_list_and_filter_invoices(tmp_path):
     assert len(repo.list_invoices(search="Strom")) == 1
 
 
+def test_document_date_is_stored_and_updated(tmp_path):
+    repo = make_repo(tmp_path)
+    inv_id = repo.upsert_invoice(
+        paperless_id=3, title="Miete", correspondent=None, document_date="2026-01-15T00:00:00+01:00"
+    )
+    inv = repo.get_invoice(inv_id)
+    assert inv.document_date is not None
+    assert (inv.document_date.year, inv.document_date.month, inv.document_date.day) == (2026, 1, 15)
+
+    # Erneuter Sync mit geändertem Datum aktualisiert das Feld.
+    repo.upsert_invoice(
+        paperless_id=3, title="Miete", correspondent=None, document_date="2026-02-01T00:00:00+01:00"
+    )
+    assert repo.get_invoice(inv_id).document_date.month == 2
+
+
+def test_list_invoices_sorting(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.upsert_invoice(
+        paperless_id=1, title="Beta", correspondent=None, document_date="2026-03-01"
+    )
+    repo.upsert_invoice(
+        paperless_id=2, title="Alpha", correspondent=None, document_date="2026-01-01"
+    )
+    repo.upsert_invoice(
+        paperless_id=3, title="Gamma", correspondent=None, document_date="2026-02-01"
+    )
+
+    by_title_asc = [i.title for i in repo.list_invoices(sort="title", descending=False)]
+    assert by_title_asc == ["Alpha", "Beta", "Gamma"]
+
+    by_date_desc = [i.paperless_id for i in repo.list_invoices(sort="date", descending=True)]
+    assert by_date_desc == [1, 3, 2]
+
+    # Unbekannte Sortierspalte fällt sicher auf das Datum zurück (keine SQL-Injection).
+    fallback = repo.list_invoices(sort="title); DROP TABLE paperless_invoices;--")
+    assert len(fallback) == 3
+
+
 def test_invoice_events(tmp_path):
     repo = make_repo(tmp_path)
     inv_id = repo.upsert_invoice(paperless_id=9, title="C", correspondent=None)

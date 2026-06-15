@@ -53,9 +53,20 @@ Dokument zurückgeschrieben. Standardmäßig deaktiviert (`FEATURE_PAPERLESS_SYN
 | Neue Tabellen `paperless_invoices` / `invoice_events` | ✅ |
 | Rückschrieb: Custom Fields + Tags + Notiz (Auto-Anlage) | ✅ |
 | Web-UI „Rechnungen" + GiroCode-Anzeige + Aktionen + SSE | ✅ |
+| Rechnungs-UI: Dokumentdatum, sortierbare Spalten, Dokumentvorschau/-Sprung | ✅ |
+| Empfänger-Zuordnung pro Dokument (Paperless select-Feld, `/empfaenger`) | ✅ |
+| KI-Empfänger-Vorschlag (Anthropic, `app/recipient_llm.py`) — einzeln + Batch, Auto-Apply | ✅ |
+| Tabelle `document_recipients` (KI-Vorschlag-Cache) | ✅ |
 
-53 Tests grün (12 neue: GiroCode-Extraktion/EPC/Mod-97, Invoice-Repository). `ruff` sauber.
-Feature-Doku unter `feature-documentation/paperless-integration/`.
+82 Tests grün. `ruff` sauber.
+Feature-Doku unter `feature-documentation/paperless-integration/`
+(neu: `rechnungs-ui.md`, `empfaenger-zuordnung.md`).
+Empfänger-Feature **live gegen die Paperless-Instanz verifiziert**: select-Feld-Auflösung,
+`custom_field_query`-Filter „ohne Empfänger" (1504 Dok.), Setzen/Leeren des Feldes (reversibel)
+und KI-Vorschlag (korrekte Zuordnung bzw. „unbekannt") end-to-end getestet. Dokumentdatum (`created`) und Vorschau-Endpoint
+(`/preview/`, liefert `application/pdf` mit `X-Frame-Options: SAMEORIGIN`) gegen die
+Live-Paperless-Instanz verifiziert — daher wird die Vorschau über einen Lector-Proxy
+ausgeliefert.
 
 **Zu verifizieren (benötigt Zugangsdaten):** End-to-End gegen echte Paperless-Instanz
 (Token/URL/Dokumententyp-Name) und echtes SevDesk-Konto (API-Token, Systemversion 2.0 für

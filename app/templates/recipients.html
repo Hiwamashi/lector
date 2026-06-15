@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Empfänger — Lector{% endblock %}
+{% block content %}
+<h1>Empfänger</h1>
+
+{% if not recipient_enabled %}
+<div class="alert">
+  Paperless-Anbindung fehlt. Setze <code>PAPERLESS_URL</code> und <code>PAPERLESS_TOKEN</code>,
+  um Empfänger an Dokumenten zu pflegen.
+</div>
+{% else %}
+
+{% if not field_present %}
+<div class="alert">
+  Das Custom Field „{{ "Empfänger" }}" (Typ <code>select</code>) wurde in Paperless nicht
+  gefunden. Lege es dort mit den gewünschten Optionen an (Lector legt es bewusst nicht selbst an).
+</div>
+{% endif %}
+
+<form class="filters" method="get" action="/empfaenger">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Dokument suchen (Volltext)…" />
+  <label class="checkbox">
+    <input type="checkbox" name="missing" value="1" {% if filters.missing %}checked{% endif %} />
+    nur ohne Empfänger
+  </label>
+  <button type="submit">Filtern</button>
+</form>
+
+<div class="recipient-toolbar">
+  <span class="muted">{{ count }} Dokument(e){% if filters.missing %} ohne Empfänger{% endif %}</span>
+  {% if feature_llm %}
+  <form method="post" action="/empfaenger/suggest-batch">
+    <input type="hidden" name="page" value="{{ page }}" />
+    <input type="hidden" name="q" value="{{ filters.q }}" />
+    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
+    <button type="submit" {% if batch_running %}disabled title="Läuft bereits"{% endif %}>
+      {% if batch_running %}KI-Lauf läuft…{% else %}KI-Vorschlag für alle ohne Empfänger{% endif %}
+    </button>
+  </form>
+  {% endif %}
+</div>
+
+<table class="history" data-fragment="/fragment/empfaenger?{{ fragment_query }}">
+  <thead>
+    <tr>
+      <th>Datum</th>
+      <th>Titel</th>
+      <th>Korrespondent</th>
+      <th>Empfänger</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="recipient-body">
+    {% include "partials/recipient_rows.html" %}
+  </tbody>
+</table>
+
+<nav class="pager">
+  {% if page > 1 %}
+  <a class="link" href="/empfaenger?page={{ page - 1 }}&q={{ filters.q|urlencode }}&missing={{ '1' if filters.missing else '' }}">← Zurück</a>
+  {% endif %}
+  <span class="muted">Seite {{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}
+  <a class="link" href="/empfaenger?page={{ page + 1 }}&q={{ filters.q|urlencode }}&missing={{ '1' if filters.missing else '' }}">Weiter →</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

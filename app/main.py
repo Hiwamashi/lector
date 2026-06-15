@@ -11,16 +11,17 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .config import get_settings
 from .events import EventBus
 from .girocode import PaymentData, qr_svg
-from .models import DocStatus, GiroStatus, SevdeskStatus
+from .models import DocStatus, GiroStatus, RecipientStatus, SevdeskStatus
 from .ocr import get_adapter
 from .paperless_sync import PaperlessSync
 from .repository import Repository
@@ -45,6 +46,12 @@ def _fmt_dt(value: datetime | None) -> str:
     if value is None:
         return "—"
     return value.astimezone().strftime("%d.%m.%Y %H:%M")
+
+
+def _fmt_date(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    return value.astimezone().strftime("%d.%m.%Y")
 
 
 SEVDESK_LABELS = {
@@ -95,10 +102,20 @@ def _parse_amount(value: str | None) -> float | None:
         return None
 
 
+RECIPIENT_STATUS_LABELS = {
+    RecipientStatus.NONE: "",
+    RecipientStatus.SUGGESTED: "Vorschlag",
+    RecipientStatus.APPLIED: "Gesetzt",
+    RecipientStatus.UNKNOWN: "Unklar",
+}
+
+
 templates.env.filters["fmt_dt"] = _fmt_dt
+templates.env.filters["fmt_date"] = _fmt_date
 templates.env.globals["status_labels"] = STATUS_LABELS
 templates.env.globals["sevdesk_labels"] = SEVDESK_LABELS
 templates.env.globals["giro_labels"] = GIRO_LABELS
+templates.env.globals["recipient_status_labels"] = RECIPIENT_STATUS_LABELS
 
 
 @asynccontextmanager
@@ -225,22 +242,35 @@ def _invoice_filters(sevdesk: str | None, q: str | None):
     return status_enum, (q or None)
 
 
+def _invoice_sort(sort: str | None, direction: str | None) -> tuple[str, bool]:
+    """Validiert Sortierspalte (Whitelist) und -richtung; Default: Datum absteigend."""
+    key = sort if sort in Repository.INVOICE_SORT_COLUMNS else "date"
+    descending = (direction or "desc").lower() != "asc"
+    return key, descending
+
+
 @app.get("/invoices", response_class=HTMLResponse)
 async def invoices(
     request: Request,
     sevdesk: str | None = Query(None),
     q: str | None = Query(None),
+    sort: str | None = Query(None),
+    dir: str | None = Query(None),
 ):
     repo: Repository = request.app.state.repo
     settings = request.app.state.settings
     status_enum, search = _invoice_filters(sevdesk, q)
-    items = repo.list_invoices(sevdesk_status=status_enum, search=search)
+    sort_key, descending = _invoice_sort(sort, dir)
+    items = repo.list_invoices(
+        sevdesk_status=status_enum, search=search, sort=sort_key, descending=descending
+    )
     return templates.TemplateResponse(
         request,
         "invoices.html",
         {
             "invoices": items,
             "filters": {"sevdesk": sevdesk or "", "q": q or ""},
+            "sort": {"key": sort_key, "dir": "desc" if descending else "asc"},
             "feature_sync": settings.feature_paperless_sync,
             "feature_sevdesk": settings.feature_sevdesk_export,
         },
@@ -252,10 +282,15 @@ async def invoices_fragment(
     request: Request,
     sevdesk: str | None = Query(None),
     q: str | None = Query(None),
+    sort: str | None = Query(None),
+    dir: str | None = Query(None),
 ):
     repo: Repository = request.app.state.repo
     status_enum, search = _invoice_filters(sevdesk, q)
-    items = repo.list_invoices(sevdesk_status=status_enum, search=search)
+    sort_key, descending = _invoice_sort(sort, dir)
+    items = repo.list_invoices(
+        sevdesk_status=status_enum, search=search, sort=sort_key, descending=descending
+    )
     return templates.TemplateResponse(
         request, "partials/invoice_rows.html", {"invoices": items}
     )
@@ -267,11 +302,15 @@ def _invoice_detail_context(request: Request, invoice_id: int):
     inv = repo.get_invoice(invoice_id)
     if inv is None:
         return None
+    public_url = (settings.paperless_public_url or settings.paperless_url).rstrip("/")
+    document_url = f"{public_url}/documents/{inv.paperless_id}/details" if public_url else ""
     return {
         "inv": inv,
         "giro_svg": _giro_svg(inv),
         "events": repo.list_invoice_events(invoice_id),
         "feature_sevdesk": settings.feature_sevdesk_export,
+        "document_url": document_url,
+        "preview_enabled": bool(settings.paperless_url and settings.paperless_token),
     }
 
 
@@ -289,6 +328,25 @@ async def invoice_detail_fragment(request: Request, invoice_id: int):
     if ctx is None:
         return HTMLResponse("", status_code=404)
     return templates.TemplateResponse(request, "partials/invoice_detail_body.html", ctx)
+
+
+@app.get("/invoices/{invoice_id}/preview")
+async def invoice_preview(request: Request, invoice_id: int):
+    """Reicht die Paperless-Dokumentvorschau über Lectors eigene Origin durch.
+
+    So funktioniert die eingebettete Vorschau ohne Paperless-Session im Browser und
+    ohne X-Frame-Options-/CORS-Probleme — die Token-Auth läuft serverseitig.
+    """
+    sync: PaperlessSync = request.app.state.sync
+    try:
+        result = await sync.fetch_preview(invoice_id)
+    except Exception:
+        log.exception("Vorschau für Rechnung %s konnte nicht geladen werden", invoice_id)
+        return Response("Vorschau nicht verfügbar", status_code=502)
+    if result is None:
+        return Response("Vorschau nicht verfügbar", status_code=404)
+    content, content_type = result
+    return Response(content, media_type=content_type, headers={"X-Frame-Options": "SAMEORIGIN"})
 
 
 @app.post("/invoices/{invoice_id}/giro")
@@ -325,6 +383,108 @@ async def invoice_paid(request: Request, invoice_id: int, paid: str = Form("true
     sync: PaperlessSync = request.app.state.sync
     await sync.set_paid(invoice_id, paid.lower() in ("1", "true", "on", "yes"))
     return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+
+
+def _recipient_redirect(page: int, q: str | None, missing: bool) -> str:
+    params = {"page": page}
+    if q:
+        params["q"] = q
+    if missing:
+        params["missing"] = "1"
+    return f"/empfaenger?{urlencode(params)}"
+
+
+async def _recipient_context(request: Request, page: int, q: str | None, missing: bool) -> dict:
+    sync: PaperlessSync = request.app.state.sync
+    rows, page_obj, field = await sync.list_recipient_documents(
+        page=page, search=q, only_missing=missing
+    )
+    frag = {"q": q or "", "missing": "1" if missing else "", "page": page_obj.page}
+    return {
+        "rows": rows,
+        "options": field.labels if field else [],
+        "field_present": field is not None,
+        "page": page_obj.page,
+        "total_pages": page_obj.total_pages,
+        "count": page_obj.count,
+        "filters": {"q": q or "", "missing": missing},
+        "fragment_query": urlencode(frag),
+        "feature_llm": sync.recipient_llm_enabled,
+        "recipient_enabled": sync.recipient_enabled,
+        "batch_running": sync.batch_running,
+    }
+
+
+@app.get("/empfaenger", response_class=HTMLResponse)
+async def recipients(
+    request: Request,
+    page: int = Query(1, ge=1),
+    q: str | None = Query(None),
+    missing: str | None = Query(None),
+):
+    sync: PaperlessSync = request.app.state.sync
+    if not sync.recipient_enabled:
+        return templates.TemplateResponse(
+            request, "recipients.html", {"recipient_enabled": False, "rows": []}
+        )
+    ctx = await _recipient_context(request, page, q or None, bool(missing))
+    return templates.TemplateResponse(request, "recipients.html", ctx)
+
+
+@app.get("/fragment/empfaenger", response_class=HTMLResponse)
+async def recipients_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    q: str | None = Query(None),
+    missing: str | None = Query(None),
+):
+    sync: PaperlessSync = request.app.state.sync
+    if not sync.recipient_enabled:
+        return HTMLResponse("", status_code=404)
+    ctx = await _recipient_context(request, page, q or None, bool(missing))
+    return templates.TemplateResponse(request, "partials/recipient_rows.html", ctx)
+
+
+@app.post("/empfaenger/{paperless_id}")
+async def recipient_set(
+    request: Request,
+    paperless_id: int,
+    recipient: str = Form(""),
+    page: int = Form(1),
+    q: str = Form(""),
+    missing: str = Form(""),
+):
+    sync: PaperlessSync = request.app.state.sync
+    await sync.set_recipient(paperless_id, recipient.strip() or None)
+    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
+
+
+@app.post("/empfaenger/{paperless_id}/suggest")
+async def recipient_suggest(
+    request: Request,
+    paperless_id: int,
+    page: int = Form(1),
+    q: str = Form(""),
+    missing: str = Form(""),
+):
+    sync: PaperlessSync = request.app.state.sync
+    try:
+        await sync.suggest_recipient(paperless_id)
+    except Exception:
+        log.exception("KI-Empfänger-Vorschlag für Dokument %s fehlgeschlagen", paperless_id)
+    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
+
+
+@app.post("/empfaenger/suggest-batch")
+async def recipient_suggest_batch(
+    request: Request,
+    page: int = Form(1),
+    q: str = Form(""),
+    missing: str = Form(""),
+):
+    sync: PaperlessSync = request.app.state.sync
+    sync.start_batch()
+    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
 
 
 @app.get("/events")

@@ -64,7 +64,25 @@
   </form>
 </section>
 
+{% if document_url %}
+<section class="doc-preview">
+  <div class="doc-preview-head">
+    <h2>Dokument</h2>
+    <a class="link" href="{{ document_url }}" target="_blank" rel="noopener">In Paperless öffnen ↗</a>
+  </div>
+  {% if preview_enabled %}
+  <object class="doc-frame" data="/invoices/{{ inv.id }}/preview" type="application/pdf">
+    <p class="empty">
+      Vorschau kann nicht angezeigt werden.
+      <a class="link" href="/invoices/{{ inv.id }}/preview" target="_blank" rel="noopener">In neuem Tab öffnen</a>
+    </p>
+  </object>
+  {% endif %}
+</section>
+{% endif %}
+
 <dl class="meta">
+  <dt>Dokumentdatum</dt><dd>{{ inv.document_date | fmt_date }}</dd>
   <dt>Paperless-ID</dt><dd>{{ inv.paperless_id }}</dd>
   <dt>Quelle Zahldaten</dt><dd>{{ inv.source or "—" }}</dd>
   <dt>Überwiesen</dt><dd>{{ "Ja" if inv.paid else "Nein" }}</dd>

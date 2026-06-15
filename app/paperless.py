@@ -8,8 +8,10 @@ lesen sowie Custom Fields, Tags und Notizen zurückschreiben. Authentifizierung 
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 
 import httpx
 
@@ -19,6 +21,7 @@ log = logging.getLogger("lector.paperless")
 CF_TYPE_STRING = "string"
 CF_TYPE_DATE = "date"
 CF_TYPE_BOOLEAN = "boolean"
+CF_TYPE_SELECT = "select"
 
 
 @dataclass
@@ -31,6 +34,41 @@ class PaperlessDocument:
     tag_ids: list[int]
     custom_fields: list[dict]
     original_file_name: str | None
+    # Dokumentdatum aus Paperless (ISO-8601, Feld ``created``).
+    created: str | None = None
+
+
+@dataclass
+class SelectField:
+    """Ein Paperless-Custom-Field vom Typ ``select`` inkl. Optionen-Mapping.
+
+    Bei select-Feldern ist der gespeicherte Wert die Options-ID (z.B. ``a4B0i4oDHTPB9g2M``),
+    nicht das sichtbare Label. ``label_to_id`` / ``id_to_label`` übersetzen zwischen beidem.
+    """
+
+    field_id: int
+    label_to_id: dict[str, str] = dc_field(default_factory=dict)
+    id_to_label: dict[str, str] = dc_field(default_factory=dict)
+
+    @property
+    def labels(self) -> list[str]:
+        return list(self.label_to_id.keys())
+
+
+@dataclass
+class DocumentPage:
+    """Eine Seite der paginierten Dokumentliste."""
+
+    documents: list[PaperlessDocument]
+    count: int
+    page: int
+    page_size: int
+
+    @property
+    def total_pages(self) -> int:
+        if self.page_size <= 0:
+            return 1
+        return max(1, (self.count + self.page_size - 1) // self.page_size)
 
 
 class PaperlessError(RuntimeError):
@@ -42,10 +80,13 @@ class PaperlessClient:
         if not base_url or not token:
             raise PaperlessError("PAPERLESS_URL und PAPERLESS_TOKEN müssen gesetzt sein")
         self._base = base_url.rstrip("/")
+        # follow_redirects: Paperless liefert paginierte ``next``-URLs teils mit http-Schema,
+        # was hinter einem HTTPS-Proxy einen 308-Redirect auslöst — der muss verfolgt werden.
         self._client = httpx.AsyncClient(
             base_url=self._base,
             headers={"Authorization": f"Token {token}", "Accept": "application/json"},
             timeout=timeout,
+            follow_redirects=True,
         )
 
     async def aclose(self) -> None:
@@ -91,6 +132,39 @@ class PaperlessClient:
         raw = await self._paged("/api/documents/", params)
         return [self._to_document(item) for item in raw]
 
+    async def search_documents(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        query: str | None = None,
+        ordering: str = "-created",
+        missing_field_id: int | None = None,
+    ) -> DocumentPage:
+        """Liefert eine einzelne, paginierte Seite der Dokumentliste.
+
+        ``missing_field_id`` filtert über ``custom_field_query`` auf Dokumente, bei denen das
+        angegebene Custom Field NICHT gesetzt ist (Operator ``exists=false``).
+        """
+        params: dict[str, object] = {
+            "page": page,
+            "page_size": page_size,
+            "ordering": ordering,
+        }
+        if query:
+            params["query"] = query
+        if missing_field_id is not None:
+            params["custom_field_query"] = json.dumps(
+                ["AND", [[missing_field_id, "exists", False]]]
+            )
+        resp = await self._client.get("/api/documents/", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        docs = [self._to_document(item) for item in data.get("results", [])]
+        return DocumentPage(
+            documents=docs, count=int(data.get("count", 0)), page=page, page_size=page_size
+        )
+
     async def get_document(self, doc_id: int) -> PaperlessDocument:
         resp = await self._client.get(f"/api/documents/{doc_id}/")
         resp.raise_for_status()
@@ -100,6 +174,11 @@ class PaperlessClient:
         resp = await self._client.get(f"/api/correspondents/{correspondent_id}/")
         resp.raise_for_status()
         return resp.json().get("name")
+
+    async def correspondent_map(self) -> dict[int, str]:
+        """Liefert ``{id: name}`` aller Korrespondenten (eine paginierte Abfrage)."""
+        items = await self._paged("/api/correspondents/")
+        return {int(c["id"]): c.get("name", "") for c in items if c.get("id") is not None}
 
     async def download_original(self, doc_id: int) -> tuple[bytes, str]:
         resp = await self._client.get(
@@ -112,6 +191,18 @@ class PaperlessClient:
             filename = disposition.split("filename=", 1)[1].strip('"; ')
         return resp.content, filename
 
+    async def download_preview(self, doc_id: int) -> tuple[bytes, str]:
+        """Lädt die Vorschau (durchsuchbares PDF) eines Dokuments inkl. Content-Type.
+
+        Wird vom Lector-Backend an die UI weitergereicht, damit die Vorschau über
+        Lectors eigene Origin läuft (Token-Auth serverseitig, kein X-Frame-Options-/
+        CORS-Problem).
+        """
+        resp = await self._client.get(f"/api/documents/{doc_id}/preview/")
+        resp.raise_for_status()
+        content_type = resp.headers.get("Content-Type", "application/pdf")
+        return resp.content, content_type
+
     @staticmethod
     def _to_document(item: dict) -> PaperlessDocument:
         return PaperlessDocument(
@@ -123,6 +214,7 @@ class PaperlessClient:
             tag_ids=list(item.get("tags") or []),
             custom_fields=list(item.get("custom_fields") or []),
             original_file_name=item.get("original_file_name"),
+            created=item.get("created"),
         )
 
     # ---- Custom Fields ---------------------------------------------------
@@ -141,6 +233,42 @@ class PaperlessClient:
         resp.raise_for_status()
         log.info("Custom Field '%s' (%s) in Paperless angelegt", name, data_type)
         return int(resp.json()["id"])
+
+    async def resolve_select_field(self, name: str) -> SelectField | None:
+        """Sucht ein ``select``-Custom-Field nach Namen und liest seine Optionen ein.
+
+        Legt NICHTS an — das Feld und seine Optionen werden in Paperless gepflegt.
+        """
+        for fld in await self.list_custom_fields():
+            if fld.get("name", "").lower() != name.lower():
+                continue
+            if fld.get("data_type") != CF_TYPE_SELECT:
+                log.warning(
+                    "Custom Field '%s' ist kein select-Feld (Typ %s)", name, fld.get("data_type")
+                )
+                return None
+            options = (fld.get("extra_data") or {}).get("select_options") or []
+            label_to_id: dict[str, str] = {}
+            id_to_label: dict[str, str] = {}
+            for opt in options:
+                opt_id, label = opt.get("id"), opt.get("label")
+                if opt_id and label:
+                    label_to_id[label] = opt_id
+                    id_to_label[opt_id] = label
+            return SelectField(
+                field_id=int(fld["id"]), label_to_id=label_to_id, id_to_label=id_to_label
+            )
+        log.warning("Select-Custom-Field '%s' in Paperless nicht gefunden", name)
+        return None
+
+    @staticmethod
+    def select_value(doc: PaperlessDocument, field_id: int) -> str | None:
+        """Liest den gesetzten Options-ID-Wert eines select-Feldes aus einem Dokument."""
+        for cf in doc.custom_fields:
+            if int(cf.get("field")) == field_id:
+                value = cf.get("value")
+                return str(value) if value else None
+        return None
 
     async def set_custom_fields(self, doc_id: int, values: dict[int, object]) -> None:
         """Setzt/aktualisiert Custom-Field-Werte, ohne bestehende Felder zu verlieren."""

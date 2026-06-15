@@ -114,7 +114,50 @@ class PaperlessInvoice:
     written_back_at: datetime | None = None
     last_synced_at: datetime | None = None
     error_message: str | None = None
+    document_date: datetime | None = None
     created_at: datetime | None = None
+
+
+class RecipientStatus(StrEnum):
+    """Zustand des KI-Empfänger-Vorschlags zu einem Paperless-Dokument."""
+
+    NONE = "none"            # kein Vorschlag vorhanden
+    SUGGESTED = "suggested"  # Vorschlag liegt vor, wartet auf Bestätigung
+    APPLIED = "applied"      # Vorschlag (oder manuelle Wahl) wurde nach Paperless geschrieben
+    UNKNOWN = "unknown"      # KI konnte keinen Empfänger zuordnen
+
+
+@dataclass
+class RecipientSuggestion:
+    """Ergebnis eines KI-Empfänger-Vorschlags."""
+
+    label: str | None       # einer der erlaubten Optionen-Labels oder None ("unbekannt")
+    confidence: float        # 0..1
+    reasoning: str | None = None
+
+
+@dataclass
+class RecipientCache:
+    """Lokaler Cache des KI-Vorschlags je Paperless-Dokument (Review-Status)."""
+
+    paperless_id: int
+    suggested_label: str | None = None
+    confidence: float | None = None
+    reasoning: str | None = None
+    status: RecipientStatus = RecipientStatus.NONE
+    updated_at: datetime | None = None
+
+
+@dataclass
+class RecipientRow:
+    """Zeile der Empfänger-Übersicht: Live-Daten aus Paperless + Cache-Vorschlag."""
+
+    paperless_id: int
+    title: str
+    correspondent: str | None
+    document_date: datetime | None
+    current_recipient: str | None
+    cache: RecipientCache | None = None
 
 
 @dataclass

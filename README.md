@@ -124,6 +124,7 @@ wirkungslos. Vollständige Vorlage in `.env.example`.
 | `FEATURE_PAPERLESS_SYNC` | `false` | Haupt-Schalter. `true` aktiviert den periodischen Abgleich gegen die Paperless-API und die `/invoices`-UI. Bei `false` ist das gesamte Feature inaktiv. |
 | `PAPERLESS_URL` | — | Basis-URL der Paperless-Instanz **ohne** abschließendes `/api` (im Compose-Netz z. B. `http://webserver:8000`). |
 | `PAPERLESS_TOKEN` | — | API-Token aus Paperless (Profil → API-Token). Erforderlich für Lese- und Rückschreib-Zugriff. |
+| `PAPERLESS_PUBLIC_URL` | — | Öffentliche, im Browser erreichbare Paperless-URL für den **„In Paperless öffnen"-Link** in der Rechnungs-Detailansicht. Leer = Fallback auf `PAPERLESS_URL` (im Compose-Netz wie `http://webserver:8000` aber nicht aus dem Browser auflösbar). Die eingebettete PDF-Vorschau benötigt diese Variable **nicht** — sie läuft über einen Lector-Proxy. |
 | `PAPERLESS_INVOICE_DOCTYPE` | `Rechnung` | Name des Paperless-**Dokumententyps**, der ein Dokument als Rechnung kennzeichnet. Nur solche Dokumente werden abgeglichen. |
 | `PAPERLESS_SYNC_INTERVAL_SECONDS` | `300.0` | Intervall (Sekunden) zwischen zwei Abgleich-Läufen des Hintergrund-Workers. |
 | `PAPERLESS_AUTO_CREATE_FIELDS` | `true` | Legt fehlende Paperless-Custom-Fields/-Tags (s. u.) beim Start automatisch an. Bei `false` müssen sie manuell in Paperless existieren. |

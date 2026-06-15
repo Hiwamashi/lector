@@ -124,6 +124,10 @@ services:
       FEATURE_PAPERLESS_SYNC: "false"
       PAPERLESS_URL: http://webserver:8000     # Basis-URL der Paperless-Instanz (ohne /api)
       PAPERLESS_TOKEN: ${PAPERLESS_API_TOKEN}  # API-Token aus Paperless (Profil -> API-Token)
+      # Oeffentliche, im Browser erreichbare Paperless-URL fuer den "In Paperless oeffnen"-Link
+      # in der Rechnungs-Detailansicht. Leer = Fallback auf PAPERLESS_URL (im Compose-Netz aber
+      # nicht im Browser aufloesbar) -> hier die externe URL setzen.
+      PAPERLESS_PUBLIC_URL: https://paperless.example.com
       PAPERLESS_INVOICE_DOCTYPE: Rechnung      # Dokumententyp, der Rechnungen markiert
       PAPERLESS_SYNC_INTERVAL_SECONDS: "300.0" # Abgleich-Intervall des Hintergrund-Workers
       PAPERLESS_AUTO_CREATE_FIELDS: "true"     # fehlende Custom Fields / Tags selbst anlegen
@@ -142,6 +146,15 @@ services:
       CF_PAID: Überwiesen
       TAG_SEVDESK_DONE: sevdesk-exportiert
       TAG_PAID: überwiesen
+      # --- Empfaenger-Zuordnung (Paperless-Custom-Field "Empfaenger", Typ select) ---
+      # select-Feld inkl. Optionen vorab in Paperless anlegen (Lector legt es NICHT an).
+      CF_RECIPIENT: Empfänger
+      FEATURE_RECIPIENT_LLM: "false"        # true = KI-Vorschlag aktiv
+      # ANTHROPIC_API_KEY wird wie bei paperless-gpt aus der .env bezogen.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      RECIPIENT_LLM_MODEL: claude-sonnet-4-6
+      RECIPIENT_LLM_AUTO_APPLY: "true"      # ab Schwelle direkt ins Paperless-Feld schreiben
+      RECIPIENT_LLM_MIN_CONFIDENCE: "0.75"
 
   # KI-Tagging/Titel ueber paperless-gpt. NUR Tagging, KEIN OCR:
   # Die OCR-Pipeline startet ausschliesslich beim Tag "paperless-gpt-ocr-auto" —

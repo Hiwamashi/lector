@@ -26,3 +26,6 @@ app/static/tailwind.css
 
 # Token-Protokoll (nur lokal, nicht nach GitHub)
 prd/token-log.csv
+
+# Lokale NAS-spezifische Compose-Datei
+.mynas.docker-compose.yml
