@@ -234,14 +234,16 @@ Details, Fehlerbilder und die Begründung der Architekturwahl:
 ### 3. Lector-Service in den Paperless-Compose aufnehmen
 
 Ergänze in der bestehenden `docker-compose.yml` von Paperless (neben `webserver`, `db`, `broker`
-usw.) den `lector`-Service. Trage bei `image:` den in Schritt 2 gewählten Namen ein — oder ersetze
-die Zeile durch `build: ./lector-src`, wenn der NAS direkt aus dem Quellordner bauen soll. Auf dem
+usw.) den `lector`-Service. Trage bei `image:` das Registry-Image aus Schritt 2 ein
+(`rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:latest`) — ein lokaler Build auf dem NAS ist
+nicht mehr vorgesehen (Details und die Begründung dazu:
+[feature-documentation/registry-deployment.md](feature-documentation/registry-deployment.md)). Auf dem
 Host wird derselbe `./consume`-Ordner gemountet wie beim `webserver` (dort als
 `/usr/src/paperless/consume`), sodass beide Container denselben Ordner teilen:
 
 ```yaml
   lector:
-    image: lector:latest             # oder: build: ./lector-src
+    image: rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:latest
     restart: unless-stopped
     ports:
       - "8001:8001"                    # Web-UI / API (nur LAN)
@@ -297,11 +299,13 @@ id            # liefert uid=… gid=…
 ### 6. Stack starten
 
 Über die Container-App der NAS neu bereitstellen („Stack aktualisieren/neu erstellen") oder per SSH
-im Stack-Ordner. Bei `build:` zusätzlich `--build` mitgeben, damit das Image (neu) gebaut wird:
+im Stack-Ordner. Der NAS baut das Image nicht selbst, sondern zieht es aus der Registry — vor dem
+Start daher `pull`:
 
 ```bash
 cd Teams/Docker/paperless-ngx-stack
-docker compose up -d lector              # bzw. `--build` bei build:-Variante
+docker compose pull lector               # Image aus der Registry ziehen
+docker compose up -d lector
 docker compose up -d webserver           # nach Änderung von PAPERLESS_OCR_MODE neu starten
 docker compose logs -f lector            # Start prüfen
 ```
