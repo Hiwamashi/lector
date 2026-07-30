@@ -19,8 +19,13 @@ PLATFORMS="linux/amd64,linux/arm64"
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
     DRY_RUN=1
+    shift
 elif [[ -n "${1:-}" ]]; then
     echo "FEHLER: unbekanntes Argument '$1' (erlaubt: --dry-run)" >&2
+    exit 2
+fi
+if [[ -n "${1:-}" ]]; then
+    echo "FEHLER: unerwartetes zusaetzliches Argument '$1' (erlaubt: --dry-run)" >&2
     exit 2
 fi
 
@@ -31,6 +36,11 @@ REGISTRY_HOST="${REGISTRY%%/*}"
 # --- Gate 1: Registry-Login ------------------------------------------------
 # Vor dem Build, damit ein fehlendes Credential nicht erst nach Minuten
 # QEMU-Emulation auffaellt.
+# Grenze dieses Gates: es prueft nur, ob ein Login stattgefunden hat, nicht
+# ob das Credential noch gueltig ist. Bei credsStore "desktop" bleibt der
+# auths-Eintrag auch nach einem Widerruf des Scaleway Secret Keys bestehen -
+# ein echter Gueltigkeitscheck braeuchte einen Netzwerk-Call und ist hier
+# bewusst nicht implementiert.
 DOCKER_CFG="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
 if ! python3 - "$DOCKER_CFG" "$REGISTRY_HOST" <<'PY'
 import json
@@ -87,7 +97,8 @@ echo "Baue $PLATFORMS -> $TAG_LATEST + $TAG_SHA"
 # auf dem NAS auf, dort als 'exec format error'.
 echo "Pruefe Manifest-Liste ..."
 INSPECT="$(docker buildx imagetools inspect "$TAG_LATEST")"
-for plattform in linux/amd64 linux/arm64; do
+IFS=',' read -ra plattformen <<<"$PLATFORMS"
+for plattform in "${plattformen[@]}"; do
     if ! grep -q "$plattform" <<<"$INSPECT"; then
         echo "FEHLER: $plattform fehlt im Index von $TAG_LATEST." >&2
         echo "$INSPECT" >&2

@@ -300,7 +300,11 @@ id            # liefert uid=… gid=…
 
 Über die Container-App der NAS neu bereitstellen („Stack aktualisieren/neu erstellen") oder per SSH
 im Stack-Ordner. Der NAS baut das Image nicht selbst, sondern zieht es aus der Registry — vor dem
-Start daher `pull`:
+Start daher `pull`. Das gilt für **beide** Wege: `pull_policy: always` ist bewusst nicht gesetzt,
+daher reicht ein reines „Stack aktualisieren/neu erstellen" in der Container-App **nicht** — dabei
+wird das gecachte `latest`-Image wiederverwendet und alter Code läuft weiter, ohne dass das
+sichtbar wird. Nutze in der Container-App die Option zum erneuten Ziehen des Images (z. B. „Image
+neu abrufen"/„Force pull", je nach ZettaOS-Version), oder verwende die SSH-Variante:
 
 ```bash
 cd Teams/Docker/paperless-ngx-stack

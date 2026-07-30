@@ -77,6 +77,10 @@ def test_dry_run_baut_beide_plattformen_und_beide_tags(tmp_path):
     assert f"{REGISTRY}/lector:latest" in res.stdout
     assert f"{REGISTRY}/lector:git-{sha}" in res.stdout
     assert "--push" in res.stdout
+    # Genau zwei Tags (latest + git-sha) - keine zusaetzlichen arch-spezifischen
+    # Tags, die die Architekturwahl in eine manuell gepflegte Textstelle
+    # verlagern wuerden (siehe registry-deployment.md).
+    assert res.stdout.count(" -t ") == 2
 
 
 def test_dry_run_baut_nicht_wirklich(tmp_path):
@@ -86,6 +90,17 @@ def test_dry_run_baut_nicht_wirklich(tmp_path):
     res = _run(repo, _docker_config(tmp_path), "--dry-run")
 
     assert res.stdout.count("[dry-run]") == 1
+
+
+def test_zusaetzliches_argument_nach_dry_run_bricht_ab(tmp_path):
+    """`--dry-run junk` darf 'junk' nicht stillschweigend ignorieren."""
+    repo = _make_repo(tmp_path)
+
+    res = _run(repo, _docker_config(tmp_path), "--dry-run", "junk")
+
+    assert res.returncode == 2
+    assert "zusaetzliches Argument" in res.stderr
+    assert "[dry-run]" not in res.stdout
 
 
 def test_schmutziger_worktree_bricht_ab(tmp_path):

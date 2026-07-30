@@ -16,4 +16,7 @@ secrets
 *.db
 *.db-wal
 *.db-shm
-.env
+# Enthaelt Live-Secrets (API-Tokens, Passwoerter) fuer den NAS-Stack; das Image
+# ist oeffentlich abrufbar, deshalb darf diese Datei nie in ein COPY geraten.
+.mynas.docker-compose.yml
+.env*

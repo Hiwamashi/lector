@@ -83,7 +83,7 @@ Ein `docker login` ist hier nicht nötig — der Namespace ist öffentlich.
 `:latest` in der Compose des NAS durch den zuletzt funktionierenden
 `:git-<sha>` ersetzen, dann erneut `pull` und `up -d`:
 
-    image: rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:git-759da7f
+    image: rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:git-7ffcb4c
 
 ## Fehlerbilder
 
