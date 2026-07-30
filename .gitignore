@@ -29,3 +29,6 @@ prd/token-log.csv
 
 # Lokale NAS-spezifische Compose-Datei
 .mynas.docker-compose.yml
+
+# Arbeitsverzeichnis der Plan-Ausfuehrung (Ledger, Briefs, Review-Pakete)
+.superpowers/
