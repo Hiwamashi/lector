@@ -72,11 +72,31 @@ ausgeliefert.
 (Token/URL/Dokumententyp-Name) und echtes SevDesk-Konto (API-Token, Systemversion 2.0 für
 E-Rechnungs-Belege). Bisher offline + via TestClient verifiziert.
 
+## Zusatz-Feature: Image-Deployment über Scaleway Container Registry
+
+Das Image wird nicht mehr auf dem NAS gebaut, sondern als Multi-Arch-Image
+(amd64 + arm64) aus `rg.nl-ams.scw.cloud/krinke-dockersolutions` gezogen. Build
+und Push laufen auf dem Entwicklungsrechner, der Rollout aufs NAS bleibt ein
+getrennter manueller Schritt.
+
+| Feature | Status |
+|---|---|
+| Push-Skript Multi-Arch amd64+arm64 als Manifest-Liste (`scripts/push-image.sh`) | ✅ |
+| Tags `latest` + `git-<sha>`, Index nach dem Push verifiziert | ✅ |
+| Gate: kein Push ohne Registry-Login | ✅ |
+| Gate: kein Push aus schmutzigem Worktree (SHA-Tags reproduzierbar) | ✅ |
+| Compose auf Registry-Image umgestellt, `build:` deaktiviert + Regressionstest | ✅ |
+| arm64-Lauffähigkeit lokal belegt (Container gestartet, HTTP-Antwort) | ✅ |
+| Rollout auf dem NAS (`compose pull` + `up -d`) | ⏳ offen — nur vom Anwender prüfbar |
+
 ## Verbleibend / zu verifizieren
 
 - **End-to-End mit echtem Document AI:** Bisher mit Fake-Adapter und über den
   E-Rechnungs-Bypass live getestet. Der OCR-Weg mit echten GCP-Credentials steht noch aus
   (benötigt `GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, Service-Account-JSON).
+- Registry-Deployment: `docker compose pull lector && docker compose up -d lector`
+  auf dem NAS (`Teams/Docker/paperless-ngx-stack`) ausführen und Port 8001 prüfen.
+  Aus der Entwicklungsumgebung nicht verifizierbar.
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 

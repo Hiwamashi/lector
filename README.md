@@ -193,49 +193,43 @@ scp docai-sa.json sascha@<NAS-IP>:Teams/Docker/paperless-ngx-stack/lector/secret
 
 ### 2. Lector-Image auf den NAS bringen
 
-Es gibt (noch) kein veröffentlichtes Lector-Image — du baust es aus diesem Repo. Drei Wege,
-je nachdem ob der NAS bauen darf und ob du eine Container-Registry nutzt:
+Das Image liegt als Multi-Arch-Image (amd64 + arm64) in der Scaleway Container
+Registry und wird auf dem NAS nur noch gezogen — der Build läuft auf dem
+Entwicklungsrechner. Da der Namespace öffentlich ist, braucht das NAS **keine**
+Zugangsdaten.
 
-**Variante A — direkt auf dem NAS bauen (einfachste, kein Registry-Konto nötig).**
-Voraussetzung: SSH-Zugang und `git` auf dem NAS. Da Image und NAS dann dieselbe CPU-Architektur
-haben, gibt es keine Plattformprobleme.
+Einmalig auf dem Entwicklungsrechner anmelden (Passwort = Scaleway Secret Key):
+
+```bash
+docker login rg.nl-ams.scw.cloud -u nologin --password-stdin
+```
+
+Bauen und pushen:
+
+```bash
+./scripts/push-image.sh
+```
+
+Das Skript baut für `linux/amd64` und `linux/arm64`, pusht die Tags `latest` und
+`git-<sha>` und prüft, dass beide Architekturen in der Manifest-Liste stehen. Es
+bricht ab, wenn der Registry-Login fehlt oder der Worktree nicht sauber ist —
+in die Registry gelangen nur committete Zustände, damit jedes `git-<sha>`-Tag
+aus dem Repo reproduzierbar bleibt und als Rollback-Ziel taugt.
+
+Auf dem NAS:
 
 ```bash
 ssh sascha@<NAS-IP>
 cd Teams/Docker/paperless-ngx-stack
-git clone <repo-url> lector-src          # dieses Repo
-docker build -t lector:latest ./lector-src
+docker compose pull lector
+docker compose up -d lector
 ```
 
-Im Compose dann `image: lector:latest` verwenden. Alternativ direkt aus dem Quellordner bauen
-lassen — `build: ./lector-src` statt `image:` (siehe Schritt 3).
+Rollback auf einen früheren Stand: in der Compose `:latest` durch das
+gewünschte `:git-<sha>` ersetzen, dann erneut `pull` und `up -d`.
 
-**Variante B — lokal bauen, über eine Registry verteilen.**
-Auf deinem Rechner für die NAS-Architektur bauen und in eine Registry (Docker Hub / GHCR) pushen,
-dann auf dem NAS ziehen. `uname -m` auf dem NAS zeigt die Architektur (`x86_64` → `linux/amd64`,
-`aarch64` → `linux/arm64`).
-
-```bash
-# lokal — Zielplattform an den NAS anpassen
-docker buildx build --platform linux/amd64 -t <user>/lector:latest --push .
-# auf dem NAS
-docker pull <user>/lector:latest
-```
-
-**Variante C — lokal bauen, als Datei kopieren (ohne Registry).**
-Image lokal bauen, als Tar exportieren, auf den NAS kopieren und dort laden. Auch hier muss die
-Build-Plattform zur NAS-Architektur passen (`--platform` wie in Variante B).
-
-```bash
-# lokal
-docker build -t lector:latest .
-docker save lector:latest | gzip > lector.tar.gz
-scp lector.tar.gz sascha@<NAS-IP>:Teams/Docker/paperless-ngx-stack/
-# auf dem NAS
-gunzip -c lector.tar.gz | docker load
-```
-
-Bei B und C im Compose `image: <user>/lector:latest` bzw. `image: lector:latest` eintragen.
+Details, Fehlerbilder und die Begründung der Architekturwahl:
+[feature-documentation/registry-deployment.md](feature-documentation/registry-deployment.md).
 
 ### 3. Lector-Service in den Paperless-Compose aufnehmen
 

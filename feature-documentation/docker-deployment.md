@@ -10,6 +10,10 @@
   Projekt, dann Projektcode). `README.md` wird benötigt, weil sie Paket-Metadatum ist.
 - Start: `uvicorn app.main:app --host 0.0.0.0 --port 8001` (ein Prozess für UI/API + Worker).
 
+Für den Betrieb auf dem NAS wird das Image nicht lokal gebaut, sondern als
+Multi-Arch-Image aus der Scaleway Container Registry gezogen — siehe
+[registry-deployment.md](registry-deployment.md).
+
 ## Compose (Full-Stack)
 
 `docker-compose.example.yml` ist ein vollständiger, nachbaubarer Stack: `broker` (Redis), `db`
