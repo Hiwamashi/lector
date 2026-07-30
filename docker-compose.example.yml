@@ -79,10 +79,16 @@ services:
     restart: unless-stopped
 
   lector:
-    build: .                      # baut Lector aus dem Dockerfile dieses Repos
-    image: lector:latest          # Tag fuer das gebaute Image
-    # Liegt diese Compose ausserhalb des Repos, stattdessen den Build-Kontext
-    # auf den Repo-Pfad zeigen lassen, z.B.  build: ./lector
+    image: rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:latest
+    # Multi-Arch-Image (amd64 + arm64) aus der Scaleway-Registry. Der Host zieht
+    # automatisch seine Architektur, die Zeile ist auf NAS und Mac identisch.
+    # Aktualisieren:  docker compose pull lector && docker compose up -d lector
+    # Rollback:       :latest durch ein :git-<sha>-Tag ersetzen
+    #
+    # Nur fuer lokale Entwicklung statt des Registry-Images:
+    #   build: .
+    # ACHTUNG: build und image gemeinsam lassen Compose bauen statt pullen --
+    # auf dem NAS scheitert das, weil dort kein Build-Kontext liegt.
     restart: unless-stopped
     depends_on:
       - webserver                 # Paperless zuerst starten (Start-Reihenfolge, kein Health-Check)
