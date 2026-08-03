@@ -165,6 +165,47 @@ def test_ungepushter_commit_bricht_ab(tmp_path):
     assert "[dry-run]" not in res.stdout
 
 
+def test_veralteter_remote_tracking_ref_bricht_ab(tmp_path):
+    """Gate 3 darf sich nicht auf einen veralteten lokalen Remote-Tracking-Ref
+
+    verlassen. Szenario: HEAD (Commit B) wurde gepusht, der lokale Ref
+    `origin/<branch>` zeigt also auf B - danach wird der Branch **im bare
+    Remote** per `update-ref` auf einen aelteren Commit (A) zurueckgesetzt,
+    ohne dass der lokale Ref etwas davon mitbekommt (kein `fetch` dazwischen).
+    Das bildet force-push/Remote-Reset/geloeschten-dann-neu-erstellten Branch
+    nach: das Remote enthaelt B nicht mehr, der lokale Ref behauptet aber
+    weiterhin das Gegenteil.
+
+    Ohne `git fetch` vor der `--contains`-Pruefung wuerde dieser Test gruen
+    bleiben (Gate 3 saehe den veralteten Ref und liesse HEAD durch) - er
+    haette also nichts mit dem hier behobenen Befund zu tun. Nur mit dem
+    Fetch schlaegt das Gate zurecht fehl.
+    """
+    repo = _make_repo(tmp_path)
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    sha_a = _git(repo, "rev-parse", "HEAD")
+
+    (repo / "nutzlast.txt").write_text("commit b, gepusht\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "commit b")
+    _git(repo, "push", "-q", "origin", "HEAD")
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "update-ref", f"refs/heads/{branch}", sha_a],
+        cwd=remote,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    res = _run(repo, _docker_config(tmp_path), "--dry-run")
+
+    assert res.returncode != 0
+    assert "push" in res.stderr
+    assert "[dry-run]" not in res.stdout
+
+
 def test_fehlender_login_bricht_ab(tmp_path):
     repo = _make_repo(tmp_path)
 

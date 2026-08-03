@@ -76,10 +76,21 @@ fi
 # insbesondere ein Commit auf einem nie gepushten Wegwerf-Branch ist per Git-
 # Garbage-Collection loeschbar, wonach der Rollback-Tag auf Code zeigt, das es
 # nirgends mehr gibt.
-# Grenze dieses Gates: es liest nur die lokalen Remote-Tracking-Refs (letzter
-# bekannter Stand des Remotes), es fragt das Remote nicht live ab (kein
-# `git fetch`) - das Skript soll nicht von Netzerreichbarkeit abhaengen, nur
-# um den eigenen Push-Stand des Entwicklers zu pruefen.
+# Die lokalen Remote-Tracking-Refs koennen veraltet sein: force-push,
+# geloeschter Remote-Branch oder ein neu aufgesetztes Remote-Repo aendern den
+# tatsaechlichen Remote-Stand, ohne die lokalen Refs anzufassen. Ohne Refresh
+# wuerde das Gate in genau diesen Faellen faelschlich durchlassen - der
+# gefaehrliche Fall, den es verhindern soll. Deshalb zuerst auffrischen
+# (--prune entfernt Refs geloeschter Remote-Branches):
+if ! git fetch --prune --quiet origin; then
+    echo "FEHLER: 'git fetch --prune origin' fehlgeschlagen." >&2
+    echo "Der Remote-Stand kann nicht verifiziert werden, deshalb bricht das" >&2
+    echo "Gate ab, statt sich auf moeglicherweise veraltete lokale Refs zu" >&2
+    echo "verlassen. Das kostet nichts: ohne Netzwerk wuerde der Push gleich" >&2
+    echo "danach ohnehin fehlschlagen. Pruefen: Netzwerk, Remote erreichbar," >&2
+    echo "Zugangsdaten." >&2
+    exit 1
+fi
 if [[ -z "$(git branch -r --contains HEAD 2>/dev/null)" ]]; then
     echo "FEHLER: HEAD ist auf keinem bekannten Remote-Branch enthalten." >&2
     echo "Das Tag git-$(git rev-parse --short HEAD) waere sonst fuer niemanden" >&2

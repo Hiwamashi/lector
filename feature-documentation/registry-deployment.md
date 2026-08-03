@@ -78,9 +78,19 @@ Ein sauber committeter Zustand kann trotzdem rein lokal existieren. Das Skript
 prüft daher zusätzlich `git branch -r --contains HEAD`: ist das leer, bricht
 es ab, denn das `git-<sha>`-Tag wäre sonst für niemanden außer dem lokalen
 Rechner auflösbar — als Rollback-Ziel nutzlos, und im schlimmsten Fall (siehe
-oben) sogar gar nicht mehr existent. Die Prüfung liest nur die lokalen
-Remote-Tracking-Refs (letzter bekannter Stand des Remotes, kein `git fetch`),
-das Skript soll nicht von Netzerreichbarkeit abhängen. Abhilfe: `git push`.
+oben) sogar gar nicht mehr existent. Vor dieser Prüfung frischt das Skript die
+Remote-Tracking-Refs per `git fetch --prune --quiet origin` auf. Ohne diesen
+Refresh könnten veraltete lokale Refs das Gate genau in dem Fall
+durchwinken, den es verhindern soll: nach einem Force-Push, einem gelöschten
+Remote-Branch oder einem neu aufgesetzten Remote-Repo zeigt der lokale Ref
+weiterhin auf einen Commit, den das Remote gar nicht mehr kennt. `--prune`
+entfernt dabei zusätzlich Refs zu Branches, die auf dem Remote gelöscht
+wurden. Schlägt der Fetch fehl (offline, Remote nicht erreichbar,
+Zugangsdaten ungültig), bricht das Skript ab, statt sich auf möglicherweise
+veraltete Refs zu verlassen — das kostet nichts, denn ohne Netzwerk würde der
+Push ohnehin wenig später scheitern. Abhilfe bei fehlgeschlagenem Fetch:
+Netzwerk und Zugangsdaten prüfen. Abhilfe bei "HEAD ist auf keinem bekannten
+Remote-Branch enthalten": `git push`.
 
 Der `amd64`-Teil des Multi-Arch-Builds läuft auf Apple Silicon per
 QEMU-Emulation und dauert daher merklich länger als der native `arm64`-Teil.
@@ -112,6 +122,7 @@ Ein `docker login` ist hier nicht nötig — der Namespace ist öffentlich.
 | Push scheitert nach langem Build | Registry-Login fehlt | `docker login rg.nl-ams.scw.cloud -u nologin --password-stdin` |
 | Skript bricht mit „Worktree ist nicht sauber" ab | offene Änderungen | committen, oder lokal ohne Push bauen (siehe oben) |
 | Skript bricht mit „HEAD ist auf keinem bekannten Remote-Branch enthalten" ab | Commit ist nur lokal vorhanden (auch: ungepushter Branch) | `git push`, dann erneut ausführen |
+| Skript bricht mit „'git fetch --prune origin' fehlgeschlagen" ab | Kein Netzwerk, Remote nicht erreichbar oder Zugangsdaten ungültig | Netzwerk/VPN prüfen, `git fetch origin` manuell testen, dann erneut ausführen |
 
 ## Secrets
 
