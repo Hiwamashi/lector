@@ -15,6 +15,11 @@ set -euo pipefail
 REGISTRY="rg.nl-ams.scw.cloud/krinke-dockersolutions"
 IMAGE="lector"
 PLATFORMS="linux/amd64,linux/arm64"
+# Das Remote, gegen das Gate 3 prueft (siehe unten). git push zielt ohne
+# Angabe ebenfalls hierauf - die dokumentierte Zusage "aus dem Repo
+# reproduzierbar" bezieht sich auf genau dieses gemeinsame Repository, nicht
+# auf irgendein anderes konfiguriertes Remote (Fork, Backup, Kollegen-Repo).
+REMOTE="origin"
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -70,20 +75,27 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-# --- Gate 3: HEAD ist auf einem Remote bekannt -----------------------------
+# --- Gate 3: HEAD ist auf "$REMOTE" bekannt --------------------------------
 # Ein Commit kann sauber sein (Gate 2) und trotzdem nirgendwo ausser lokal
 # existieren. Das git-<sha>-Tag waere dann fuer niemanden sonst aufloesbar -
 # insbesondere ein Commit auf einem nie gepushten Wegwerf-Branch ist per Git-
 # Garbage-Collection loeschbar, wonach der Rollback-Tag auf Code zeigt, das es
 # nirgends mehr gibt.
+# Geprueft wird gezielt "$REMOTE", nicht "irgendein Remote-Tracking-Ref":
+# ein Commit, der nur auf einem privaten Fork oder Backup existiert, ist fuer
+# niemand sonst aufloesbar - das Gate wuerde sonst genau die Luecke wieder
+# aufreissen, die es schliessen soll. Fetch und Pruefung muessen deshalb
+# dasselbe Remote meinen, sonst kann ein zweites, nie aufgefrischtes Remote
+# (upstream, fork, backup, ...) das Gate mit einem veralteten oder gar nicht
+# fuer andere erreichbaren Ref durchwinken.
 # Die lokalen Remote-Tracking-Refs koennen veraltet sein: force-push,
 # geloeschter Remote-Branch oder ein neu aufgesetztes Remote-Repo aendern den
 # tatsaechlichen Remote-Stand, ohne die lokalen Refs anzufassen. Ohne Refresh
 # wuerde das Gate in genau diesen Faellen faelschlich durchlassen - der
 # gefaehrliche Fall, den es verhindern soll. Deshalb zuerst auffrischen
 # (--prune entfernt Refs geloeschter Remote-Branches):
-if ! git fetch --prune --quiet origin; then
-    echo "FEHLER: 'git fetch --prune origin' fehlgeschlagen." >&2
+if ! git fetch --prune --quiet "$REMOTE"; then
+    echo "FEHLER: 'git fetch --prune $REMOTE' fehlgeschlagen." >&2
     echo "Der Remote-Stand kann nicht verifiziert werden, deshalb bricht das" >&2
     echo "Gate ab, statt sich auf moeglicherweise veraltete lokale Refs zu" >&2
     echo "verlassen. Das kostet nichts: ohne Netzwerk wuerde der Push gleich" >&2
@@ -91,11 +103,16 @@ if ! git fetch --prune --quiet origin; then
     echo "Zugangsdaten." >&2
     exit 1
 fi
-if [[ -z "$(git branch -r --contains HEAD 2>/dev/null)" ]]; then
-    echo "FEHLER: HEAD ist auf keinem bekannten Remote-Branch enthalten." >&2
+# refs/remotes/$REMOTE als Pfad-Praefix bei --format sorgt dafuer, dass ein
+# gleichlautend beginnendes, aber anderes Remote (z.B. "origin-backup") nicht
+# mitgezaehlt wird - for-each-ref matcht auf Ref-Pfad-Komponenten, nicht auf
+# Zeichenketten-Praefix. Getestet in test_zweites_remote_ohne_origin_bricht_ab.
+if [[ -z "$(git for-each-ref --contains HEAD --format='%(refname)' "refs/remotes/$REMOTE" 2>/dev/null)" ]]; then
+    echo "FEHLER: HEAD ist auf keinem Branch von '$REMOTE' enthalten." >&2
     echo "Das Tag git-$(git rev-parse --short HEAD) waere sonst fuer niemanden" >&2
-    echo "sonst aufloesbar und als Rollback-Ziel nutzlos. Bitte pushen:" >&2
-    echo "  git push" >&2
+    echo "sonst aufloesbar und als Rollback-Ziel nutzlos. Ein anderes Remote" >&2
+    echo "(Fork, Backup, ...) zaehlt hier bewusst nicht. Bitte pushen:" >&2
+    echo "  git push $REMOTE" >&2
     exit 1
 fi
 

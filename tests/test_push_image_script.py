@@ -206,6 +206,40 @@ def test_veralteter_remote_tracking_ref_bricht_ab(tmp_path):
     assert "[dry-run]" not in res.stdout
 
 
+def test_zweites_remote_ohne_origin_bricht_ab(tmp_path):
+    """Gate 3 darf nur "origin" zaehlen, nicht irgendein Remote-Tracking-Ref.
+
+    Szenario: neben `origin` existiert ein zweites Remote `backup` (Fork,
+    Kollegen-Repo, private Sicherung). Commit A geht an beide, Commit B (=HEAD)
+    nur an `backup`. `origin` kennt B also nicht - das Tag git-<sha> von B
+    waere fuer niemanden ausser dem Besitzer von `backup` aufloesbar.
+
+    Ein Gate, das `git branch -r --contains HEAD` (alle Remotes) prueft, faende
+    hier einen Treffer ueber `backup` und liesse faelschlich durch - der
+    Refresh gilt schliesslich sowieso nur `origin`. Dieser Test faellt daher
+    mit der alten Implementierung durch und ist erst mit einem auf "origin"
+    beschraenkten Gate gruen.
+    """
+    repo = _make_repo(tmp_path)
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+    backup_remote = tmp_path / "backup.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(backup_remote)], check=True)
+    _git(repo, "remote", "add", "backup", str(backup_remote))
+    _git(repo, "push", "-q", "backup", branch)
+
+    (repo / "nutzlast.txt").write_text("commit b, nur zu backup gepusht\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "commit b")
+    _git(repo, "push", "-q", "backup", branch)
+
+    res = _run(repo, _docker_config(tmp_path), "--dry-run")
+
+    assert res.returncode != 0, res.stdout
+    assert "push" in res.stderr
+    assert "[dry-run]" not in res.stdout
+
+
 def test_fehlender_login_bricht_ab(tmp_path):
     repo = _make_repo(tmp_path)
 
