@@ -51,8 +51,9 @@ Desktop. Ist er aktiv, genügt der Default-Builder — ein eigener
 Das Skript bricht **vor** dem Build ab, wenn
 
 - kein Registry-Login vorliegt (sonst fiele das erst nach Minuten
-  Emulations-Build auf), oder
-- der Worktree nicht sauber ist.
+  Emulations-Build auf),
+- der Worktree nicht sauber ist, oder
+- HEAD auf keinem bekannten Remote-Branch liegt.
 
 ### Warum kein Push aus schmutzigem Worktree
 
@@ -60,9 +61,26 @@ Zwei verschiedene unkommittierte Zustände auf demselben HEAD ergäben denselben
 Tag, und der zweite Push überschriebe den ersten stillschweigend. Ein Rollback
 auf so ein Tag landet bei Code, der aus dem Repo nicht rekonstruierbar ist —
 womit der Zweck der SHA-Tags entfällt. Für schnelle Zwischenstände ist der
-lokale Build der richtige Weg:
+lokale Build der richtige Weg, **nicht** ein Commit auf einem Wegwerf-Branch:
+ein nie gepushter Branch ist per Git-Garbage-Collection löschbar, und dann
+zeigt das Rollback-Tag auf Code, den es nirgends mehr gibt — dasselbe Problem
+wie beim schmutzigen Worktree, nur einen Schritt später. Committen allein
+reicht also nicht; siehe das dritte Gate unten. Für lokale Zwischenstände:
 
     docker buildx build --platform linux/arm64 -t lector:dev --load .
+
+Wer den Commit doch behalten will, pusht ihn (`git push`) — erst dann ist er
+als Rollback-Ziel brauchbar.
+
+### Drittes Gate: HEAD muss auf einem bekannten Remote-Branch liegen
+
+Ein sauber committeter Zustand kann trotzdem rein lokal existieren. Das Skript
+prüft daher zusätzlich `git branch -r --contains HEAD`: ist das leer, bricht
+es ab, denn das `git-<sha>`-Tag wäre sonst für niemanden außer dem lokalen
+Rechner auflösbar — als Rollback-Ziel nutzlos, und im schlimmsten Fall (siehe
+oben) sogar gar nicht mehr existent. Die Prüfung liest nur die lokalen
+Remote-Tracking-Refs (letzter bekannter Stand des Remotes, kein `git fetch`),
+das Skript soll nicht von Netzerreichbarkeit abhängen. Abhilfe: `git push`.
 
 Der `amd64`-Teil des Multi-Arch-Builds läuft auf Apple Silicon per
 QEMU-Emulation und dauert daher merklich länger als der native `arm64`-Teil.
@@ -93,6 +111,7 @@ Ein `docker login` ist hier nicht nötig — der Namespace ist öffentlich.
 | Compose baut auf dem NAS statt zu pullen | `build:` steht neben `image:` | `build:` auskommentieren; `tests/test_compose_files.py` hält das fest |
 | Push scheitert nach langem Build | Registry-Login fehlt | `docker login rg.nl-ams.scw.cloud -u nologin --password-stdin` |
 | Skript bricht mit „Worktree ist nicht sauber" ab | offene Änderungen | committen, oder lokal ohne Push bauen (siehe oben) |
+| Skript bricht mit „HEAD ist auf keinem bekannten Remote-Branch enthalten" ab | Commit ist nur lokal vorhanden (auch: ungepushter Branch) | `git push`, dann erneut ausführen |
 
 ## Secrets
 

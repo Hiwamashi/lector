@@ -70,6 +70,24 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
+# --- Gate 3: HEAD ist auf einem Remote bekannt -----------------------------
+# Ein Commit kann sauber sein (Gate 2) und trotzdem nirgendwo ausser lokal
+# existieren. Das git-<sha>-Tag waere dann fuer niemanden sonst aufloesbar -
+# insbesondere ein Commit auf einem nie gepushten Wegwerf-Branch ist per Git-
+# Garbage-Collection loeschbar, wonach der Rollback-Tag auf Code zeigt, das es
+# nirgends mehr gibt.
+# Grenze dieses Gates: es liest nur die lokalen Remote-Tracking-Refs (letzter
+# bekannter Stand des Remotes), es fragt das Remote nicht live ab (kein
+# `git fetch`) - das Skript soll nicht von Netzerreichbarkeit abhaengen, nur
+# um den eigenen Push-Stand des Entwicklers zu pruefen.
+if [[ -z "$(git branch -r --contains HEAD 2>/dev/null)" ]]; then
+    echo "FEHLER: HEAD ist auf keinem bekannten Remote-Branch enthalten." >&2
+    echo "Das Tag git-$(git rev-parse --short HEAD) waere sonst fuer niemanden" >&2
+    echo "sonst aufloesbar und als Rollback-Ziel nutzlos. Bitte pushen:" >&2
+    echo "  git push" >&2
+    exit 1
+fi
+
 SHA="$(git rev-parse --short HEAD)"
 TAG_LATEST="$REGISTRY/$IMAGE:latest"
 TAG_SHA="$REGISTRY/$IMAGE:git-$SHA"

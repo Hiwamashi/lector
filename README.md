@@ -212,9 +212,11 @@ Bauen und pushen:
 
 Das Skript baut für `linux/amd64` und `linux/arm64`, pusht die Tags `latest` und
 `git-<sha>` und prüft, dass beide Architekturen in der Manifest-Liste stehen. Es
-bricht ab, wenn der Registry-Login fehlt oder der Worktree nicht sauber ist —
-in die Registry gelangen nur committete Zustände, damit jedes `git-<sha>`-Tag
-aus dem Repo reproduzierbar bleibt und als Rollback-Ziel taugt.
+bricht ab, wenn der Registry-Login fehlt, der Worktree nicht sauber ist oder
+HEAD auf keinem bekannten Remote-Branch liegt (ein rein lokaler Commit ist kein
+gültiges Rollback-Ziel) — in die Registry gelangen nur committete **und**
+gepushte Zustände, damit jedes `git-<sha>`-Tag aus dem Repo reproduzierbar
+bleibt und als Rollback-Ziel taugt.
 
 Auf dem NAS:
 

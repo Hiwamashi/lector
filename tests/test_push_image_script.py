@@ -1,7 +1,8 @@
 """Prueft die Gates des Push-Skripts, ohne Docker aufzurufen.
 
-Alle Tests laufen ueber `--dry-run`: die Gates (Login, sauberer Worktree) und
-die Tag-Ableitung greifen dort vollstaendig, der eigentliche Build nicht.
+Alle Tests laufen ueber `--dry-run`: die Gates (Login, sauberer Worktree,
+HEAD auf einem bekannten Remote-Branch) und die Tag-Ableitung greifen dort
+vollstaendig, der eigentliche Build nicht.
 """
 
 import json
@@ -28,12 +29,16 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _make_repo(tmp_path: Path) -> Path:
-    """Mini-Repo mit einer Kopie des Push-Skripts, sauber committet.
+    """Mini-Repo mit einer Kopie des Push-Skripts, sauber committet und gepusht.
 
     Die zusaetzliche `nutzlast.txt` ist getrackt und dient als Objekt fuer den
     Dirty-Test: das Skript selbst darf dafuer nicht veraendert werden, denn ein
     ueberschriebenes Skript wuerde gar nichts mehr pruefen und der Test waere
     gruen, ohne das Gate zu beruehren.
+
+    Das Repo bekommt zusaetzlich ein bare Remote, auf das der init-Commit
+    gepusht wird: Gate 3 (HEAD auf einem bekannten Remote-Branch) verlangt
+    einen Remote-Tracking-Ref, den ein Repo ohne Remote nie haette.
     """
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -43,6 +48,12 @@ def _make_repo(tmp_path: Path) -> Path:
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "init")
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "origin", "HEAD")
+
     return repo
 
 
@@ -127,6 +138,30 @@ def test_geaenderte_datei_bricht_ab(tmp_path):
 
     assert res.returncode != 0
     assert "sauber" in res.stderr
+    assert "[dry-run]" not in res.stdout
+
+
+def test_ungepushter_commit_bricht_ab(tmp_path):
+    """HEAD muss auf einem bekannten Remote-Branch liegen, sonst waere das
+
+    resultierende git-<sha>-Tag fuer niemanden sonst aufloesbar. Realistischer
+    Fall: das Remote existiert (`origin` ist konfiguriert und `_make_repo` hat
+    bereits gepusht), aber ein weiterer Commit landet erst danach lokal - z.B.
+    eine schnelle Korrektur, die noch nicht gepusht wurde. Ein Repo ganz ohne
+    Remote waere hier die falsche Grundlage: der Test wuerde dann auch bei
+    einem zu laxen Gate (das nur pruefte "gibt es ueberhaupt ein Remote?")
+    gruen werden, ohne den eigentlich riskanten Fall - HEAD lokal weiter als
+    das Remote - abzudecken.
+    """
+    repo = _make_repo(tmp_path)
+    (repo / "nutzlast.txt").write_text("weiterer commit, noch nicht gepusht\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "ungepushte Aenderung")
+
+    res = _run(repo, _docker_config(tmp_path), "--dry-run")
+
+    assert res.returncode != 0
+    assert "push" in res.stderr
     assert "[dry-run]" not in res.stdout
 
 
