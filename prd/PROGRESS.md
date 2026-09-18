@@ -59,7 +59,14 @@ Dokument zurückgeschrieben. Standardmäßig deaktiviert (`FEATURE_PAPERLESS_SYN
 | Tabelle `document_recipients` (KI-Vorschlag-Cache) | ✅ |
 | Batch-Lauf: Menge wählbar, Retry mit Backoff, Fortschritt + Abbruch | ✅ |
 
-119 Tests grün. `ruff` sauber.
+129 Tests grün. `ruff` sauber. (Fix-Runde nach Schlussreview: leeres/unlesbares Mengenfeld
+fällt auf die Vorbelegung statt auf das Maximum zurück, Start-Button bleibt bei einem
+Paperless-Aussetzer nutzbar, SSE-Drossel greift auch über den Einzel-`rec:<id>`-Pfad,
+Ausnahmen vor der Dokumentschleife und der leere Empfänger-Feld-Fall setzen `aborted_reason`
+statt wortlos zu enden, Anzeige benennt „ohne gesetzten Empfänger" statt eine 1:1-Deckung mit
+der Arbeitsmenge zu suggerieren, Batch-Task wird beim Shutdown abgebrochen statt auf der
+geschlossenen DB-Verbindung weiterzulaufen, `retry-after` ist auf 60 s gedeckelt, übersprungene
+Dokumente zählen sichtbar und der offene Rest berücksichtigt auch abgebrochene Läufe.)
 Feature-Doku unter `feature-documentation/paperless-integration/`
 (neu: `rechnungs-ui.md`, `empfaenger-zuordnung.md`).
 Empfänger-Feature **live gegen die Paperless-Instanz verifiziert**: select-Feld-Auflösung,

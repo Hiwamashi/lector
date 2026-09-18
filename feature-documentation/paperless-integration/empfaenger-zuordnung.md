@@ -37,11 +37,22 @@ KI vorzuschlagen.
 - `POST /empfaenger/suggest-batch` — Hintergrund-Lauf über Dokumente ohne Empfänger
   (`asyncio.create_task`, gegen Doppelstart über die gehaltene Task-Referenz gesichert). Die
   Menge (Formularfeld `limit`) wählt der Anwender in der Oberfläche; der Endpoint klemmt sie
-  über `_clamp_batch_limit` auf `1..RECIPIENT_BATCH_MAX`.
+  über `_clamp_batch_limit` auf `1..RECIPIENT_BATCH_MAX`. Ein fehlendes oder unlesbares Feld
+  (leeres `limit`, z.B. weil der Anwender den vorbelegten Wert gelöscht hat — HTML5 blockt das
+  bei `<input type="number">` ohne `required` nicht) fällt auf die konservative Vorbelegung
+  zurück (höchstens 100), **nicht** auf `RECIPIENT_BATCH_MAX` — sonst löst ein leeres Feld
+  einen ungewollten Maximallauf aus.
 - `POST /empfaenger/suggest-batch/stop` — bittet einen laufenden Batch, nach dem aktuellen
   Dokument zu enden (`PaperlessSync.stop_batch`). Kein Fehler, zählt nicht als Fehlschlag.
 - `GET /fragment/empfaenger/batch-status` — eigenes Toolbar-Fragment mit dem aktuellen
   `BatchProgress` (Start/Stop-Button, Zähler, `aborted_reason`), per SSE aktualisiert.
+  Scheitert der Zählaufruf (`count_missing_recipients`, z.B. Paperless-Aussetzer), zeigt das
+  Fragment „kann gerade nicht ermittelt werden" statt fälschlich `0` zu behaupten — der
+  Start-Button bleibt dabei bewusst **nutzbar** (`missing_total_unknown`), sonst friert ein
+  einziger Aussetzer den Button ein, bis die Seite manuell neu geladen wird.
+- `GET /fragment/empfaenger` (Zeilen-Fragment) ruft `_batch_status_context` bewusst **nicht**
+  auf (`with_batch_status=False`) — `partials/recipient_rows.html` nutzt weder `missing_total`
+  noch `progress`, der Zählaufruf wäre dort nur verschwendet.
 
 Das Feature braucht nur die Paperless-Anbindung (`recipient_enabled` = URL + Token),
 **unabhängig** von `FEATURE_PAPERLESS_SYNC`.
@@ -73,10 +84,22 @@ Das Feature braucht nur die Paperless-Anbindung (`recipient_enabled` = URL + Tok
 - Repository: `get_recipient_cache(s)`, `set_recipient_cache`, `mark_recipient_applied`,
   `notify_recipient` (SSE-Token `rec:<id>`), `notify_batch` (SSE-Token `batch:recipient`,
   gedrosselt auf höchstens alle `BATCH_PUBLISH_INTERVAL=2.0` Sekunden; Start und Ende des
-  Laufs werden immer gemeldet).
+  Laufs werden immer gemeldet). `set_recipient_cache`/`mark_recipient_applied` akzeptieren
+  `notify: bool = True` — der Batch-Lauf ruft sie mit `notify=False` auf (intern über
+  `guard_concurrent`), damit nicht zusätzlich zum gedrosselten `batch:recipient` **pro
+  Dokument** ein eigenes ungedrosseltes `rec:<id>` feuert. Der nutzerinitiierte
+  Einzel-Vorschlag (`guard_concurrent=False`) meldet weiterhin sofort.
 - `PaperlessSync.batch_progress` liefert die Dataclass `BatchProgress` (`running`, `total`,
-  `done`, `failed`, `remaining`, `stopped`, `aborted_reason`, `finished_at`) — lebt nur im
-  Prozess, überlebt keinen Neustart.
+  `done`, `failed`, `skipped`, `remaining`, `stopped`, `aborted_reason`, `finished_at`) — lebt
+  nur im Prozess, überlebt keinen Neustart. `skipped` zählt Dokumente, die der Lauf wegen
+  eines zwischenzeitlich gesetzten Empfängers/Vorschlags überspringt (weder `done` noch
+  `failed`); `remaining` ist nach Laufende der tatsächliche offene Rest — Dokumente jenseits
+  des Limits **plus** eingeplante, aber wegen Stopp/Fehlerserie/Ausnahme nicht mehr erreichte
+  Dokumente (nicht nur der Limit-Rest, siehe Fallstricke unten).
+- `PaperlessSync.shutdown()` bricht einen laufenden Batch beim Herunterfahren des Prozesses ab
+  (`task.cancel()` + `asyncio.gather(..., return_exceptions=True)`) und wird im Lifespan
+  **vor** `repo.close()` aufgerufen — sonst könnte der Task bei einem SIGTERM mitten im Lauf
+  auf die bereits geschlossene SQLite-Verbindung zugreifen.
 
 ## Konfiguration (ENV)
 
@@ -93,6 +116,24 @@ wählt der Anwender pro Lauf in der Oberfläche).
   und überspringt bereits gecachte/gesetzte Dokumente — damit gefahrlos wiederholbar. Bleiben
   wegen des Limits Dokumente offen, zählt `BatchProgress.remaining` sie; das erscheint in der
   Toolbar, nicht nur im Log. Der Lauf muss dann erneut gestartet werden.
+- **Angezeigter Bestand ≠ Arbeitsmenge des Laufs:** `missing_total` (Toolbar) zählt Dokumente
+  ohne gesetzten Empfänger, per `count_missing_recipients`. `_collect_missing_ids` überspringt
+  zusätzlich Dokumente mit einem bestehenden Cache-Eintrag (Vorschlag unter der
+  Konfidenzschwelle oder „unbekannt" setzt das Paperless-Feld nicht) — die tatsächliche
+  Arbeitsmenge eines Laufs kann daher kleiner sein als der angezeigte Bestand. Ein exakter
+  Abgleich bräuchte bei jedem Seitenaufruf einen Vollscan und ist bewusst nicht implementiert;
+  die Toolbar benennt daher präzise „ohne gesetzten Empfänger" statt eine 1:1-Deckung zu
+  suggerieren. Endet ein Lauf mit `total == 0` (nichts Neues zu tun), zeigt die Oberfläche das
+  ausdrücklich statt „0 verarbeitet".
+- **Ausnahme vor/während der Dokumentschleife** (z.B. `_recipient_field_cached` oder
+  `_collect_missing_ids` scheitert, weil Paperless gerade neu startet) wird gefangen, geloggt
+  und setzt `BatchProgress.aborted_reason` — ohne das würde der Hintergrund-Task mit einer nie
+  abgeholten Ausnahme sterben und die Oberfläche „0 verarbeitet" ohne jeden Hinweis zeigen.
+  Derselbe Weg gilt für den frühen Ausstieg, wenn das Empfänger-Feld fehlt oder keine
+  Auswahloptionen hat.
+- **`retry-after` ist gedeckelt** (`recipient_llm._MAX_RETRY_AFTER`, 60 s): Ohne Obergrenze
+  könnte ein serverseitiges `retry-after: 600` den Lauf zehn Minuten in einem Dokument hängen
+  lassen, während „Abbrechen" so lange wirkungslos bliebe.
 - **Routen-Reihenfolge:** `POST /empfaenger/suggest-batch` und `POST /empfaenger/suggest-batch/stop`
   müssen in `app/main.py` **vor** `POST /empfaenger/{paperless_id}` registriert sein. Starlette
   matcht in Registrierungsreihenfolge — andernfalls fängt die parametrisierte Route den
