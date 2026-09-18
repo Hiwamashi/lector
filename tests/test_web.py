@@ -253,3 +253,12 @@ async def test_batch_status_default_limit_never_exceeds_batch_max(client, monkey
     ctx = await m._batch_status_context(_FakeRequest())
     assert ctx["batch_max"] == 50
     assert ctx["default_limit"] <= ctx["batch_max"]
+
+
+def test_recipients_page_shows_batch_toolbar_container(client):
+    # Ohne Paperless bleibt die Toolbar leer, der Container mit data-fragment
+    # muss aber da sein — sonst kann das Live-Update nicht greifen.
+    c, _ = client
+    resp = c.get("/empfaenger")
+    assert 'id="batch-status"' in resp.text
+    assert 'data-fragment="/fragment/empfaenger/batch-status"' in resp.text

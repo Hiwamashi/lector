@@ -16,8 +16,16 @@
   </span>
   <form method="post" action="/empfaenger/suggest-batch">
     <input type="number" name="limit" min="1" max="{{ batch_max }}" value="{{ default_limit }}" />
-    <button type="submit">KI-Vorschlag starten</button>
+    <button type="submit" {% if not missing_total %}disabled{% endif %}>KI-Vorschlag starten</button>
   </form>
+  {% if progress.finished_at %}
+  <span class="muted">
+    Zuletzt: {{ progress.done }} verarbeitet
+    {%- if progress.failed %}, {{ progress.failed }} Fehler{% endif %}
+    {%- if progress.stopped %} (abgebrochen){% endif %}
+    {%- if progress.remaining %} — {{ progress.remaining }} offen, erneut starten{% endif %}
+  </span>
+  {% endif %}
   {% endif %}
 </div>
 {% endif %}

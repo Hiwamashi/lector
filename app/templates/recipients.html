@@ -8,7 +8,13 @@
   Paperless-Anbindung fehlt. Setze <code>PAPERLESS_URL</code> und <code>PAPERLESS_TOKEN</code>,
   um Empfänger an Dokumenten zu pflegen.
 </div>
-{% else %}
+{% endif %}
+
+<div id="batch-status" data-fragment="/fragment/empfaenger/batch-status">
+  {% include "partials/batch_status.html" %}
+</div>
+
+{% if recipient_enabled %}
 
 {% if not field_present %}
 <div class="alert">
@@ -26,19 +32,7 @@
   <button type="submit">Filtern</button>
 </form>
 
-<div class="recipient-toolbar">
-  <span class="muted">{{ count }} Dokument(e){% if filters.missing %} ohne Empfänger{% endif %}</span>
-  {% if feature_llm %}
-  <form method="post" action="/empfaenger/suggest-batch">
-    <input type="hidden" name="page" value="{{ page }}" />
-    <input type="hidden" name="q" value="{{ filters.q }}" />
-    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
-    <button type="submit" {% if batch_running %}disabled title="Läuft bereits"{% endif %}>
-      {% if batch_running %}KI-Lauf läuft…{% else %}KI-Vorschlag für alle ohne Empfänger{% endif %}
-    </button>
-  </form>
-  {% endif %}
-</div>
+<p class="muted">{{ count }} Dokument(e){% if filters.missing %} ohne Empfänger{% endif %}</p>
 
 <table class="history" data-fragment="/fragment/empfaenger?{{ fragment_query }}">
   <thead>

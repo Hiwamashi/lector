@@ -1,6 +1,7 @@
-// Live-Updates via Server-Sent Events. Tokens haben die Form "doc:<id>" (Dokumente) bzw.
-// "inv:<id>" (Paperless-Rechnungen). Bei einem passenden Ereignis wird der dynamische Bereich
-// der aktuellen Seite (Listentabelle bzw. Detailansicht) neu geladen und ersetzt.
+// Live-Updates via Server-Sent Events. Tokens haben die Form "doc:<id>" (Dokumente),
+// "inv:<id>" (Paperless-Rechnungen) bzw. "batch:recipient" (Fortschritt des KI-Laufs).
+// Bei einem passenden Ereignis wird der dynamische Bereich der aktuellen Seite
+// (Listentabelle bzw. Detailansicht) neu geladen und ersetzt.
 (function () {
   "use strict";
 
@@ -18,6 +19,13 @@
       fetch(detail.getAttribute("data-fragment"))
         .then(function (r) { return r.text(); })
         .then(function (html) { detail.innerHTML = html; })
+        .catch(function () {});
+    }
+    var batch = document.getElementById("batch-status");
+    if (batch && batch.getAttribute("data-fragment")) {
+      fetch(batch.getAttribute("data-fragment"))
+        .then(function (r) { return r.text(); })
+        .then(function (html) { batch.innerHTML = html; })
         .catch(function () {});
     }
   }
