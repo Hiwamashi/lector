@@ -60,7 +60,19 @@ sie einzusetzen — der zuletzt erfolgreich geladene Inhalt bleibt dann stehen.
 **Damit das nicht still passiert**, blendet `app.js` in dem Fall die Hinweiszeile
 `#live-status` aus `base.html` ein („Live-Aktualisierung unterbrochen — die Anzeige kann
 veraltet sein"). Sie verschwindet beim nächsten erfolgreichen Refresh von selbst. Ausgelöst
-wird sie auch, wenn die SSE-Verbindung abreißt (`source.onerror`). Ohne diesen Hinweis stünde
+wird sie auch, wenn die SSE-Verbindung abreißt (`source.onerror`).
+
+Zwei Fallstricke stecken in dieser Zustandsführung, beide durch
+`tests/test_app_js.py` abgesichert (Node-Harness mit gefaktem DOM, übersprungen wenn kein
+`node` vorhanden ist):
+
+1. **Auswertung pro Zyklus, nicht pro Request.** `refreshFragment()` lädt bis zu drei
+   Fragmente parallel. Der Zustand wird über `Promise.allSettled` erst bestimmt, wenn alle
+   durch sind — sonst blendet ein erfolgreicher Parallel-Request den Hinweis wieder aus,
+   obwohl ein anderer im selben Zyklus fehlgeschlagen ist.
+2. **Getrennte Ursachen.** Fehlgeschlagener Refresh (`refreshFailed`) und abgerissener
+   Stream (`streamDown`) werden getrennt geführt. Sonst überdeckt ein gelungener Refresh
+   eine tote SSE-Verbindung, obwohl dann gar keine Ereignisse mehr eintreffen. Ohne diesen Hinweis stünde
 die Seite unbemerkt auf altem Stand — bei einem 45-Minuten-Lauf sähe eine eingefrorene
 Tabelle genauso aus wie eine, in der gerade nichts passiert.
 
