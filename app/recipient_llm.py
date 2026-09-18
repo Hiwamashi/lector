@@ -11,6 +11,7 @@ Kernprinzip: Die Modell-Antwort wird per Tool-Use **streng** auf eine der erlaub
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -24,6 +25,12 @@ ANTHROPIC_VERSION = "2023-06-01"
 _UNKNOWN = "unbekannt"
 # OCR-Text kann sehr lang sein; für die Zuordnung genügt der Anfang (Adressblock/Anrede).
 _MAX_CONTENT_CHARS = 6000
+
+# Anthropic drosselt bei Stoßlast (429) und meldet Überlast als 529. Ein Batch über
+# hunderte Dokumente läuft ohne Wiederholung sonst reihenweise ins Leere.
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE = 1.0
+_RETRY_STATUS = frozenset({429, 529})
 
 _SYSTEM = (
     "Du ordnest eingescannte Haushaltsdokumente dem richtigen Empfänger innerhalb einer "
@@ -40,7 +47,14 @@ class RecipientSuggesterError(RuntimeError):
 
 
 class RecipientSuggester:
-    def __init__(self, api_key: str, model: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         if not api_key:
             raise RecipientSuggesterError("ANTHROPIC_API_KEY ist nicht gesetzt")
         self._model = model
@@ -52,6 +66,7 @@ class RecipientSuggester:
                 "content-type": "application/json",
             },
             timeout=timeout,
+            transport=transport,
         )
 
     async def aclose(self) -> None:
@@ -114,9 +129,48 @@ class RecipientSuggester:
                 }
             ],
         }
-        resp = await self._client.post("/v1/messages", json=payload)
-        resp.raise_for_status()
+        resp = await self._post_with_retry(payload)
         return self._parse(resp.json(), options)
+
+    @staticmethod
+    def _retry_delay(attempt: int, resp: httpx.Response | None) -> float:
+        """Wartezeit vor dem nächsten Versuch; ein retry-after des Servers hat Vorrang."""
+        if resp is not None:
+            header = resp.headers.get("retry-after")
+            if header:
+                try:
+                    return max(0.0, float(header))
+                except ValueError:
+                    pass
+        return _BACKOFF_BASE * (2**attempt)
+
+    async def _post_with_retry(self, payload: dict) -> httpx.Response:
+        """Sendet die Anfrage und wiederholt sie bei Drosselung, Überlast oder Timeout."""
+        detail = "unbekannt"
+        for attempt in range(_MAX_ATTEMPTS):
+            resp: httpx.Response | None = None
+            try:
+                resp = await self._client.post("/v1/messages", json=payload)
+            except httpx.TimeoutException as exc:
+                detail = f"Zeitüberschreitung ({exc})"
+            else:
+                if resp.status_code < 400:
+                    return resp
+                retryable = resp.status_code in _RETRY_STATUS or resp.status_code >= 500
+                if not retryable:
+                    raise RecipientSuggesterError(
+                        f"Anthropic-API antwortete mit {resp.status_code}"
+                    )
+                detail = f"Status {resp.status_code}"
+            if attempt < _MAX_ATTEMPTS - 1:
+                delay = self._retry_delay(attempt, resp)
+                log.warning(
+                    "Anthropic-Aufruf fehlgeschlagen (%s), neuer Versuch in %.1f s", detail, delay
+                )
+                await asyncio.sleep(delay)
+        raise RecipientSuggesterError(
+            f"Anthropic-API nach {_MAX_ATTEMPTS} Versuchen nicht erreichbar ({detail})"
+        )
 
     @staticmethod
     def _build_prompt(

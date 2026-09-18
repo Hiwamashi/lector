@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
+from app import recipient_llm as rl
 from app.models import PaperlessInvoice, RecipientStatus
 from app.paperless import DocumentPage, PaperlessClient, PaperlessDocument, SelectField
 from app.recipient_llm import RecipientSuggester, RecipientSuggesterError
@@ -289,3 +291,112 @@ async def test_batch_auto_applies_when_field_empty(tmp_path):
     )
     assert client.writes == [(7, {1: "s"})]
     assert repo.get_recipient_cache(7).status == RecipientStatus.APPLIED
+
+
+# ---- Retry / Backoff im LLM-Client --------------------------------------
+
+
+def _ok_payload():
+    return {
+        "content": [
+            {
+                "type": "tool_use",
+                "name": "set_recipient",
+                "input": {"recipient": "Sascha", "confidence": 0.9, "reasoning": "r"},
+            }
+        ]
+    }
+
+
+def _suggester_with(responses, monkeypatch):
+    """Baut einen Suggester, dessen Transport die übergebenen Antworten der Reihe nach liefert.
+
+    Ein Eintrag ist entweder ein httpx.Response oder eine Exception, die geworfen wird.
+    Wartezeiten werden aufgezeichnet statt real abzuwarten.
+    """
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(rl.asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def handler(request):
+        item = responses[calls["n"]]
+        calls["n"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    suggester = rl.RecipientSuggester(
+        "key", "model", transport=httpx.MockTransport(handler)
+    )
+    return suggester, slept, calls
+
+
+async def test_retry_recovers_after_429(monkeypatch):
+    suggester, slept, calls = _suggester_with(
+        [httpx.Response(429), httpx.Response(200, json=_ok_payload())], monkeypatch
+    )
+    async with suggester:
+        result = await suggester.suggest(
+            title="t", correspondent=None, content="c", options=["Sascha"]
+        )
+    assert result.label == "Sascha"
+    assert calls["n"] == 2
+    assert slept == [1.0]
+
+
+async def test_retry_honours_retry_after_header(monkeypatch):
+    suggester, slept, _ = _suggester_with(
+        [
+            httpx.Response(429, headers={"retry-after": "7"}),
+            httpx.Response(200, json=_ok_payload()),
+        ],
+        monkeypatch,
+    )
+    async with suggester:
+        await suggester.suggest(
+            title="t", correspondent=None, content="c", options=["Sascha"]
+        )
+    assert slept == [7.0]
+
+
+async def test_retry_skips_client_errors(monkeypatch):
+    # 400 wird durch Warten nicht besser — genau ein Versuch, keine Wartezeit.
+    suggester, slept, calls = _suggester_with([httpx.Response(400)], monkeypatch)
+    async with suggester:
+        with pytest.raises(RecipientSuggesterError):
+            await suggester.suggest(
+                title="t", correspondent=None, content="c", options=["Sascha"]
+            )
+    assert calls["n"] == 1
+    assert slept == []
+
+
+async def test_retry_gives_up_after_three_attempts(monkeypatch):
+    suggester, slept, calls = _suggester_with(
+        [httpx.Response(529), httpx.Response(529), httpx.Response(529)], monkeypatch
+    )
+    async with suggester:
+        with pytest.raises(RecipientSuggesterError):
+            await suggester.suggest(
+                title="t", correspondent=None, content="c", options=["Sascha"]
+            )
+    assert calls["n"] == 3
+    assert slept == [1.0, 2.0]
+
+
+async def test_retry_covers_timeouts(monkeypatch):
+    suggester, slept, calls = _suggester_with(
+        [httpx.TimeoutException("zu langsam"), httpx.Response(200, json=_ok_payload())],
+        monkeypatch,
+    )
+    async with suggester:
+        result = await suggester.suggest(
+            title="t", correspondent=None, content="c", options=["Sascha"]
+        )
+    assert result.label == "Sascha"
+    assert calls["n"] == 2
