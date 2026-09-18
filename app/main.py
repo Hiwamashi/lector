@@ -488,6 +488,10 @@ async def _recipient_context(
         "fragment_query": urlencode(frag),
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
+        # Grundkontext, den BEIDE Templates brauchen — auch das Zeilen-Fragment ohne
+        # Batch-Status. Lag früher nur im Batch-Kontext und fehlte dadurch dem Fragment.
+        "page": page_obj.page,
+        "filters": {"q": q or "", "missing": missing},
     }
     # ``partials/recipient_rows.html`` (das Zeilen-Fragment unter /fragment/empfaenger)
     # nutzt weder missing_total noch progress — der Batch-Kontext würde dort nur einen

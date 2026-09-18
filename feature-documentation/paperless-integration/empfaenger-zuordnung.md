@@ -134,6 +134,13 @@ wählt der Anwender pro Lauf in der Oberfläche).
 - **`retry-after` ist gedeckelt** (`recipient_llm._MAX_RETRY_AFTER`, 60 s): Ohne Obergrenze
   könnte ein serverseitiges `retry-after: 600` den Lauf zehn Minuten in einem Dokument hängen
   lassen, während „Abbrechen" so lange wirkungslos bliebe.
+- **Kontext-Schlüssel des Zeilen-Fragments:** `/fragment/empfaenger` rendert
+  `partials/recipient_rows.html` **ohne** Batch-Status (spart einen Paperless-Zählaufruf).
+  Alles, was dieses Template braucht — `filters`, `page` —, muss deshalb im Grundkontext von
+  `_recipient_context` liegen, nicht in `_batch_status_context`. Vorsicht bei Tests: Ohne
+  Paperless-Anbindung antwortet die Route mit 404, das Template wird dann **gar nicht**
+  gerendert. Ein fehlender Schlüssel fällt sonst erst im Betrieb als 500 auf. Regressionstest:
+  `tests/test_web.py::test_recipient_row_fragment_renders_with_paperless`.
 - **Routen-Reihenfolge:** `POST /empfaenger/suggest-batch` und `POST /empfaenger/suggest-batch/stop`
   müssen in `app/main.py` **vor** `POST /empfaenger/{paperless_id}` registriert sein. Starlette
   matcht in Registrierungsreihenfolge — andernfalls fängt die parametrisierte Route den

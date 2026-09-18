@@ -358,3 +358,39 @@ async def test_batch_status_forms_carry_current_filters_as_hidden_fields(client,
     assert '<input type="hidden" name="page" value="3" />' in resp.text
     assert '<input type="hidden" name="q" value="rechnung" />' in resp.text
     assert '<input type="hidden" name="missing" value="1" />' in resp.text
+
+
+async def test_recipient_row_fragment_renders_with_paperless(client, monkeypatch):
+    """Regression: /fragment/empfaenger muss tatsächlich rendern, nicht nur früh aussteigen.
+
+    Ohne Paperless-Anbindung antwortet die Route mit 404 — dadurch wurde
+    ``partials/recipient_rows.html`` in der gesamten Suite nie gerendert, und ein
+    fehlender Kontext-Schlüssel (``filters``) fiel erst im Betrieb als 500 auf.
+    """
+    from app.models import RecipientRow
+    from app.paperless import DocumentPage, SelectField
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    row = RecipientRow(
+        paperless_id=7,
+        title="Rechnung",
+        correspondent=None,
+        document_date=None,
+        current_recipient=None,
+    )
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+
+    async def fake_list(*_a, **_kw):
+        page = DocumentPage(documents=[], count=1, page=1, page_size=50)
+        return [row], page, field
+
+    monkeypatch.setattr(sync, "list_recipient_documents", fake_list)
+
+    resp = c.get("/fragment/empfaenger?q=rechnung&missing=1&page=1")
+    assert resp.status_code == 200
+    # Die Hidden-Felder des Zeilen-Fragments tragen die aktuellen Filterwerte.
+    assert 'name="q" value="rechnung"' in resp.text
