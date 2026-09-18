@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Paperless nicht erreichbar — Lector{% endblock %}
+
+{% block content %}
+<h1>Paperless nicht erreichbar</h1>
+
+<div class="alert">{{ hinweis }}</div>
+
+<p class="muted">
+  Die Verarbeitung eingehender Dokumente läuft davon unabhängig weiter — betroffen sind nur
+  die Ansichten, die live aus Paperless lesen.
+</p>
+
+<p><a class="link" href="/">Zum Dashboard</a></p>
+{% endblock %}

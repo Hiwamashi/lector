@@ -187,3 +187,14 @@ body {
   .history th:nth-child(3), .history td:nth-child(3),
   .history th:nth-child(5), .history td:nth-child(5) { display: none; }
 }
+
+/* Batch-Statusleiste: Zähltext neben dem Balken statt darin — der Text wird je nach
+   Lauf unterschiedlich lang und wäre auf einer noch leeren Füllung nicht lesbar. */
+.batch-run { flex: 1 1 100%; display: flex; flex-direction: column; gap: 0.5rem; }
+.batch-run-head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.batch-run-head form { margin: 0; margin-left: auto; }
+/* Tabellenziffern: die Zahlen zählen im Sekundentakt hoch und sollen dabei nicht zappeln. */
+.batch-run-count { font-variant-numeric: tabular-nums; color: var(--ink); }
+.batch-bar { height: 0.4rem; background: var(--border); border-radius: 999px; overflow: hidden; }
+.batch-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+@media (prefers-reduced-motion: reduce) { .batch-bar-fill { transition: none; } }

@@ -1,20 +1,32 @@
 {% if recipient_enabled and feature_llm %}
 <div class="recipient-toolbar">
   {% if progress.running %}
-  <div class="progress">
-    <div class="progress-bar" style="width: {{ (((progress.done + progress.failed + progress.skipped) / progress.total * 100) if progress.total else 0) | round | int }}%"></div>
-    <span class="progress-label">
-      {{ progress.done }} / {{ progress.total }} verarbeitet
-      {%- if progress.skipped %}, {{ progress.skipped }} übersprungen{% endif %}
-      {%- if progress.failed %}, {{ progress.failed }} fehlgeschlagen{% endif %}
-    </span>
+  {% set anteil = (((progress.done + progress.failed + progress.skipped) / progress.total * 100) if progress.total else 0) | round | int %}
+  {# Der Zähltext steht NEBEN dem Balken, nicht darin: er wird beliebig lang (übersprungen,
+     fehlgeschlagen) und wäre auf einer noch leeren Füllung ohnehin unlesbar. #}
+  <div class="batch-run">
+    <div class="batch-run-head">
+      <span class="batch-run-count">{{ progress.done }} / {{ progress.total }} verarbeitet</span>
+      {% if progress.skipped or progress.failed %}
+      <span class="muted">
+        {%- if progress.skipped %}{{ progress.skipped }} übersprungen{% endif %}
+        {%- if progress.skipped and progress.failed %} · {% endif %}
+        {%- if progress.failed %}{{ progress.failed }} fehlgeschlagen{% endif %}
+      </span>
+      {% endif %}
+      <form method="post" action="/empfaenger/suggest-batch/stop">
+        <input type="hidden" name="page" value="{{ page }}" />
+        <input type="hidden" name="q" value="{{ filters.q }}" />
+        <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
+        <button type="submit" class="link-button">Abbrechen</button>
+      </form>
+    </div>
+    <div class="batch-bar" role="progressbar" aria-valuenow="{{ anteil }}"
+         aria-valuemin="0" aria-valuemax="100"
+         aria-label="Fortschritt des KI-Laufs">
+      <div class="batch-bar-fill" style="width: {{ anteil }}%"></div>
+    </div>
   </div>
-  <form method="post" action="/empfaenger/suggest-batch/stop">
-    <input type="hidden" name="page" value="{{ page }}" />
-    <input type="hidden" name="q" value="{{ filters.q }}" />
-    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
-    <button type="submit" class="link-button">Abbrechen</button>
-  </form>
   {% else %}
   <span class="muted">
     {% if missing_total_unknown %}
