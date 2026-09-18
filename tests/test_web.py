@@ -31,7 +31,9 @@ def test_dashboard_empty(client):
     resp = c.get("/")
     assert resp.status_code == 200
     assert "Lector" in resp.text
-    assert "Keine Dokumente." in resp.text
+    # Der Leerzustand nennt seit der UI-Politur auch den Grund, nicht nur die Tatsache.
+    assert "Noch nichts eingegangen." in resp.text
+    assert "überwachten Eingangsordner" in resp.text
 
 
 def test_dashboard_shows_document_and_detail(client):
@@ -62,6 +64,43 @@ def test_history_fragment_filter_by_status(client):
     frag = c.get("/fragment/history", params={"status": "done"})
     assert "a.pdf" in frag.text
     assert "b.pdf" not in frag.text
+
+
+def test_laufendes_dokument_zeigt_fortschrittsbalken(client):
+    """Der Balken ist das Zeichen, dass gerade etwas passiert. Er haengt deshalb am
+    Status ``processing`` und nicht daran, dass Seitenzahlen bekannt sind."""
+    c, application = client
+    repo = application.state.repo
+    from app.models import DocStatus
+
+    laufend = repo.create_document(original_filename="lang.pdf", source_path="/x/lang.pdf")
+    repo.update_document(laufend, total_pages=9)
+    repo.set_status(laufend, DocStatus.PROCESSING)
+    repo.set_progress(laufend, 4)
+
+    fertig = repo.create_document(original_filename="kurz.pdf", source_path="/x/kurz.pdf")
+    repo.update_document(fertig, total_pages=2)
+    repo.set_status(fertig, DocStatus.DONE)
+    repo.set_progress(fertig, 2)
+
+    text = c.get("/fragment/history").text
+    assert 'class="progress-inline"' in text
+    assert "width: 44%" in text          # 4 von 9, abgerundet
+    assert text.count('class="progress-inline"') == 1   # nur das laufende
+    assert "4/9" in text and "2/2" in text
+
+
+def test_zeilen_tragen_signatur_fuer_den_abgleich(client):
+    """app.js vergleicht data-rev vor und nach einem Live-Abgleich, um nur geaenderte
+    Zeilen aufleuchten zu lassen. Fehlt die Signatur, leuchtet jede Zeile bei jedem
+    Takt — und sagt damit nichts mehr aus."""
+    c, application = client
+    repo = application.state.repo
+    doc_id = repo.create_document(original_filename="a.pdf", source_path="/x/a.pdf")
+
+    text = c.get("/fragment/history").text
+    assert f'data-row-id="{doc_id}"' in text
+    assert "data-rev=" in text
 
 
 def test_detail_404(client):

@@ -3,7 +3,9 @@
 <section class="tiles">
   {% set tile_order = ["processing", "pending", "done", "skipped_erechnung", "failed"] %}
   {% for key in tile_order %}
-  <a class="tile tile--{{ key }}" href="/?status={{ key }}">
+  {# aria-current macht den aktiven Filter zugleich sichtbar und vorlesbar. #}
+  <a class="tile tile--{{ key }}" href="/?status={{ key }}"
+     {% if filters.status == key|string %}aria-current="true"{% endif %}>
     <span class="tile-count">{{ counts.get(key, 0) }}</span>
     <span class="tile-label">{{ status_labels[key] }}</span>
   </a>

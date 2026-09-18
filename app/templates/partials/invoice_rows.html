@@ -1,8 +1,15 @@
 {% if not invoices %}
-<tr class="empty"><td colspan="8">Keine Rechnungen.</td></tr>
+<tr class="empty"><td colspan="8">
+  <span class="empty-title">Keine Rechnungen.</span>
+  <span class="empty-hint">
+    Rechnungen erscheinen hier, sobald Lector sie aus Paperless eingelesen hat.
+  </span>
+</td></tr>
 {% endif %}
+{# Signatur der Felder, die sich im Betrieb aendern — siehe history_rows.html. #}
 {% for inv in invoices %}
-<tr>
+<tr data-row-id="{{ inv.id }}"
+    data-rev="{{ inv.giro_status }}:{{ inv.sevdesk_status }}:{{ '1' if inv.paid else '0' }}">
   <td class="invoice-date">{{ inv.document_date | fmt_date }}</td>
   <td class="filename"><a href="/invoices/{{ inv.id }}">{{ inv.title or ("#" ~ inv.paperless_id) }}</a></td>
   <td>{{ inv.correspondent or "—" }}</td>

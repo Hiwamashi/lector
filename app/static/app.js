@@ -57,6 +57,45 @@
     });
   }
 
+  // Die Listen aktualisieren sich von selbst. Ein harter innerHTML-Tausch macht das
+  // unsichtbar: die Zeile steht danach genauso da wie vorher, nur mit anderem Inhalt —
+  // wer nicht zufaellig hinsieht, bemerkt nichts und vergleicht gegen sein Gedaechtnis.
+  // Deshalb vor dem Tausch die Signaturen (data-rev) sichern, danach vergleichen und nur
+  // die wirklich geaenderten Zeilen kurz aufleuchten lassen. Der Vergleich laeuft ueber
+  // data-row-id, nicht ueber die Position: eine Zeile, die nur weiter nach oben rutscht,
+  // hat sich nicht geaendert und soll nicht blinken.
+  var FLASH_MS = 1600;  // Dauer von .row-updated in app.css
+
+  function signaturen(container) {
+    var map = {};
+    var rows = container.querySelectorAll("tr[data-row-id]");
+    for (var i = 0; i < rows.length; i++) {
+      map[rows[i].getAttribute("data-row-id")] = rows[i].getAttribute("data-rev");
+    }
+    return map;
+  }
+
+  // Die Klasse muss auch dann wieder verschwinden, wenn gar nicht animiert wird: unter
+  // prefers-reduced-motion faerbt app.css die Zeile ohne Animation ein, ein
+  // animationend-Ereignis kaeme dort nie — die Zeile bliebe dauerhaft markiert.
+  // Deshalb eine Frist statt eines Ereignisses.
+  function markiere(row) {
+    row.classList.add("row-updated");
+    setTimeout(function () { row.classList.remove("row-updated"); }, FLASH_MS);
+  }
+
+  function applyRows(body, html) {
+    var vorher = signaturen(body);
+    body.innerHTML = html;
+    var rows = body.querySelectorAll("tr[data-row-id]");
+    for (var i = 0; i < rows.length; i++) {
+      // Unbekannte id = neue Zeile, abweichende Signatur = geaenderte Zeile. Beides
+      // verdient das Aufleuchten, unveraenderte Zeilen nicht.
+      if (vorher[rows[i].getAttribute("data-row-id")] === rows[i].getAttribute("data-rev")) continue;
+      markiere(rows[i]);
+    }
+  }
+
   function loadFragment(url, options, apply, mine) {
     var abbruch = typeof AbortController === "function" ? new AbortController() : null;
     var opts = {};
@@ -120,7 +159,7 @@
       jobs.push(loadFragment(
         table.getAttribute("data-fragment"),
         { headers: { "X-Requested-With": "fetch" } },
-        function (html) { if (body) body.innerHTML = html; },
+        function (html) { if (body) applyRows(body, html); },
         mine
       ));
     }
