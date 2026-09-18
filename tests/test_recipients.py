@@ -484,6 +484,27 @@ class _FailingSuggester:
         return RecipientSuggestion(label="Sascha", confidence=0.9, reasoning="r")
 
 
+class _PatternSuggester:
+    """Stub, der Erfolg/Fehlschlag exakt nach einem vorgegebenen Muster liefert.
+
+    Im Unterschied zu ``_FailingSuggester`` (nur "die ersten N scheitern") kann hier
+    zwischen Fehlern auch mehrfach ein Erfolg liegen — nötig, um kumulative von
+    konsekutiver Fehlerzahl zu unterscheiden.
+    """
+
+    def __init__(self, pattern: list[bool]):
+        self._pattern = list(pattern)
+
+    async def suggest(self, **_):
+        from app.models import RecipientSuggestion
+        from app.recipient_llm import RecipientSuggesterError
+
+        ok = self._pattern.pop(0)
+        if not ok:
+            raise RecipientSuggesterError("throttled")
+        return RecipientSuggestion(label="Sascha", confidence=0.9, reasoning="r")
+
+
 def _batch_sync(tmp_path, monkeypatch, doc_ids, suggester):
     """Baut einen PaperlessSync, dessen Batch-Lauf gegen Stubs statt gegen das Netz läuft."""
     from contextlib import asynccontextmanager
@@ -572,14 +593,20 @@ async def test_success_resets_error_streak(tmp_path, monkeypatch):
     from app import paperless_sync as ps
 
     monkeypatch.setattr(ps, "BATCH_ERROR_STREAK", 3)
-    # 2 Fehler, dann Erfolge — die Serie darf den Lauf nicht abbrechen.
-    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3, 4, 5], _FailingSuggester(fail_first=2))
+    # Muster: Fehler, Fehler, Erfolg, Fehler, Fehler, Erfolg, Fehler — kumulativ 5 Fehler
+    # (über der Schwelle 3), aber nie mehr als 2 in Folge. Ohne den Reset im Erfolgsfall
+    # würde die Serie über den ersten Erfolg hinaus weiterzählen und spätestens beim
+    # vierten Dokument (Fehler Nr. 3 in Folge) abbrechen.
+    pattern = [False, False, True, False, False, True, False]
+    sync, _ = _batch_sync(
+        tmp_path, monkeypatch, list(range(1, len(pattern) + 1)), _PatternSuggester(pattern)
+    )
 
     await sync.suggest_recipients_batch(limit=50)
     p = sync.batch_progress
     assert p.aborted_reason is None
-    assert p.failed == 2
-    assert p.done == 3
+    assert p.failed == 5
+    assert p.done == 2
 
 
 async def test_progress_publishes_are_throttled(tmp_path, monkeypatch):
