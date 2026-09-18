@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Projektstatus
 
-Dieses Repository enthält bislang **nur** das PRD (`prd/PRD_Lector.md`) und die LICENSE — **noch keinen Quellcode**. Die folgende Architektur ist daher die im PRD festgelegte Soll-Vorgabe, nach der die Implementierung erfolgt. Das PRD ist die maßgebliche Quelle; bei Unklarheiten dort nachlesen.
+Das MVP ist vollständig umgesetzt und läuft produktiv auf dem NAS. Dazu kommen zwei
+Zusatz-Features: die Paperless-Integration (GiroCode, SevDesk-Export, Empfänger-Zuordnung,
+standardmäßig über `FEATURE_PAPERLESS_SYNC` deaktiviert) und das Image-Deployment über die
+Scaleway Container Registry. Der OCR-Weg ist mit echten Document-AI-Credentials verifiziert.
+
+**Maßgebliche Quellen:** `prd/PROGRESS.md` für den aktuellen Stand, `prd/PRD_Lector.md` für
+die Soll-Architektur. Die unten beschriebene Architektur entspricht dem umgesetzten Code;
+bewusste Abweichungen vom PRD sind in `PROGRESS.md` begründet (u. a. UI-Stack, kein lokales
+Auto-Rotate).
 
 ## Was ist Lector?
 
@@ -12,13 +20,14 @@ Lector ist ein lokaler Backend-Service (zusätzlicher Docker-Container im besteh
 
 **Kernprinzip:** Lector schiebt sich als reiner Veredelungsschritt **vor** Paperless, ersetzt es nicht. Es kümmert sich ausschließlich um Texterkennung und Bildaufbereitung. Klassifizierung, Tags und Korrespondenten bleiben vollständig bei Paperless.
 
-## Geplanter Tech-Stack
+## Tech-Stack
 
 - **Sprache/Runtime:** Python 3.12+
 - **Web-Framework:** FastAPI + uvicorn (ein Prozess für Web-UI, interne API und Hintergrund-Worker)
-- **UI:** Jinja2-Templates + HTMX + Tailwind (Standalone-CLI, **kein** Node-Buildchain)
+- **UI:** serverseitige Jinja2-Templates + offline-CSS + Vanilla-JS (**kein** Node-Buildchain,
+  **kein** HTMX/Tailwind zur Laufzeit — bewusste Abweichung vom PRD, siehe `PROGRESS.md`)
 - **Live-Status:** Server-Sent Events (SSE)
-- **Bildvorverarbeitung:** OpenCV + Pillow (Deskew, Auto-Rotate, Kontrast/Graustufen)
+- **Bildvorverarbeitung:** OpenCV + Pillow (Deskew, Kontrast/Graustufen; Orientierung übernimmt Document AI)
 - **PDF-Handling:** pypdf / pikepdf (Split/Merge, eingebettete Dateien) + reportlab (Textlayer)
 - **OCR-Engine:** google-cloud-documentai, hinter einem austauschbaren Adapter-Interface
 - **Watch-Folder:** watchdog
@@ -61,7 +70,12 @@ Lector ist ein lokaler Backend-Service (zusätzlicher Docker-Container im besteh
 ## Konfiguration (ENV)
 
 Sämtliche Einstellungen laufen über Umgebungsvariablen — keine Config-Dateien für Laufzeitparameter. Wichtige Variablen:
-`OCR_PROVIDER`, `GCP_PROJECT_ID`, `DOCAI_LOCATION` (`eu`), `DOCAI_PROCESSOR_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`, `DB_PATH`, `PROCESSED_RETENTION_DAYS`, `RETRY_DELAY_MINUTES`, `RETRY_MAX`, `CHUNK_SIZE_PAGES`, `PREPROCESS_DESKEW`, `PREPROCESS_AUTOROTATE`, `PREPROCESS_CONTRAST`, `TZ`, `PUID`, `PGID`.
+`OCR_PROVIDER`, `GCP_PROJECT_ID`, `DOCAI_LOCATION` (`eu`), `DOCAI_PROCESSOR_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`, `DB_PATH`, `PROCESSED_RETENTION_DAYS`, `RETRY_DELAY_MINUTES`, `RETRY_MAX`, `CHUNK_SIZE_PAGES`,
+`DOCAI_MAX_PAGES_PER_MINUTE`, `PREPROCESS_DESKEW`, `PREPROCESS_CONTRAST`, `TZ`, `PUID`, `PGID`.
+
+Ein `PREPROCESS_AUTOROTATE` gibt es **nicht** (Schritt entfernt, siehe `PROGRESS.md`).
+Vollständige Liste inkl. der Paperless-/SevDesk-Variablen: `.env.example` und
+`feature-documentation/konfiguration.md`.
 
 ## Wichtige Vorgaben & Fallstricke
 
@@ -71,11 +85,12 @@ Sämtliche Einstellungen laufen über Umgebungsvariablen — keine Config-Dateie
 - **Explizit ausgeschlossen:** inhaltliche Datenextraktion/Klassifizierung/Tags (Aufgabe von Paperless), manueller Datei-Upload, eigenes Scannen, Cloud-Anbindung außer der OCR-Engine.
 - **E-Rechnungs-Bypass ist deterministisch** — niemals per KI/OCR raten.
 
-## Offene Fragen (vor Implementierung klären)
+## Getroffene Entscheidungen (vormals offene Fragen)
 
-1. Vollständigkeitserkennung im Watch-Folder: Größenstabilität vs. `.tmp`/`.part`-Rename — abhängig davon, wie Dateien auf der NAS in `scan-in` landen.
-2. Bereits durchsuchbare PDFs: überspringen und durchreichen oder stets durch Document AI laufen lassen?
-3. Throttling gegen Document-AI-Quota („pages per minute") bei großen Dokumenten/Stoßlast.
+1. **Vollständigkeitserkennung im Watch-Folder:** kombiniert — Rename aus `.tmp`/`.part`/`.crdownload`
+   bevorzugt, Größenstabilität über N Sekunden als Fallback.
+2. **Bereits durchsuchbare PDFs:** laufen **immer** durch Document AI (einheitliches Ergebnis).
+3. **Document-AI-Throttling:** seitenbasiertes Rate-Limit im Worker (`DOCAI_MAX_PAGES_PER_MINUTE`).
 
 ---
 

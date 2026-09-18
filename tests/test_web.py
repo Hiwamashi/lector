@@ -133,3 +133,14 @@ def test_recipients_set_without_paperless_redirects(client):
     resp = c.post("/empfaenger/5", data={"recipient": "Sascha"}, follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/empfaenger")
+
+
+def test_recipients_suggest_batch_route_not_shadowed(client):
+    # Regression: Die parametrisierte Route /empfaenger/{paperless_id} darf die statische
+    # Batch-Route nicht verschlucken. Starlette matcht in Registrierungsreihenfolge —
+    # stand die parametrisierte zuerst, lief der Batch-Klick in einen 422
+    # (int_parsing, input="suggest-batch") statt den Lauf zu starten.
+    c, _ = client
+    resp = c.post("/empfaenger/suggest-batch", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/empfaenger")

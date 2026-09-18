@@ -445,6 +445,21 @@ async def recipients_fragment(
     return templates.TemplateResponse(request, "partials/recipient_rows.html", ctx)
 
 
+# Muss VOR /empfaenger/{paperless_id} stehen: Starlette matcht Routen in
+# Registrierungsreihenfolge, sonst faengt die parametrisierte Route "suggest-batch"
+# als paperless_id ab und die Anfrage scheitert mit 422 (int_parsing).
+@app.post("/empfaenger/suggest-batch")
+async def recipient_suggest_batch(
+    request: Request,
+    page: int = Form(1),
+    q: str = Form(""),
+    missing: str = Form(""),
+):
+    sync: PaperlessSync = request.app.state.sync
+    sync.start_batch()
+    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
+
+
 @app.post("/empfaenger/{paperless_id}")
 async def recipient_set(
     request: Request,
@@ -472,18 +487,6 @@ async def recipient_suggest(
         await sync.suggest_recipient(paperless_id)
     except Exception:
         log.exception("KI-Empfänger-Vorschlag für Dokument %s fehlgeschlagen", paperless_id)
-    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
-
-
-@app.post("/empfaenger/suggest-batch")
-async def recipient_suggest_batch(
-    request: Request,
-    page: int = Form(1),
-    q: str = Form(""),
-    missing: str = Form(""),
-):
-    sync: PaperlessSync = request.app.state.sync
-    sync.start_batch()
     return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
 
 

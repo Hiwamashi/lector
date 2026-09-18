@@ -77,4 +77,16 @@ Das Feature braucht nur die Paperless-Anbindung (`recipient_enabled` = URL + Tok
 - **`follow_redirects=True`** im Paperless-Client: paginierte `next`-URLs kommen teils mit
   `http`-Schema und lösen hinter dem HTTPS-Proxy einen 308 aus — muss verfolgt werden.
 - Der Batch-Lauf ist auf `RECIPIENT_BATCH_MAX=1000` Dokumente pro Durchlauf gedeckelt und
-  überspringt bereits gecachte/gesetzte Dokumente — damit gefahrlos wiederholbar.
+  überspringt bereits gecachte/gesetzte Dokumente — damit gefahrlos wiederholbar. Bei mehr
+  als 1000 Dokumenten ohne Empfänger bleibt der Rest liegen; das erscheint **nur** als
+  `log.warning`, die UI zeigt es nicht an. Der Lauf muss dann erneut gestartet werden.
+- **Routen-Reihenfolge:** `POST /empfaenger/suggest-batch` muss in `app/main.py` **vor**
+  `POST /empfaenger/{paperless_id}` registriert sein. Starlette matcht in
+  Registrierungsreihenfolge — andernfalls fängt die parametrisierte Route den statischen
+  Pfad ab und der Batch-Klick endet in einem 422
+  (`int_parsing`, `input="suggest-batch"`) statt den Lauf zu starten. Regressionstest:
+  `tests/test_web.py::test_recipients_suggest_batch_route_not_shadowed`.
+- **Kein Rate-Limit-Handling im LLM-Client:** `recipient_llm.py` macht `raise_for_status()`
+  ohne Retry/Backoff. Ein 429/529 der Anthropic-API lässt den Vorschlag für das betroffene
+  Dokument aus (wird geloggt, Schleife läuft weiter) — bei langen Läufen können so einzelne
+  Dokumente ohne Vorschlag bleiben.

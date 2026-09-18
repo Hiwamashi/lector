@@ -3,7 +3,7 @@
 > Fortlaufend gepflegter Stand der MVP-Umsetzung (siehe `PRD_Lector.md`).
 > Legende: ✅ umgesetzt · 🚧 in Arbeit · ⬜ offen
 
-**Stand:** 2026-06-15
+**Stand:** 2026-09-18
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
 
@@ -34,7 +34,7 @@
 | Live-Updates via SSE | ✅ |
 | Docker / Compose-Integration | ✅ |
 
-**MVP vollständig umgesetzt.** 41 Tests grün, `ruff` sauber, Docker-Image baut und startet.
+**MVP vollständig umgesetzt.** `ruff` sauber, Docker-Image baut und startet.
 Feature-Doku unter `feature-documentation/`.
 
 ## Zusatz-Feature: Paperless-Integration (GiroCode & SevDesk) — entkoppelt
@@ -58,7 +58,7 @@ Dokument zurückgeschrieben. Standardmäßig deaktiviert (`FEATURE_PAPERLESS_SYN
 | KI-Empfänger-Vorschlag (Anthropic, `app/recipient_llm.py`) — einzeln + Batch, Auto-Apply | ✅ |
 | Tabelle `document_recipients` (KI-Vorschlag-Cache) | ✅ |
 
-82 Tests grün. `ruff` sauber.
+98 Tests grün. `ruff` sauber.
 Feature-Doku unter `feature-documentation/paperless-integration/`
 (neu: `rechnungs-ui.md`, `empfaenger-zuordnung.md`).
 Empfänger-Feature **live gegen die Paperless-Instanz verifiziert**: select-Feld-Auflösung,
@@ -68,9 +68,9 @@ und KI-Vorschlag (korrekte Zuordnung bzw. „unbekannt") end-to-end getestet. Do
 Live-Paperless-Instanz verifiziert — daher wird die Vorschau über einen Lector-Proxy
 ausgeliefert.
 
-**Zu verifizieren (benötigt Zugangsdaten):** End-to-End gegen echte Paperless-Instanz
-(Token/URL/Dokumententyp-Name) und echtes SevDesk-Konto (API-Token, Systemversion 2.0 für
-E-Rechnungs-Belege). Bisher offline + via TestClient verifiziert.
+**End-to-End live verifiziert (2026-09-18):** gegen die echte Paperless-Instanz
+(Token/URL/Dokumententyp-Name) und gegen ein echtes SevDesk-Konto (API-Token,
+Systemversion 2.0 für E-Rechnungs-Belege).
 
 ## Zusatz-Feature: Image-Deployment über Scaleway Container Registry
 
@@ -87,16 +87,18 @@ getrennter manueller Schritt.
 | Gate: kein Push aus schmutzigem Worktree (SHA-Tags reproduzierbar) | ✅ |
 | Compose auf Registry-Image umgestellt, `build:` deaktiviert + Regressionstest | ✅ |
 | arm64-Lauffähigkeit lokal belegt (Container gestartet, HTTP-Antwort) | ✅ |
-| Rollout auf dem NAS (`compose pull` + `up -d`) | ⏳ offen — nur vom Anwender prüfbar |
+| Rollout auf dem NAS (`compose pull` + `up -d`) | ✅ vom Anwender durchgeführt (2026-09-18) |
 
-## Verbleibend / zu verifizieren
+## Im Betrieb verifiziert (2026-09-18)
 
-- **End-to-End mit echtem Document AI:** Bisher mit Fake-Adapter und über den
-  E-Rechnungs-Bypass live getestet. Der OCR-Weg mit echten GCP-Credentials steht noch aus
-  (benötigt `GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, Service-Account-JSON).
-- Registry-Deployment: `docker compose pull lector && docker compose up -d lector`
-  auf dem NAS (`Teams/Docker/paperless-ngx-stack`) ausführen und Port 8001 prüfen.
-  Aus der Entwicklungsumgebung nicht verifizierbar.
+Alle zuvor offenen Verifikationspunkte sind vom Anwender geschlossen:
+
+- **End-to-End mit echtem Document AI:** Der OCR-Weg läuft mit echten GCP-Credentials
+  (`GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, Service-Account-JSON) — nicht mehr nur
+  Fake-Adapter und E-Rechnungs-Bypass.
+- **Registry-Deployment:** `docker compose pull lector && docker compose up -d lector`
+  auf dem NAS (`Teams/Docker/paperless-ngx-stack`) ausgeführt, Dienst auf Port 8001 erreichbar.
+- **Paperless & SevDesk:** Sync und Beleg-Upload gegen die produktiven Konten bestätigt.
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
