@@ -5,6 +5,9 @@
 // (z.B. 503, wenn Paperless gerade nicht erreichbar ist) werden verworfen — der zuletzt
 // erfolgreich geladene Inhalt bleibt dann stehen, statt durch eine Fehlermeldung zu
 // verschwinden.
+//
+// Waehrend eines laufenden KI-Empfaenger-Laufs kommt ein fester Abfragetakt hinzu (siehe
+// syncBatchPolling): Der Fortschritt darf nicht allein an SSE haengen.
 (function () {
   "use strict";
 
@@ -30,12 +33,81 @@
     if (el) el.hidden = !(refreshFailed || streamDown);
   }
 
+  // Ein Request ohne Frist kann beliebig lange haengen — ein gestauter Reverse Proxy oder
+  // eine halboffene Verbindung liefert weder Antwort noch Fehler. Fuer den Abfragetakt
+  // waere das toedlich: Er plant den naechsten Zyklus erst, wenn der vorige durch ist, und
+  // ein Zyklus, der nie abschliesst, haelt ihn dauerhaft an — die Anzeige stuende still,
+  // ohne dass irgendetwas nach einem Fehler aussieht. Genau der Zustand, den der Takt
+  // beheben soll. Mit Frist scheitert der Request stattdessen sichtbar (Veraltet-Hinweis)
+  // und der Takt laeuft weiter.
+  var FRAGMENT_TIMEOUT_MS = 15000;
+
+  // Race statt reinem AbortController: Die Frist muss auch dann greifen, wenn
+  // AbortController fehlt. Der Abbruch kommt obendrauf und gibt die Verbindung frei.
+  function withDeadline(promise, abbruch) {
+    return new Promise(function (resolve, reject) {
+      var frist = setTimeout(function () {
+        if (abbruch) abbruch.abort();
+        reject(new Error("timeout"));
+      }, FRAGMENT_TIMEOUT_MS);
+      promise.then(
+        function (wert) { clearTimeout(frist); resolve(wert); },
+        function (fehler) { clearTimeout(frist); reject(fehler); }
+      );
+    });
+  }
+
   function loadFragment(url, options, apply, mine) {
-    return fetch(url, options)
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-      // Inhalt nur einsetzen, solange dieser Zyklus der juengste ist: sonst schreibt eine
-      // spaet eintreffende Antwort aelteren Inhalt ueber den bereits aktuelleren.
-      .then(function (html) { if (mine === cycle) apply(html); });
+    var abbruch = typeof AbortController === "function" ? new AbortController() : null;
+    var opts = {};
+    if (options) { for (var k in options) opts[k] = options[k]; }
+    if (abbruch) opts.signal = abbruch.signal;
+    return withDeadline(
+      fetch(url, opts)
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+        // Inhalt nur einsetzen, solange dieser Zyklus der juengste ist: sonst schreibt eine
+        // spaet eintreffende Antwort aelteren Inhalt ueber den bereits aktuelleren.
+        .then(function (html) { if (mine === cycle) apply(html); }),
+      abbruch
+    );
+  }
+
+  // Der Fortschritt eines KI-Laufs haengt sonst allein am SSE-Strom. Der ist unterwegs
+  // fragil: Reverse Proxies puffern `text/event-stream` gern, dann bleibt die Verbindung
+  // aeusserlich gesund, waehrend kein Ereignis mehr ankommt — die Zahl steht still, ohne
+  // dass irgendetwas nach einem Fehler aussaehe. Solange ein Lauf laeuft, fragt die Seite
+  // deshalb zusaetzlich von sich aus nach; ausserhalb eines Laufs bleibt es bei SSE.
+  // Die Pause entspricht der Drosselung im Backend (BATCH_PUBLISH_INTERVAL), haeufiger
+  // brauchte es nicht: oefter meldet der Lauf ohnehin nichts Neues. Sie liegt ZWISCHEN
+  // den Zyklen, nicht in einem festen Raster — siehe scheduleBatchPoll.
+  var BATCH_POLL_MS = 2000;
+  var batchPolling = false;  // laeuft gerade ein Takt, weil ein Lauf aktiv ist?
+  var batchTimer = null;     // Handle des naechsten geplanten Zyklus
+
+  function syncBatchPolling() {
+    var laeuft = !!document.querySelector("#batch-status [data-batch-running]");
+    if (laeuft === batchPolling) return;
+    batchPolling = laeuft;
+    if (laeuft) {
+      scheduleBatchPoll();
+    } else if (batchTimer !== null) {
+      clearTimeout(batchTimer);
+      batchTimer = null;
+    }
+  }
+
+  // Kette statt festem Raster: Der naechste Zyklus wird erst geplant, wenn der vorige
+  // durch ist. Ein setInterval wuerde bei Antwortzeiten oberhalb von BATCH_POLL_MS jeden
+  // laufenden Zyklus vom naechsten ueberholen lassen — der Veralterungsschutz in
+  // loadFragment verwirft dann JEDE Antwort, und die Anzeige stuende dauerhaft still.
+  // Genau der Zustand, den der Takt beheben soll.
+  function scheduleBatchPoll() {
+    batchTimer = setTimeout(function () {
+      batchTimer = null;
+      refreshFragment().then(function () {
+        if (batchPolling) scheduleBatchPoll();
+      });
+    }, BATCH_POLL_MS);
   }
 
   function refreshFragment() {
@@ -64,13 +136,13 @@
     if (batch && batch.getAttribute("data-fragment")) {
       jobs.push(loadFragment(
         batch.getAttribute("data-fragment"), undefined,
-        function (html) { batch.innerHTML = html; },
+        function (html) { batch.innerHTML = html; syncBatchPolling(); },
         mine
       ));
     }
-    if (!jobs.length) return;
+    if (!jobs.length) return Promise.resolve();
 
-    Promise.allSettled(jobs).then(function (results) {
+    return Promise.allSettled(jobs).then(function (results) {
       if (mine !== cycle) return;  // von einem neueren Zyklus ueberholt
       refreshFailed = results.some(function (r) { return r.status === "rejected"; });
       updateLiveStatus();
@@ -87,6 +159,9 @@
     return null;
   }
 
+  // Vor dem EventSource-Check: Ohne SSE-Unterstuetzung soll der Fortschritt trotzdem laufen.
+  syncBatchPolling();
+
   if (!window.EventSource) return;
   var source = new EventSource("/events");
   var detail = currentDetail();
@@ -101,6 +176,8 @@
     var id = parseInt(parts[1], 10);
     // Auf einer Detailseite nur reagieren, wenn das betroffene Objekt gemeint ist.
     if (detail !== null && (type !== detail.type || id !== detail.id)) return;
+    // Waehrend eines Laufs laeuft der Takt schon — SSE wuerde nur verdoppeln.
+    if (batchPolling) return;
     if (pending) return;
     pending = true;
     // kleine Entprellung, damit Bursts von Ereignissen zu einem Refresh führen

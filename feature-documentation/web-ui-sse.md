@@ -39,8 +39,33 @@ Desktop-primär und responsive (PRD §5.1). Siehe Abweichungshinweis in [README.
 
 `app/static/favicon.svg`: schlankes SVG-Favicon im Branding (Dokument-Glyph in der
 Akzentfarbe `#2f6f8f`, passend zur Brand-Mark „▤"). Eingebunden in `base.html` per
-`<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />`. SVG statt `.ico`,
+`<link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}" />`. SVG statt `.ico`,
 da kein Buildchain nötig ist und das Format im LAN-Browserumfeld ausreicht.
+
+## Statische Dateien & Cache-Busting
+
+`base.html` bindet CSS, JS und Favicon **nicht** über feste Pfade ein, sondern über den
+Jinja-Global `static_url()` aus `app/main.py`:
+
+```html
+<link rel="stylesheet" href="{{ static_url('app.css') }}" />
+<script src="{{ static_url('app.js') }}" defer></script>
+```
+
+`static_url()` hängt einen zehnstelligen SHA-256-Präfix des Dateiinhalts als `?v=…` an und
+merkt sich das Ergebnis im Prozess. Ein neues Image heißt neuer Prozess und damit neue
+URL; eine unveränderte Datei behält ihre URL und bleibt im Browser-Cache nutzbar.
+
+**Warum das nötig ist:** Starlettes `StaticFiles` liefert `ETag` und `Last-Modified`, aber
+**kein** `Cache-Control`. Ohne beides wenden Browser heuristisches Caching an (RFC 9111
+§4.2.2, üblich: 10 % des Alters seit `Last-Modified`) und benutzen die Datei stundenlang
+weiter, **ohne** zu revalidieren. Nach einem Deploy sah der Anwender dadurch frisches HTML
+mit altem CSS/JS — konkret: die Batch-Statusleiste kam unformatiert (kein Fortschrittsbalken,
+„Abbrechen" untereinander statt rechts) und der Zähler stand still, weil das gecachte
+`app.js` das Batch-Fragment noch gar nicht kannte. Mehrere Fixes an `app.js` blieben
+deshalb scheinbar wirkungslos: Sie sind nie im Browser angekommen.
+
+Abgesichert durch `test_statische_dateien_tragen_einen_fingerabdruck` in `tests/test_web.py`.
 
 ## Paperless nicht erreichbar
 
@@ -85,10 +110,56 @@ Tabelle genauso aus wie eine, in der gerade nichts passiert.
 
 ## Batch-Statusleiste
 
-Der Zähltext (`12 / 100 verarbeitet`) steht **neben** dem Fortschrittsbalken, nicht darin:
-Im Balken stand er als weiße Schrift auf der Füllung und war bei niedrigem Fortschritt
-unlesbar, bei längeren Texten zusätzlich abgeschnitten (`overflow: hidden`). Der Balken
-(`.batch-bar`) ist rein visuell und meldet seinen Stand über `role="progressbar"` samt
-`aria-valuenow`. Die Zahlen nutzen `font-variant-numeric: tabular-nums`, damit die Anzeige
-beim Hochzählen nicht springt. Die ältere Klasse `.progress` bleibt unverändert — sie wird
-in der Dokument-Detailansicht für den kurzen Seitenfortschritt verwendet.
+Sitzt in `partials/batch_status.html` und wird während eines Laufs als eigene Karte
+gerendert — sie ist der einzige Bereich der Seite, der sich von selbst bewegt.
+
+- **Zähltext neben dem Balken, nicht darin.** Im Balken stand er als weiße Schrift auf der
+  Füllung, war bei niedrigem Fortschritt unlesbar und bei längeren Texten abgeschnitten
+  (`overflow: hidden`). Die Zahlen nutzen `font-variant-numeric: tabular-nums`, damit die
+  Anzeige beim Hochzählen nicht springt.
+- **Segmentierter Balken.** Ein Lauf hat drei Ausgänge, und der Balken zeigt sie getrennt:
+  `.batch-seg--done` (Akzent), `--skipped` (Amber), `--failed` (Rot) — dieselben Farben, die
+  die App sonst für Status benutzt. Ein einfarbiger Balken würde behaupten, alles Gefüllte
+  sei erledigt. Nullwerte erzeugen weder ein Segment noch einen Legendeneintrag.
+- **Puls an der Füllkante** (`.batch-pulse`). Ein einzelnes Dokument kann Sekunden dauern,
+  in denen keine Zahl sich bewegt; ohne Puls sieht ein gesunder Lauf aus wie ein hängender.
+  Unter `prefers-reduced-motion: reduce` steht er still.
+- **Barrierefreiheit:** `role="progressbar"` mit `aria-valuenow` und `aria-valuetext`.
+- Die ältere Klasse `.progress` bleibt unverändert — sie trägt in der Dokument-Detailansicht
+  den kurzen Seitenfortschritt.
+
+### Fortschritt hängt nicht allein an SSE
+
+Solange ein Lauf läuft, trägt das Fragment `data-batch-running`. `app.js` fragt daraufhin
+von sich aus nach (`syncBatchPolling`/`scheduleBatchPoll`, Pause = `BATCH_PUBLISH_INTERVAL`
+im Backend, 2 s) und ignoriert in dieser Zeit SSE-Ereignisse, die den Refresh nur verdoppeln
+würden. Endet der Lauf, verschwindet das Attribut und der Takt wird abgeschaltet.
+
+**Jeder Fragment-Request hat eine Frist** (`FRAGMENT_TIMEOUT_MS`, 15 s, in `loadFragment`).
+`fetch` bricht von sich aus nie ab, und `Promise.allSettled` löst erst auf, wenn **alle**
+Teil-Requests durch sind — ein hängender Request (gestauter Proxy, halboffene Verbindung)
+hielte den Takt sonst dauerhaft an, weil der nächste Zyklus erst nach dem Abschluss des
+vorigen geplant wird. Die Frist ist als `Promise.race` gebaut (`withDeadline`), damit sie
+auch ohne `AbortController` greift; ist einer da, wird der Request zusätzlich abgebrochen
+und die Verbindung freigegeben. Ein abgelaufener Request zählt als Fehlschlag und blendet
+den Veraltet-Hinweis ein — bis der nächste Zyklus gelingt. Abgesichert durch
+`test_haengender_request_haelt_den_abfragetakt_nicht_an`.
+
+**Die Pause liegt zwischen den Zyklen, nicht in einem festen Raster.** Ein
+`setInterval(refreshFragment, 2000)` zieht bei jedem Tick die Sequenznummer `cycle` hoch.
+Braucht eine Antwort länger als die Pause — bei einem Lauf der Normalfall, das Fragment
+kostet einen Paperless-Zählaufruf —, ist sie beim Eintreffen überholt und wird vom
+Veralterungsschutz in `loadFragment` verworfen. Bei durchgehend langsamen Antworten kommt
+dann **kein einziger** Stand an und die Zahl steht still, obwohl im Sekundentakt gefragt
+wird: genau der Zustand, den der Takt beheben soll. `scheduleBatchPoll` plant den nächsten
+Zyklus deshalb erst, wenn der vorige durch ist. Abgesichert durch
+`test_langsame_antworten_halten_den_fortschritt_nicht_an` (Node-Harness mit Zeitraffer:
+Poll-Pause und Antwortzeiten werden mit demselben Faktor gestaucht, die Reihenfolge der
+Ereignisse bleibt dadurch erhalten).
+
+Grund: `text/event-stream` wird von Reverse Proxies gern gepuffert. Die Verbindung wirkt
+dann äußerlich gesund — `onerror` feuert nicht, der Veraltet-Hinweis erscheint nicht —,
+während kein Ereignis mehr ankommt und der Zähler stillsteht. Der Takt kostet nur während
+eines Laufs etwas und macht den Fortschritt unabhängig von dieser Eigenart. Nebeneffekt:
+Browser ohne `EventSource` zeigen den Fortschritt ebenfalls (`syncBatchPolling()` läuft vor
+dem Feature-Check).

@@ -1,31 +1,53 @@
 {% if recipient_enabled and feature_llm %}
 <div class="recipient-toolbar">
   {% if progress.running %}
-  {% set anteil = (((progress.done + progress.failed + progress.skipped) / progress.total * 100) if progress.total else 0) | round | int %}
+  {% set gesamt = progress.total or 0 %}
+  {% set verarbeitet = progress.done + progress.failed + progress.skipped %}
+  {% set anteil = ((verarbeitet / gesamt * 100) if gesamt else 0) %}
   {# Der Zähltext steht NEBEN dem Balken, nicht darin: er wird beliebig lang (übersprungen,
-     fehlgeschlagen) und wäre auf einer noch leeren Füllung ohnehin unlesbar. #}
-  <div class="batch-run">
+     fehlgeschlagen) und wäre auf einer noch leeren Füllung ohnehin unlesbar.
+     ``data-batch-running`` ist das Signal für app.js, während eines Laufs zusätzlich zu
+     pollen — siehe dort. #}
+  <div class="batch-run" data-batch-running="1">
     <div class="batch-run-head">
-      <span class="batch-run-count">{{ progress.done }} / {{ progress.total }} verarbeitet</span>
-      {% if progress.skipped or progress.failed %}
-      <span class="muted">
-        {%- if progress.skipped %}{{ progress.skipped }} übersprungen{% endif %}
-        {%- if progress.skipped and progress.failed %} · {% endif %}
-        {%- if progress.failed %}{{ progress.failed }} fehlgeschlagen{% endif %}
-      </span>
-      {% endif %}
+      <p class="batch-run-count">
+        <span class="batch-run-number">{{ progress.done }}</span>
+        <span class="batch-run-of">von {{ progress.total }} verarbeitet</span>
+      </p>
       <form method="post" action="/empfaenger/suggest-batch/stop">
         <input type="hidden" name="page" value="{{ page }}" />
         <input type="hidden" name="q" value="{{ filters.q }}" />
         <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
-        <button type="submit" class="link-button">Abbrechen</button>
+        <button type="submit" class="batch-run-stop">Abbrechen</button>
       </form>
     </div>
-    <div class="batch-bar" role="progressbar" aria-valuenow="{{ anteil }}"
-         aria-valuemin="0" aria-valuemax="100"
+    {# Segmentiert statt einfarbig: Die drei Ausgänge eines Laufs sind unterschiedlich viel
+       wert, und die Farben sind dieselben, die die App sonst für Status benutzt. #}
+    <div class="batch-bar" role="progressbar"
+         aria-valuenow="{{ anteil | round | int }}" aria-valuemin="0" aria-valuemax="100"
+         aria-valuetext="{{ progress.done }} von {{ progress.total }} verarbeitet"
          aria-label="Fortschritt des KI-Laufs">
-      <div class="batch-bar-fill" style="width: {{ anteil }}%"></div>
+      {% if progress.done %}
+      <span class="batch-seg batch-seg--done"
+            style="flex-basis: {{ (progress.done / gesamt * 100) | round(3) }}%"></span>
+      {% endif %}
+      {% if progress.skipped %}
+      <span class="batch-seg batch-seg--skipped"
+            style="flex-basis: {{ (progress.skipped / gesamt * 100) | round(3) }}%"></span>
+      {% endif %}
+      {% if progress.failed %}
+      <span class="batch-seg batch-seg--failed"
+            style="flex-basis: {{ (progress.failed / gesamt * 100) | round(3) }}%"></span>
+      {% endif %}
+      {# Lebenszeichen an der Füllkante: Ein einzelnes Dokument kann Sekunden dauern, in denen
+         sich keine Zahl bewegt. Ohne den Puls sieht ein gesunder Lauf aus wie ein hängender. #}
+      <span class="batch-pulse" aria-hidden="true"></span>
     </div>
+    <p class="batch-run-legend">
+      {%- if progress.skipped %}<span class="batch-key batch-key--skipped">{{ progress.skipped }} übersprungen</span>{% endif %}
+      {%- if progress.failed %}<span class="batch-key batch-key--failed">{{ progress.failed }} fehlgeschlagen</span>{% endif %}
+      <span class="batch-key batch-key--open">{{ gesamt - verarbeitet }} in dieser Runde offen</span>
+    </p>
   </div>
   {% else %}
   <span class="muted">
