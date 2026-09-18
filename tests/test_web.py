@@ -103,6 +103,26 @@ def test_zeilen_tragen_signatur_fuer_den_abgleich(client):
     assert "data-rev=" in text
 
 
+def test_detailseite_rendert_mit_ereignissen(client):
+    """Regression: Die Detailansicht lief in einen 500, weil ``list_events`` den
+    Zeitstempel als SQLite-Text durchreichte und ``fmt_dt`` ein datetime erwartet.
+    Der vorhandene Detail-Test deckte das nicht ab — ein frisch angelegtes Dokument
+    hat null Ereignisse, die Schleife im Template lief nie durch."""
+    c, application = client
+    repo = application.state.repo
+    from app.models import EventType
+
+    doc_id = repo.create_document(original_filename="a.pdf", source_path="/x/a.pdf")
+    repo.add_event(doc_id, EventType.DETECTED, "Format erkannt")
+    repo.add_event(doc_id, EventType.DONE, "fertig")
+
+    resp = c.get(f"/documents/{doc_id}")
+    assert resp.status_code == 200
+    assert "Format erkannt" in resp.text
+    # Das Fragment rendert dasselbe Partial und war genauso betroffen.
+    assert c.get(f"/fragment/documents/{doc_id}").status_code == 200
+
+
 def test_detail_404(client):
     c, _ = client
     assert c.get("/documents/99999").status_code == 404
