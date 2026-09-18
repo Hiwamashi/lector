@@ -20,8 +20,9 @@
   var streamDown = false;
   // Laufende Zyklen koennen sich ueberholen: die Entprellung verhindert nur Bursts
   // innerhalb von 250 ms, nicht einen langsamen Zyklus, dessen Antwort nach der eines
-  // spaeter gestarteten eintrifft. Nur das Ergebnis des juengsten Zyklus zaehlt, sonst
-  // ueberschreibt ein veralteter Erfolg den aktuellen Fehlerzustand.
+  // spaeter gestarteten eintrifft. Nur der juengste Zyklus darf wirken — und zwar in
+  // BEIDE Richtungen: weder sein Fehlerzustand noch der geladene Inhalt duerfen von einer
+  // veralteten Antwort ueberschrieben werden.
   var cycle = 0;
 
   function updateLiveStatus() {
@@ -29,10 +30,12 @@
     if (el) el.hidden = !(refreshFailed || streamDown);
   }
 
-  function loadFragment(url, options, apply) {
+  function loadFragment(url, options, apply, mine) {
     return fetch(url, options)
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-      .then(apply);
+      // Inhalt nur einsetzen, solange dieser Zyklus der juengste ist: sonst schreibt eine
+      // spaet eintreffende Antwort aelteren Inhalt ueber den bereits aktuelleren.
+      .then(function (html) { if (mine === cycle) apply(html); });
   }
 
   function refreshFragment() {
@@ -45,21 +48,24 @@
       jobs.push(loadFragment(
         table.getAttribute("data-fragment"),
         { headers: { "X-Requested-With": "fetch" } },
-        function (html) { if (body) body.innerHTML = html; }
+        function (html) { if (body) body.innerHTML = html; },
+        mine
       ));
     }
     var detail = document.getElementById("detail");
     if (detail && detail.getAttribute("data-fragment")) {
       jobs.push(loadFragment(
         detail.getAttribute("data-fragment"), undefined,
-        function (html) { detail.innerHTML = html; }
+        function (html) { detail.innerHTML = html; },
+        mine
       ));
     }
     var batch = document.getElementById("batch-status");
     if (batch && batch.getAttribute("data-fragment")) {
       jobs.push(loadFragment(
         batch.getAttribute("data-fragment"), undefined,
-        function (html) { batch.innerHTML = html; }
+        function (html) { batch.innerHTML = html; },
+        mine
       ));
     }
     if (!jobs.length) return;

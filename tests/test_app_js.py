@@ -27,9 +27,11 @@ const scenario = JSON.parse(process.argv[2]);
 let hidden = true;               // Ausgangszustand des Hinweises
 const liveStatus = { set hidden(v) { hidden = v; }, get hidden() { return hidden; } };
 
+let tbodyInhalt = null;
+const tbody = { set innerHTML(v) { tbodyInhalt = v; }, get innerHTML() { return tbodyInhalt; } };
 const table = {
   getAttribute: () => "/fragment/empfaenger",
-  querySelector: () => ({ set innerHTML(_v) {} }),
+  querySelector: () => tbody,
 };
 
 const batchStatus = { getAttribute: () => "/fragment/empfaenger/batch-status",
@@ -53,7 +55,8 @@ global.fetch = (_url, _opts) => {
   const n = i++;
   const ok = scenario.responses[n];
   const delay = (scenario.delays || [])[n] || 0;
-  const body = () => Promise.resolve("<tr></tr>");
+  const inhalt = (scenario.bodies || [])[n] || "<tr></tr>";
+  const body = () => Promise.resolve(inhalt);
   const res = { ok: ok, status: ok ? 200 : 503, text: body };
   return new Promise((r) => setTimeout(() => r(res), delay));
 };
@@ -75,7 +78,7 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
   // Entprellung (250 ms) plus Zeit für die Fetches abwarten.
   await new Promise((r) => setTimeout(r, 900));
   if (scenario.streamRecovers) { sse.onopen(); await new Promise((r) => setTimeout(r, 50)); }
-  console.log(JSON.stringify({ hinweisSichtbar: hidden === false }));
+  console.log(JSON.stringify({ hinweisSichtbar: hidden === false, inhalt: tbodyInhalt }));
 })();
 """
 
@@ -91,28 +94,22 @@ def _run(scenario: dict, tmp_path: Path) -> dict:
 
 
 def test_hinweis_bleibt_aus_wenn_alles_gelingt(tmp_path):
-    assert _run({"responses": [True], "streamDown": False}, tmp_path) == {
-        "hinweisSichtbar": False
-    }
+    assert _run({"responses": [True], "streamDown": False}, tmp_path)["hinweisSichtbar"] is False
 
 
 def test_hinweis_erscheint_bei_fehlgeschlagenem_fragment(tmp_path):
-    assert _run({"responses": [False], "streamDown": False}, tmp_path) == {
-        "hinweisSichtbar": True
-    }
+    assert _run({"responses": [False], "streamDown": False}, tmp_path)["hinweisSichtbar"] is True
 
 
 def test_abgerissener_stream_bleibt_sichtbar_trotz_erfolgreichem_refresh(tmp_path):
     """Regression: Ein gelungener Refresh darf eine tote SSE-Verbindung nicht überdecken."""
-    assert _run({"responses": [True], "streamDown": True}, tmp_path) == {
-        "hinweisSichtbar": True
-    }
+    assert _run({"responses": [True], "streamDown": True}, tmp_path)["hinweisSichtbar"] is True
 
 
 def test_hinweis_verschwindet_wenn_stream_zurueckkommt(tmp_path):
     assert _run(
         {"responses": [True], "streamDown": True, "streamRecovers": True}, tmp_path
-    ) == {"hinweisSichtbar": False}
+    )["hinweisSichtbar"] is False
 
 
 def test_erfolgreicher_parallel_refresh_ueberdeckt_fehlgeschlagenen_nicht(tmp_path):
@@ -123,7 +120,7 @@ def test_erfolgreicher_parallel_refresh_ueberdeckt_fehlgeschlagenen_nicht(tmp_pa
         {"responses": [False, True], "streamDown": False, "withBatchStatus": True},
         tmp_path,
     )
-    assert ergebnis == {"hinweisSichtbar": True}
+    assert ergebnis["hinweisSichtbar"] is True
 
 
 def test_beide_fragmente_erfolgreich_blendet_hinweis_aus(tmp_path):
@@ -131,7 +128,7 @@ def test_beide_fragmente_erfolgreich_blendet_hinweis_aus(tmp_path):
         {"responses": [True, True], "streamDown": False, "withBatchStatus": True},
         tmp_path,
     )
-    assert ergebnis == {"hinweisSichtbar": False}
+    assert ergebnis["hinweisSichtbar"] is False
 
 
 def test_veralteter_zyklus_ueberschreibt_aktuellen_fehler_nicht(tmp_path):
@@ -150,4 +147,25 @@ def test_veralteter_zyklus_ueberschreibt_aktuellen_fehler_nicht(tmp_path):
         },
         tmp_path,
     )
-    assert ergebnis == {"hinweisSichtbar": True}
+    assert ergebnis["hinweisSichtbar"] is True
+
+
+def test_veralteter_zyklus_ueberschreibt_neueren_inhalt_nicht(tmp_path):
+    """Regression: Nicht nur der Fehlerzustand, auch der geladene Inhalt darf nicht
+    von einer verspäteten Antwort überschrieben werden.
+
+    Zyklus 1 liefert "ALT", braucht dafür aber 600 ms. Zyklus 2 startet danach und
+    liefert sofort "NEU". Trifft "ALT" danach ein, darf es die Tabelle nicht
+    zurücksetzen.
+    """
+    ergebnis = _run(
+        {
+            "responses": [True, True],
+            "delays": [600, 0],
+            "bodies": ["ALT", "NEU"],
+            "secondCycleAfter": 300,
+            "streamDown": False,
+        },
+        tmp_path,
+    )
+    assert ergebnis["inhalt"] == "NEU"
