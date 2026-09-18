@@ -41,3 +41,28 @@ Desktop-primär und responsive (PRD §5.1). Siehe Abweichungshinweis in [README.
 Akzentfarbe `#2f6f8f`, passend zur Brand-Mark „▤"). Eingebunden in `base.html` per
 `<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />`. SVG statt `.ico`,
 da kein Buildchain nötig ist und das Format im LAN-Browserumfeld ausreicht.
+
+## Paperless nicht erreichbar
+
+`app/main.py` registriert einen `@app.exception_handler(httpx.HTTPError)`. Jeder
+Paperless-Aufruf, der bis zur Route durchschlägt — typisch beim Hochfahren des Stacks,
+wenn Paperless noch nicht antwortet —, endet dadurch in einer **503**-Antwort statt in
+einem Internal Server Error mit Stacktrace:
+
+- **Seiten** rendern `templates/unavailable.html` mit einer Erklärung und dem Hinweis,
+  dass die Dokumentverarbeitung davon unberührt weiterläuft.
+- **Fragmente** (`/fragment/…`) bekommen nur einen kurzen Hinweis-Absatz. Ihr Inhalt wird
+  per `innerHTML` eingesetzt; eine komplette Fehlerseite würde die Tabelle zerschießen.
+
+Ergänzend verwirft `app/static/app.js` Fragment-Antworten mit Fehlerstatus (`r.ok`), statt
+sie einzusetzen — der zuletzt erfolgreich geladene Inhalt bleibt dann stehen.
+
+## Batch-Statusleiste
+
+Der Zähltext (`12 / 100 verarbeitet`) steht **neben** dem Fortschrittsbalken, nicht darin:
+Im Balken stand er als weiße Schrift auf der Füllung und war bei niedrigem Fortschritt
+unlesbar, bei längeren Texten zusätzlich abgeschnitten (`overflow: hidden`). Der Balken
+(`.batch-bar`) ist rein visuell und meldet seinen Stand über `role="progressbar"` samt
+`aria-valuenow`. Die Zahlen nutzen `font-variant-numeric: tabular-nums`, damit die Anzeige
+beim Hochzählen nicht springt. Die ältere Klasse `.progress` bleibt unverändert — sie wird
+in der Dokument-Detailansicht für den kurzen Seitenfortschritt verwendet.

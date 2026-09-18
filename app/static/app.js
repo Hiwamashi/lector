@@ -1,7 +1,10 @@
 // Live-Updates via Server-Sent Events. Tokens haben die Form "doc:<id>" (Dokumente),
 // "inv:<id>" (Paperless-Rechnungen) bzw. "batch:recipient" (Fortschritt des KI-Laufs).
 // Bei einem passenden Ereignis wird der dynamische Bereich der aktuellen Seite
-// (Listentabelle bzw. Detailansicht) neu geladen und ersetzt.
+// (Listentabelle bzw. Detailansicht) neu geladen und ersetzt. Antworten mit Fehlerstatus
+// (z.B. 503, wenn Paperless gerade nicht erreichbar ist) werden verworfen — der zuletzt
+// erfolgreich geladene Inhalt bleibt dann stehen, statt durch eine Fehlermeldung zu
+// verschwinden.
 (function () {
   "use strict";
 
@@ -10,21 +13,21 @@
     if (table) {
       var body = table.querySelector("tbody");
       fetch(table.getAttribute("data-fragment"), { headers: { "X-Requested-With": "fetch" } })
-        .then(function (r) { return r.text(); })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
         .then(function (html) { if (body) body.innerHTML = html; })
         .catch(function () {});
     }
     var detail = document.getElementById("detail");
     if (detail && detail.getAttribute("data-fragment")) {
       fetch(detail.getAttribute("data-fragment"))
-        .then(function (r) { return r.text(); })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
         .then(function (html) { detail.innerHTML = html; })
         .catch(function () {});
     }
     var batch = document.getElementById("batch-status");
     if (batch && batch.getAttribute("data-fragment")) {
       fetch(batch.getAttribute("data-fragment"))
-        .then(function (r) { return r.text(); })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
         .then(function (html) { batch.innerHTML = html; })
         .catch(function () {});
     }

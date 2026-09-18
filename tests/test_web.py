@@ -394,3 +394,77 @@ async def test_recipient_row_fragment_renders_with_paperless(client, monkeypatch
     assert resp.status_code == 200
     # Die Hidden-Felder des Zeilen-Fragments tragen die aktuellen Filterwerte.
     assert 'name="q" value="rechnung"' in resp.text
+
+
+def test_paperless_unavailable_shows_hint_instead_of_500(client, monkeypatch):
+    """Regression: Ist Paperless (noch) nicht erreichbar, darf die Seite keinen
+    Internal Server Error werfen, sondern muss den Zustand verständlich benennen."""
+    import httpx
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+
+    async def boom(*_a, **_kw):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    monkeypatch.setattr(sync, "list_recipient_documents", boom)
+
+    resp = c.get("/empfaenger")
+    assert resp.status_code == 503
+    assert "Paperless" in resp.text
+    # Kein durchgereichter Stacktrace.
+    assert "Traceback" not in resp.text
+    assert "ConnectError" not in resp.text
+
+
+def test_paperless_unavailable_keeps_fragment_short(client, monkeypatch):
+    """Fragmente werden per fetch in die Seite gesetzt — im Fehlerfall darf dort
+    keine komplette Fehlerseite landen."""
+    import httpx
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+
+    async def boom(*_a, **_kw):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    monkeypatch.setattr(sync, "list_recipient_documents", boom)
+
+    resp = c.get("/fragment/empfaenger")
+    assert resp.status_code == 503
+    assert "<html" not in resp.text.lower()
+
+
+def test_batch_status_running_keeps_count_outside_the_bar(client, monkeypatch):
+    """Der Zähltext gehört neben den Fortschrittsbalken, nicht hinein.
+
+    Im Balken war er auf weißer Schrift über einer noch leeren Füllung unlesbar und
+    wurde bei längeren Texten ("… übersprungen, … fehlgeschlagen") abgeschnitten.
+    """
+    from app.paperless_sync import BatchProgress
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+    monkeypatch.setattr(
+        type(sync),
+        "batch_progress",
+        property(
+            lambda self: BatchProgress(
+                running=True, total=100, done=12, failed=1, skipped=2
+            )
+        ),
+    )
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+    assert "12 / 100 verarbeitet" in resp.text
+    # Der Balken trägt nur die Füllung, keinen Text ...
+    assert "batch-bar-fill" in resp.text
+    assert "progress-label" not in resp.text
+    # ... und meldet seinen Stand an Hilfstechnik.
+    assert 'role="progressbar"' in resp.text
+    assert 'aria-valuenow="15"' in resp.text

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
+import httpx
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,6 +33,7 @@ log = logging.getLogger("lector.main")
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
 
 STATUS_LABELS = {
     DocStatus.PENDING: "Wartet",
@@ -148,6 +150,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Lector", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+@app.exception_handler(httpx.HTTPError)
+async def paperless_unavailable(request: Request, exc: httpx.HTTPError) -> Response:
+    """Faengt jeden fehlgeschlagenen Paperless-Aufruf ab, der bis zur Route durchschlaegt.
+
+    Typischer Fall: Der Compose-Stack startet und Paperless ist noch nicht bereit — dann
+    liefert httpx einen ConnectError. Ohne diesen Handler sieht der Anwender einen
+    Internal Server Error samt Stacktrace, obwohl schlicht ein Dienst fehlt.
+
+    Fragmente (per fetch nachgeladen) bekommen bewusst nur einen kurzen Hinweis statt einer
+    kompletten Seite: Ihr Inhalt wird per innerHTML eingesetzt: eine ganze Fehlerseite
+    wuerde die Tabelle zerschiessen.
+    """
+    log.warning("Paperless nicht erreichbar (%s): %s", request.url.path, exc)
+    hinweis = (
+        "Paperless ist derzeit nicht erreichbar. Laeuft der Container schon? "
+        "Beim Start des Stacks dauert es einen Moment, bis Paperless antwortet."
+    )
+    if request.url.path.startswith("/fragment/"):
+        return HTMLResponse(f'<p class="alert">{hinweis}</p>', status_code=503)
+    return templates.TemplateResponse(
+        request, "unavailable.html", {"hinweis": hinweis}, status_code=503
+    )
 
 
 def _parse_since(period: str | None) -> datetime | None:
