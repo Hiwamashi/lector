@@ -32,3 +32,12 @@ prd/token-log.csv
 
 # Arbeitsverzeichnis der Plan-Ausfuehrung (Ledger, Briefs, Review-Pakete)
 .superpowers/
+
+# OpenSpec-Geruest (generiert, pro Agent-Harness dupliziert). Nicht im Repo, damit
+# push-image.sh einen sauberen Worktree sieht - es prueft `git status --porcelain`,
+# und das zaehlt auch unversionierte Dateien als schmutzig.
+.agents/
+.opencode/
+.claude/commands/
+.claude/skills/
+openspec/
