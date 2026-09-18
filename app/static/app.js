@@ -10,37 +10,58 @@
 
   // Ein gescheiterter Refresh darf nicht stumm bleiben: der bisherige Inhalt steht dann
   // weiter da und sieht aktuell aus. Sichtbarer Hinweis statt stiller Veraltung.
-  var stale = 0;
+  //
+  // Die beiden Ursachen werden GETRENNT gefuehrt und der Refresh-Zustand erst ausgewertet,
+  // wenn ALLE Teil-Requests eines Zyklus durch sind. Sonst blendet ein erfolgreicher
+  // Parallel-Request (z.B. Batch-Status) den Hinweis wieder aus, obwohl ein anderer
+  // (z.B. die Tabelle) im selben Zyklus fehlgeschlagen ist — oder ein gelungener Refresh
+  // ueberdeckt eine abgerissene SSE-Verbindung.
+  var refreshFailed = false;
+  var streamDown = false;
 
-  function setStale(failed) {
-    stale = failed ? stale + 1 : 0;
+  function updateLiveStatus() {
     var el = document.getElementById("live-status");
-    if (el) el.hidden = stale === 0;
+    if (el) el.hidden = !(refreshFailed || streamDown);
+  }
+
+  function loadFragment(url, options, apply) {
+    return fetch(url, options)
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(apply);
   }
 
   function refreshFragment() {
+    var jobs = [];
+
     var table = document.querySelector("table.history[data-fragment]");
     if (table) {
       var body = table.querySelector("tbody");
-      fetch(table.getAttribute("data-fragment"), { headers: { "X-Requested-With": "fetch" } })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-        .then(function (html) { if (body) body.innerHTML = html; setStale(false); })
-        .catch(function () { setStale(true); });
+      jobs.push(loadFragment(
+        table.getAttribute("data-fragment"),
+        { headers: { "X-Requested-With": "fetch" } },
+        function (html) { if (body) body.innerHTML = html; }
+      ));
     }
     var detail = document.getElementById("detail");
     if (detail && detail.getAttribute("data-fragment")) {
-      fetch(detail.getAttribute("data-fragment"))
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-        .then(function (html) { detail.innerHTML = html; setStale(false); })
-        .catch(function () { setStale(true); });
+      jobs.push(loadFragment(
+        detail.getAttribute("data-fragment"), undefined,
+        function (html) { detail.innerHTML = html; }
+      ));
     }
     var batch = document.getElementById("batch-status");
     if (batch && batch.getAttribute("data-fragment")) {
-      fetch(batch.getAttribute("data-fragment"))
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
-        .then(function (html) { batch.innerHTML = html; setStale(false); })
-        .catch(function () { setStale(true); });
+      jobs.push(loadFragment(
+        batch.getAttribute("data-fragment"), undefined,
+        function (html) { batch.innerHTML = html; }
+      ));
     }
+    if (!jobs.length) return;
+
+    Promise.allSettled(jobs).then(function (results) {
+      refreshFailed = results.some(function (r) { return r.status === "rejected"; });
+      updateLiveStatus();
+    });
   }
 
   // Liefert {type, id} der aktuellen Detailseite oder null bei Listenseiten.
@@ -58,8 +79,8 @@
   var detail = currentDetail();
   var pending = false;
 
-  source.onerror = function () { setStale(true); };
-  source.onopen = function () { setStale(false); };
+  source.onerror = function () { streamDown = true; updateLiveStatus(); };
+  source.onopen = function () { streamDown = false; updateLiveStatus(); };
 
   source.onmessage = function (event) {
     var parts = String(event.data).split(":");
