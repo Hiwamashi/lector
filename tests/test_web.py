@@ -203,3 +203,53 @@ def test_no_route_is_shadowed_by_a_parametrised_one():
                 shadowed.append(f"{m1} {p1} verdeckt {m2} {p2}")
 
     assert shadowed == []
+
+
+async def test_batch_status_skips_missing_count_without_llm_feature(client, monkeypatch):
+    """Regression (Review-Befund A): Ist Paperless verbunden, aber das KI-Feature aus,
+    darf der teure Netzwerk-Zählaufruf nicht laufen — ``batch_status.html`` blendet den
+    Block dann ohnehin per ``recipient_enabled and feature_llm`` aus."""
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: False))
+    calls = 0
+
+    async def spy(*_a, **_kw):
+        nonlocal calls
+        calls += 1
+        return 42
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+    assert calls == 0
+
+
+async def test_batch_status_default_limit_never_exceeds_batch_max(client, monkeypatch):
+    """Regression (Review-Befund B): Bei kleinem ``RECIPIENT_BATCH_MAX`` darf die
+    Vorbelegung des Mengenfelds nicht über sein eigenes ``max`` hinausgehen — sonst
+    blockiert die HTML5-Constraint-Validierung das Absenden des Formulars."""
+    import app.main as m
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+    monkeypatch.setattr(sync.settings, "recipient_batch_max", 50)
+
+    async def spy(*_a, **_kw):
+        return 500
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+
+    class _FakeRequest:
+        app = application
+
+    ctx = await m._batch_status_context(_FakeRequest())
+    assert ctx["batch_max"] == 50
+    assert ctx["default_limit"] <= ctx["batch_max"]

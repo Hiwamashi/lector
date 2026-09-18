@@ -413,7 +413,10 @@ async def _batch_status_context(request: Request) -> dict:
     sync: PaperlessSync = request.app.state.sync
     settings = sync.settings
     missing_total = 0
-    if sync.recipient_enabled:
+    # Nur ermitteln, wenn der Wert auch angezeigt wird (batch_status.html blendet den
+    # Block sonst ohnehin aus) — spart den Netzwerkaufruf bei jedem Laden von /empfaenger,
+    # wenn Paperless zwar verbunden, das KI-Feature aber deaktiviert ist.
+    if sync.recipient_enabled and sync.recipient_llm_enabled:
         try:
             missing_total = await sync.count_missing_recipients()
         except Exception:
@@ -421,7 +424,7 @@ async def _batch_status_context(request: Request) -> dict:
     return {
         "progress": sync.batch_progress,
         "missing_total": missing_total,
-        "default_limit": min(missing_total, 100) or 1,
+        "default_limit": min(missing_total, 100, settings.recipient_batch_max) or 1,
         "batch_max": settings.recipient_batch_max,
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
