@@ -141,6 +141,10 @@ class Repository:
         """Signalisiert der UI eine Änderung an der Empfänger-Übersicht (SSE-Token)."""
         self._emit(f"rec:{paperless_id}")
 
+    def notify_batch(self) -> None:
+        """Signalisiert der UI den Fortschritt des KI-Batch-Laufs (SSE-Token)."""
+        self._emit("batch:recipient")
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

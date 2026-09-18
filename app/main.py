@@ -411,7 +411,7 @@ async def _recipient_context(request: Request, page: int, q: str | None, missing
         "fragment_query": urlencode(frag),
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
-        "batch_running": sync.batch_running,
+        "batch_running": sync.batch_progress.running,
     }
 
 

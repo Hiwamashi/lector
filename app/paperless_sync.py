@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
@@ -54,6 +56,13 @@ log = logging.getLogger("lector.paperless_sync")
 # Seitengröße der Empfänger-Übersicht.
 RECIPIENT_PAGE_SIZE = 50
 
+# Nach so vielen Fehlschlägen in Folge wird der Lauf beendet: ein dauerhaft gedrosseltes
+# oder fehlkonfiguriertes Konto soll nicht wirkungslos durch hunderte Dokumente laufen.
+BATCH_ERROR_STREAK = 10
+# Der Lauf meldet Fortschritt höchstens so oft — sonst erzeugt ein Lauf über 1500
+# Dokumente ebenso viele SSE-Ereignisse für jeden verbundenen Client.
+BATCH_PUBLISH_INTERVAL = 2.0
+
 
 def _parse_paperless_date(value: str | None) -> datetime | None:
     if not value:
@@ -62,6 +71,20 @@ def _parse_paperless_date(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+@dataclass
+class BatchProgress:
+    """Zustand des KI-Batch-Laufs. Lebt nur im Prozess — ein Neustart verwirft ihn."""
+
+    running: bool = False
+    total: int = 0
+    done: int = 0
+    failed: int = 0
+    remaining: int = 0
+    stopped: bool = False
+    aborted_reason: str | None = None
+    finished_at: datetime | None = None
 
 
 class PaperlessSync:
@@ -74,7 +97,8 @@ class PaperlessSync:
         self._recipient_field: SelectField | None = None
         self._recipient_field_resolved = False
         self._corr_map: dict[int, str] | None = None
-        self._batch_running = False
+        self._progress = BatchProgress()
+        self._batch_stop = False
         # Referenz auf den laufenden Batch-Task halten, damit der Event-Loop ihn nicht
         # (er hält nur schwache Referenzen) mitten im Lauf garbage-collected.
         self._batch_task: asyncio.Task[int] | None = None
@@ -104,8 +128,13 @@ class PaperlessSync:
         return bool(self.recipient_enabled and s.feature_recipient_llm and s.anthropic_api_key)
 
     @property
-    def batch_running(self) -> bool:
-        return self._batch_running
+    def batch_progress(self) -> BatchProgress:
+        return self._progress
+
+    def stop_batch(self) -> None:
+        """Bittet den laufenden Batch, nach dem aktuellen Dokument zu enden."""
+        if self._progress.running:
+            self._batch_stop = True
 
     def _paperless(self) -> PaperlessClient:
         return PaperlessClient(self.settings.paperless_url, self.settings.paperless_token)
@@ -569,8 +598,12 @@ class PaperlessSync:
         schwache Referenzen auf Tasks hält.
         """
         # _batch_task deckt auch das Fenster ab, in dem der Task erstellt, aber noch nicht
-        # gelaufen ist (dort ist _batch_running noch False) — verhindert doppelte Läufe.
-        if not self.recipient_llm_enabled or self._batch_running or self._batch_task is not None:
+        # gelaufen ist (dort ist _progress.running noch False) — verhindert doppelte Läufe.
+        if (
+            not self.recipient_llm_enabled
+            or self._progress.running
+            or self._batch_task is not None
+        ):
             return
         self._batch_task = asyncio.create_task(self.suggest_recipients_batch(limit))
         self._batch_task.add_done_callback(lambda _: setattr(self, "_batch_task", None))
@@ -582,23 +615,36 @@ class PaperlessSync:
         Anzahl verarbeiteter Dokumente. Bereits mit Vorschlag/Empfänger versehene
         Dokumente werden übersprungen, sodass der Lauf gefahrlos wiederholbar ist.
         """
-        if not self.recipient_llm_enabled or self._batch_running:
+        if not self.recipient_llm_enabled or self._progress.running:
             return 0
         maximum = self.settings.recipient_batch_max
         effective = maximum if limit is None else min(limit, maximum)
-        self._batch_running = True
-        processed = 0
+        self._batch_stop = False
+        self._progress = BatchProgress(running=True)
+        streak = 0
+        last_publish = 0.0
+
+        def publish(force: bool = False) -> None:
+            nonlocal last_publish
+            now = time.monotonic()
+            if force or now - last_publish >= BATCH_PUBLISH_INTERVAL:
+                last_publish = now
+                self.repo.notify_batch()
+
         try:
             async with self._paperless() as client:
                 field = await self._recipient_field_cached(client)
                 if field is None or not field.labels:
                     return 0
                 doc_ids, rest = await self._collect_missing_ids(client, field, effective)
-                if rest:
-                    log.warning("Batch-Lauf auf %s Dokumente begrenzt; %s bleiben offen.",
-                                effective, rest)
+                self._progress.total = len(doc_ids)
+                self._progress.remaining = rest
+                publish(force=True)
                 async with self._suggester() as suggester:
                     for doc_id in doc_ids:
+                        if self._batch_stop:
+                            self._progress.stopped = True
+                            break
                         # Erneut prüfen: Der Lauf kann lange dauern; in der Zwischenzeit kann
                         # ein Dokument per UI bearbeitet worden sein (manueller Empfänger /
                         # Einzelvorschlag). Dann nicht erneut verarbeiten/überschreiben.
@@ -612,15 +658,30 @@ class PaperlessSync:
                                 client, suggester, field, doc, correspondent,
                                 guard_concurrent=True,
                             )
-                            processed += 1
+                            self._progress.done += 1
+                            streak = 0
                         except Exception:
                             log.exception(
                                 "Empfänger-Vorschlag für Dokument %s fehlgeschlagen", doc_id
                             )
+                            self._progress.failed += 1
+                            streak += 1
+                            if streak >= BATCH_ERROR_STREAK:
+                                self._progress.aborted_reason = (
+                                    f"{streak} Fehler in Folge — Lauf abgebrochen. "
+                                    "Bitte Log und API-Zugang prüfen."
+                                )
+                                break
+                        publish()
         finally:
-            self._batch_running = False
-        log.info("Empfänger-Batch abgeschlossen: %s Dokumente verarbeitet", processed)
-        return processed
+            self._progress.running = False
+            self._progress.finished_at = datetime.now(UTC)
+            publish(force=True)
+        log.info(
+            "Empfänger-Batch beendet: %s verarbeitet, %s Fehler, %s offen",
+            self._progress.done, self._progress.failed, self._progress.remaining,
+        )
+        return self._progress.done
 
     async def _collect_missing_ids(
         self, client: PaperlessClient, field: SelectField, limit: int

@@ -463,3 +463,134 @@ async def test_collect_reports_no_rest_when_limit_suffices(tmp_path, monkeypatch
     ids, remaining = await sync._collect_missing_ids(client, field, limit=10)
     assert ids == [1, 2, 3]
     assert remaining == 0
+
+
+# ---- Laufzustand, Abbruch, Fehlerserie ----------------------------------
+
+
+class _FailingSuggester:
+    """Stub, der die ersten ``fail_first`` Aufrufe scheitern lässt."""
+
+    def __init__(self, fail_first: int):
+        self._left = fail_first
+
+    async def suggest(self, **_):
+        from app.models import RecipientSuggestion
+        from app.recipient_llm import RecipientSuggesterError
+
+        if self._left > 0:
+            self._left -= 1
+            raise RecipientSuggesterError("throttled")
+        return RecipientSuggestion(label="Sascha", confidence=0.9, reasoning="r")
+
+
+def _batch_sync(tmp_path, monkeypatch, doc_ids, suggester):
+    """Baut einen PaperlessSync, dessen Batch-Lauf gegen Stubs statt gegen das Netz läuft."""
+    from contextlib import asynccontextmanager
+
+    from app import paperless_sync as ps
+    from app.config import Settings
+
+    repo = Repository(tmp_path / "p.db")
+    sync = ps.PaperlessSync(
+        Settings(
+            PAPERLESS_URL="http://x",
+            PAPERLESS_TOKEN="t",
+            FEATURE_RECIPIENT_LLM=True,
+            ANTHROPIC_API_KEY="k",
+        ),
+        repo,
+    )
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+    client = _WriteCapturingClient([])
+
+    @asynccontextmanager
+    async def fake_paperless():
+        yield client
+
+    @asynccontextmanager
+    async def fake_suggester():
+        yield suggester
+
+    monkeypatch.setattr(sync, "_paperless", fake_paperless)
+    monkeypatch.setattr(sync, "_suggester", fake_suggester)
+    async def fake_field(_client):
+        return field
+
+    async def fake_collect(_client, _field, _limit):
+        return list(doc_ids), 0
+
+    monkeypatch.setattr(sync, "_recipient_field_cached", fake_field)
+    monkeypatch.setattr(sync, "_collect_missing_ids", fake_collect)
+    return sync, repo
+
+
+async def test_progress_counts_done_and_failed(tmp_path, monkeypatch):
+    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3], _FailingSuggester(fail_first=1))
+    await sync.suggest_recipients_batch(limit=10)
+    p = sync.batch_progress
+    assert p.running is False
+    assert p.total == 3
+    assert p.done == 2
+    assert p.failed == 1
+    assert p.aborted_reason is None
+
+
+async def test_stop_ends_run_early(tmp_path, monkeypatch):
+    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3, 4], _StubSuggester("Sascha", 0.9))
+
+    original = sync._suggest_for_doc
+
+    async def stop_after_first(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        sync.stop_batch()
+        return result
+
+    monkeypatch.setattr(sync, "_suggest_for_doc", stop_after_first)
+
+    await sync.suggest_recipients_batch(limit=10)
+    p = sync.batch_progress
+    assert p.stopped is True
+    assert p.done == 1
+    assert p.running is False
+
+
+async def test_error_streak_aborts_run(tmp_path, monkeypatch):
+    from app import paperless_sync as ps
+
+    monkeypatch.setattr(ps, "BATCH_ERROR_STREAK", 3)
+    sync, _ = _batch_sync(tmp_path, monkeypatch, list(range(1, 21)), _FailingSuggester(99))
+
+    await sync.suggest_recipients_batch(limit=50)
+    p = sync.batch_progress
+    assert p.failed == 3
+    assert p.aborted_reason is not None
+    assert p.done == 0
+
+
+async def test_success_resets_error_streak(tmp_path, monkeypatch):
+    from app import paperless_sync as ps
+
+    monkeypatch.setattr(ps, "BATCH_ERROR_STREAK", 3)
+    # 2 Fehler, dann Erfolge — die Serie darf den Lauf nicht abbrechen.
+    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3, 4, 5], _FailingSuggester(fail_first=2))
+
+    await sync.suggest_recipients_batch(limit=50)
+    p = sync.batch_progress
+    assert p.aborted_reason is None
+    assert p.failed == 2
+    assert p.done == 3
+
+
+async def test_progress_publishes_are_throttled(tmp_path, monkeypatch):
+    # 30 Dokumente duerfen keine 30 SSE-Ereignisse ausloesen: die Drossel laesst
+    # nur Start, Ende und hoechstens alle 2 s eines durch.
+    sync, repo = _batch_sync(tmp_path, monkeypatch, list(range(1, 31)),
+                             _StubSuggester("Sascha", 0.9))
+    emitted: list[str] = []
+    monkeypatch.setattr(repo, "notify_batch", lambda: emitted.append("batch:recipient"))
+
+    await sync.suggest_recipients_batch(limit=50)
+    # Start + Ende sind erzwungen; dazwischen darf im schnellen Testlauf nichts kommen.
+    assert len(emitted) <= 4
+    assert sync.batch_progress.done == 30
