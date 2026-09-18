@@ -2,8 +2,10 @@
 
 Der Worker läuft in Threads und meldet Änderungen über `publish_threadsafe`, das die
 Verteilung in den asyncio-Loop einspeist. Abonnenten (SSE-Verbindungen) erhalten ein
-typisiertes Token (`doc:<id>` für Dokumente, `inv:<id>` für Paperless-Rechnungen) und laden
-die jeweilige Zeile/Detailansicht neu.
+typisiertes Token (`doc:<id>` für Dokumente, `inv:<id>` für Paperless-Rechnungen,
+`rec:<id>` für Änderungen an der Empfänger-Zuordnung eines Dokuments, `batch:recipient`
+für den — gedrosselten — Fortschritt des KI-Empfänger-Batch-Laufs) und laden die
+jeweilige Zeile/Detailansicht neu.
 """
 
 from __future__ import annotations
