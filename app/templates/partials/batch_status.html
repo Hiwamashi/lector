@@ -1,0 +1,53 @@
+{% if recipient_enabled and feature_llm %}
+<div class="recipient-toolbar">
+  {% if progress.running %}
+  <div class="progress">
+    <div class="progress-bar" style="width: {{ (((progress.done + progress.failed + progress.skipped) / progress.total * 100) if progress.total else 0) | round | int }}%"></div>
+    <span class="progress-label">
+      {{ progress.done }} / {{ progress.total }} verarbeitet
+      {%- if progress.skipped %}, {{ progress.skipped }} übersprungen{% endif %}
+      {%- if progress.failed %}, {{ progress.failed }} fehlgeschlagen{% endif %}
+    </span>
+  </div>
+  <form method="post" action="/empfaenger/suggest-batch/stop">
+    <input type="hidden" name="page" value="{{ page }}" />
+    <input type="hidden" name="q" value="{{ filters.q }}" />
+    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
+    <button type="submit" class="link-button">Abbrechen</button>
+  </form>
+  {% else %}
+  <span class="muted">
+    {% if missing_total_unknown %}
+    Bestand ohne gesetzten Empfänger kann gerade nicht ermittelt werden (Paperless nicht
+    erreichbar?)
+    {% else %}
+    {{ missing_total }} Dokument(e) ohne gesetzten Empfänger
+    {% endif %}
+    {% if progress.stopped %}— letzter Lauf abgebrochen{% endif %}
+    {% if progress.aborted_reason %}({{ progress.aborted_reason }}){% endif %}
+  </span>
+  <form method="post" action="/empfaenger/suggest-batch">
+    <input type="hidden" name="page" value="{{ page }}" />
+    <input type="hidden" name="q" value="{{ filters.q }}" />
+    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
+    <input type="number" name="limit" min="1" max="{{ batch_max }}" value="{{ default_limit }}" />
+    <button type="submit" {% if not missing_total and not missing_total_unknown %}disabled{% endif %}>KI-Vorschlag starten</button>
+  </form>
+  {% if progress.finished_at %}
+  <span class="muted">
+    {% if progress.total == 0 and not progress.aborted_reason %}
+    Zuletzt: keine neuen Dokumente — alle offenen haben bereits einen Vorschlag oder eine
+    Einordnung.
+    {% else %}
+    Zuletzt: {{ progress.done }} verarbeitet
+    {%- if progress.skipped %}, {{ progress.skipped }} übersprungen{% endif %}
+    {%- if progress.failed %}, {{ progress.failed }} Fehler{% endif %}
+    {%- if progress.stopped %} (abgebrochen){% endif %}
+    {%- if progress.aborted_reason %} — {{ progress.aborted_reason }}{% endif %}
+    {%- if progress.remaining %} — {{ progress.remaining }} offen, erneut starten{% endif %}
+    {% endif %}
+  </span>
+  {% endif %}
+  {% endif %}
+</div>
+{% endif %}

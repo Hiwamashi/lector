@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
@@ -53,8 +55,13 @@ log = logging.getLogger("lector.paperless_sync")
 
 # Seitengröße der Empfänger-Übersicht.
 RECIPIENT_PAGE_SIZE = 50
-# Obergrenze, wie viele Dokumente ein einzelner Batch-Lauf maximal verarbeitet.
-RECIPIENT_BATCH_MAX = 1000
+
+# Nach so vielen Fehlschlägen in Folge wird der Lauf beendet: ein dauerhaft gedrosseltes
+# oder fehlkonfiguriertes Konto soll nicht wirkungslos durch hunderte Dokumente laufen.
+BATCH_ERROR_STREAK = 10
+# Der Lauf meldet Fortschritt höchstens so oft — sonst erzeugt ein Lauf über 1500
+# Dokumente ebenso viele SSE-Ereignisse für jeden verbundenen Client.
+BATCH_PUBLISH_INTERVAL = 2.0
 
 
 def _parse_paperless_date(value: str | None) -> datetime | None:
@@ -64,6 +71,25 @@ def _parse_paperless_date(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+@dataclass
+class BatchProgress:
+    """Zustand des KI-Batch-Laufs. Lebt nur im Prozess — ein Neustart verwirft ihn."""
+
+    running: bool = False
+    total: int = 0
+    done: int = 0
+    failed: int = 0
+    # Dokumente, die zwischen Einplanung und Verarbeitung anderweitig einen Empfänger
+    # oder Vorschlag bekommen haben (manuell oder Einzelvorschlag) — zählen bewusst
+    # weder als "done" noch als "failed", sollen aber sichtbar sein statt den
+    # Fortschrittsbalken einfach stehen zu lassen.
+    skipped: int = 0
+    remaining: int = 0
+    stopped: bool = False
+    aborted_reason: str | None = None
+    finished_at: datetime | None = None
 
 
 class PaperlessSync:
@@ -76,7 +102,8 @@ class PaperlessSync:
         self._recipient_field: SelectField | None = None
         self._recipient_field_resolved = False
         self._corr_map: dict[int, str] | None = None
-        self._batch_running = False
+        self._progress = BatchProgress()
+        self._batch_stop = False
         # Referenz auf den laufenden Batch-Task halten, damit der Event-Loop ihn nicht
         # (er hält nur schwache Referenzen) mitten im Lauf garbage-collected.
         self._batch_task: asyncio.Task[int] | None = None
@@ -106,8 +133,25 @@ class PaperlessSync:
         return bool(self.recipient_enabled and s.feature_recipient_llm and s.anthropic_api_key)
 
     @property
-    def batch_running(self) -> bool:
-        return self._batch_running
+    def batch_progress(self) -> BatchProgress:
+        return self._progress
+
+    def stop_batch(self) -> None:
+        """Bittet den laufenden Batch, nach dem aktuellen Dokument zu enden."""
+        if self._progress.running:
+            self._batch_stop = True
+
+    async def shutdown(self) -> None:
+        """Bricht einen laufenden Batch beim Herunterfahren des Prozesses ab und wartet ihn ab.
+
+        Ohne diesen Schritt könnte der Task bei einem SIGTERM mitten im Lauf auf eine
+        bereits geschlossene Repository-Verbindung zugreifen, weil das Lifespan-``finally``
+        sonst sofort mit ``repo.close()`` fortfährt, während der Task noch läuft.
+        """
+        task = self._batch_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def _paperless(self) -> PaperlessClient:
         return PaperlessClient(self.settings.paperless_url, self.settings.paperless_token)
@@ -493,6 +537,17 @@ class PaperlessSync:
     def recipient_options(self) -> list[str]:
         return self._recipient_field.labels if self._recipient_field else []
 
+    async def count_missing_recipients(self) -> int:
+        """Zählt Dokumente ohne gesetzten Empfänger (nur der Zähler, keine Seiteninhalte)."""
+        async with self._paperless() as client:
+            field = await self._recipient_field_cached(client)
+            if field is None:
+                return 0
+            page = await client.search_documents(
+                page=1, page_size=1, missing_field_id=field.field_id
+            )
+            return page.count
+
     async def list_recipient_documents(
         self, *, page: int = 1, search: str | None = None, only_missing: bool = False
     ) -> tuple[list[RecipientRow], DocumentPage, SelectField | None]:
@@ -564,78 +619,142 @@ class PaperlessSync:
             async with self._suggester() as suggester:
                 return await self._suggest_for_doc(client, suggester, field, doc, correspondent)
 
-    def start_batch(self) -> None:
+    def start_batch(self, limit: int | None = None) -> None:
         """Startet den Batch-Lauf im Hintergrund und hält eine Task-Referenz.
 
         Ohne gehaltene Referenz könnte der Event-Loop den Task verwerfen, da er nur
         schwache Referenzen auf Tasks hält.
         """
         # _batch_task deckt auch das Fenster ab, in dem der Task erstellt, aber noch nicht
-        # gelaufen ist (dort ist _batch_running noch False) — verhindert doppelte Läufe.
-        if not self.recipient_llm_enabled or self._batch_running or self._batch_task is not None:
+        # gelaufen ist (dort ist _progress.running noch False) — verhindert doppelte Läufe.
+        if (
+            not self.recipient_llm_enabled
+            or self._progress.running
+            or self._batch_task is not None
+        ):
             return
-        self._batch_task = asyncio.create_task(self.suggest_recipients_batch())
+        self._batch_task = asyncio.create_task(self.suggest_recipients_batch(limit))
         self._batch_task.add_done_callback(lambda _: setattr(self, "_batch_task", None))
 
-    async def suggest_recipients_batch(self) -> int:
-        """Schlägt für alle Dokumente ohne Empfänger einen vor (Hintergrund-Lauf).
+    async def suggest_recipients_batch(self, limit: int | None = None) -> int:
+        """Schlägt für bis zu ``limit`` Dokumente ohne Empfänger einen vor (Hintergrund-Lauf).
 
-        Liefert die Anzahl verarbeiteter Dokumente. Bereits mit Vorschlag/Empfänger versehene
+        ``None`` bedeutet die in den Einstellungen hinterlegte Obergrenze. Liefert die
+        Anzahl verarbeiteter Dokumente. Bereits mit Vorschlag/Empfänger versehene
         Dokumente werden übersprungen, sodass der Lauf gefahrlos wiederholbar ist.
         """
-        if not self.recipient_llm_enabled or self._batch_running:
+        if not self.recipient_llm_enabled or self._progress.running:
             return 0
-        self._batch_running = True
-        processed = 0
+        maximum = self.settings.recipient_batch_max
+        effective = maximum if limit is None else min(limit, maximum)
+        self._batch_stop = False
+        self._progress = BatchProgress(running=True)
+        streak = 0
+        last_publish = 0.0
+        # Nur die jenseits des Limits gefundenen Dokumente (aus _collect_missing_ids) —
+        # bleibt der Lauf durch Stopp/Fehlerserie/Ausnahme vor dem Ende der Liste stehen,
+        # zählt das ``finally`` unten die eingeplanten, aber nicht mehr erreichten
+        # Dokumente hinzu. Vorbelegt, falls die Ausnahme schon vor der Zuweisung greift.
+        rest = 0
+
+        def publish(force: bool = False) -> None:
+            nonlocal last_publish
+            now = time.monotonic()
+            if force or now - last_publish >= BATCH_PUBLISH_INTERVAL:
+                last_publish = now
+                self.repo.notify_batch()
+
         try:
             async with self._paperless() as client:
                 field = await self._recipient_field_cached(client)
                 if field is None or not field.labels:
-                    return 0
-                doc_ids = await self._collect_missing_ids(client, field)
-                if len(doc_ids) >= RECIPIENT_BATCH_MAX:
-                    log.warning(
-                        "Batch-Lauf auf %s Dokumente begrenzt; weitere bleiben offen.",
-                        RECIPIENT_BATCH_MAX,
+                    self._progress.aborted_reason = (
+                        "Empfänger-Feld ist in Paperless nicht vorhanden oder hat keine "
+                        "Auswahloptionen — Lauf beendet, ohne ein Dokument zu bearbeiten."
                     )
+                    return 0
+                doc_ids, rest = await self._collect_missing_ids(client, field, effective)
+                self._progress.total = len(doc_ids)
+                self._progress.remaining = rest
+                publish(force=True)
                 async with self._suggester() as suggester:
                     for doc_id in doc_ids:
+                        if self._batch_stop:
+                            self._progress.stopped = True
+                            break
                         # Erneut prüfen: Der Lauf kann lange dauern; in der Zwischenzeit kann
                         # ein Dokument per UI bearbeitet worden sein (manueller Empfänger /
-                        # Einzelvorschlag). Dann nicht erneut verarbeiten/überschreiben.
+                        # Einzelvorschlag). Dann nicht erneut verarbeiten/überschreiben — zählt
+                        # aber sichtbar als "übersprungen", nicht stillschweigend gar nicht.
                         cache = self.repo.get_recipient_cache(doc_id)
                         if cache and cache.status != RecipientStatus.NONE:
-                            continue
-                        try:
-                            doc = await client.get_document(doc_id)
-                            correspondent = await self._correspondent_name(client, doc)
-                            await self._suggest_for_doc(
-                                client, suggester, field, doc, correspondent,
-                                guard_concurrent=True,
-                            )
-                            processed += 1
-                        except Exception:
-                            log.exception(
-                                "Empfänger-Vorschlag für Dokument %s fehlgeschlagen", doc_id
-                            )
+                            self._progress.skipped += 1
+                        else:
+                            try:
+                                doc = await client.get_document(doc_id)
+                                correspondent = await self._correspondent_name(client, doc)
+                                await self._suggest_for_doc(
+                                    client, suggester, field, doc, correspondent,
+                                    guard_concurrent=True,
+                                )
+                                self._progress.done += 1
+                                streak = 0
+                            except Exception:
+                                log.exception(
+                                    "Empfänger-Vorschlag für Dokument %s fehlgeschlagen", doc_id
+                                )
+                                self._progress.failed += 1
+                                streak += 1
+                                if streak >= BATCH_ERROR_STREAK:
+                                    self._progress.aborted_reason = (
+                                        f"{streak} Fehler in Folge — Lauf abgebrochen. "
+                                        "Bitte Log und API-Zugang prüfen."
+                                    )
+                                    publish()
+                                    break
+                        # Auch beim Überspringen melden — sonst bleibt der Fortschrittsbalken
+                        # bei vielen Übersprüngen in Folge minutenlang stehen, weil publish()
+                        # sonst nur bei done/failed erreicht würde.
+                        publish()
+        except Exception as exc:
+            # Ausnahme VOR/ZWISCHEN der Dokumentschleife (z.B. Paperless während des
+            # Batch-Starts neu gestartet) darf den Lauf nicht wortlos mit "0 verarbeitet"
+            # enden lassen — sonst zeigt die Oberfläche einen unauffälligen Erfolg vor.
+            log.exception("Empfänger-Batch vor/während der Verarbeitung abgebrochen")
+            self._progress.aborted_reason = (
+                f"Lauf abgebrochen — unerwarteter Fehler: {exc}"
+            )
         finally:
-            self._batch_running = False
-        log.info("Empfänger-Batch abgeschlossen: %s Dokumente verarbeitet", processed)
-        return processed
+            self._progress.running = False
+            # Eingeplante, aber wegen Stopp/Fehlerserie/Ausnahme nicht mehr erreichte
+            # Dokumente zählen zum offenen Rest dazu — sonst zeigt "offen" nur den
+            # Limit-Rest und unterschlägt einen abgebrochenen Lauf fast vollständig.
+            processed = self._progress.done + self._progress.failed + self._progress.skipped
+            unprocessed = max(0, self._progress.total - processed)
+            self._progress.remaining = rest + unprocessed
+            self._progress.finished_at = datetime.now(UTC)
+            publish(force=True)
+        log.info(
+            "Empfänger-Batch beendet: %s verarbeitet, %s übersprungen, %s Fehler, %s offen",
+            self._progress.done, self._progress.skipped, self._progress.failed,
+            self._progress.remaining,
+        )
+        return self._progress.done
 
     async def _collect_missing_ids(
-        self, client: PaperlessClient, field: SelectField
-    ) -> list[int]:
-        """Sammelt IDs von Dokumenten ohne Empfänger, die noch keinen Vorschlag haben.
+        self, client: PaperlessClient, field: SelectField, limit: int
+    ) -> tuple[list[int], int]:
+        """Sammelt bis zu ``limit`` IDs von Dokumenten ohne Empfänger und ohne Vorschlag.
 
-        Bereits gecachte Dokumente (Status != ``none``) werden übersprungen, damit der auf
-        ``RECIPIENT_BATCH_MAX`` gedeckelte Lauf bei jeder Wiederholung tatsächlich neue
-        Dokumente erreicht — und nicht dauerhaft an den ersten (bereits vorgeschlagenen)
-        Dokumenten hängen bleibt.
+        Liefert zusätzlich den Rest: wie viele passende Dokumente wegen des Limits
+        **nicht** eingeplant wurden. Bereits gecachte Dokumente (Status != ``none``)
+        werden übersprungen, damit ein wiederholter Lauf tatsächlich neue Dokumente
+        erreicht und nicht an den ersten hängen bleibt.
         """
         ids: list[int] = []
+        rest = 0
         page = 1
-        while len(ids) < RECIPIENT_BATCH_MAX:
+        while True:
             page_obj = await client.search_documents(
                 page=page, page_size=RECIPIENT_PAGE_SIZE, missing_field_id=field.field_id
             )
@@ -647,13 +766,14 @@ class PaperlessSync:
                 cache = caches.get(doc_id)
                 if cache and cache.status != RecipientStatus.NONE:
                     continue
-                ids.append(doc_id)
-                if len(ids) >= RECIPIENT_BATCH_MAX:
-                    break
+                if len(ids) < limit:
+                    ids.append(doc_id)
+                else:
+                    rest += 1
             if page >= page_obj.total_pages:
                 break
             page += 1
-        return ids
+        return ids, rest
 
     async def _suggest_for_doc(
         self,
@@ -692,11 +812,17 @@ class PaperlessSync:
                 cache = self.repo.get_recipient_cache(doc.id)
                 if cache and cache.status != RecipientStatus.NONE:
                     return suggestion
+            # Im Batch-Lauf (guard_concurrent=True) löst JEDES Dokument sonst zusätzlich zum
+            # gedrosselten "batch:recipient"-Ereignis ein eigenes ungedrosseltes "rec:<id>"
+            # aus — 1500 Dokumente erzeugen dann 1500 SSE-Ereignisse, die die Drossel gerade
+            # verhindern soll. Der Einzel-Vorschlag (guard_concurrent=False) meldet weiterhin
+            # sofort, weil dort kein Batch-Ereignis nachzieht.
+            notify = not guard_concurrent
             if auto:
                 option_id = field.label_to_id.get(suggestion.label or "")
                 if option_id:
                     await client.set_custom_fields(doc.id, {field.field_id: option_id})
-                    self.repo.mark_recipient_applied(doc.id)
+                    self.repo.mark_recipient_applied(doc.id, notify=notify)
                     return suggestion
             status = RecipientStatus.SUGGESTED if suggestion.label else RecipientStatus.UNKNOWN
             self.repo.set_recipient_cache(
@@ -705,6 +831,7 @@ class PaperlessSync:
                 confidence=suggestion.confidence,
                 reasoning=suggestion.reasoning,
                 status=status,
+                notify=notify,
             )
         return suggestion
 

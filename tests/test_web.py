@@ -144,3 +144,217 @@ def test_recipients_suggest_batch_route_not_shadowed(client):
     resp = c.post("/empfaenger/suggest-batch", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/empfaenger")
+
+
+def test_recipients_stop_route_reachable(client):
+    c, _ = client
+    resp = c.post("/empfaenger/suggest-batch/stop", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/empfaenger")
+
+
+def test_batch_status_fragment_without_paperless(client):
+    c, _ = client
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+
+
+def test_batch_limit_is_clamped(client, monkeypatch):
+    # Ein absurd hohes Limit darf die Obergrenze aus den Settings nicht überschreiten.
+    c, application = client
+    seen = {}
+    monkeypatch.setattr(
+        application.state.sync, "start_batch", lambda limit=None: seen.update(limit=limit)
+    )
+    c.post("/empfaenger/suggest-batch", data={"limit": "999999"}, follow_redirects=False)
+    assert seen["limit"] == application.state.sync.settings.recipient_batch_max
+
+    # BLOCKER-Regression: Ein unlesbarer Wert darf NIEMALS auf die Obergrenze (hier
+    # Default 1000) zurückfallen — das würde einen versehentlichen Maximallauf auslösen.
+    # Der Rückfall ist die konservative Vorbelegung (höchstens 100).
+    c.post("/empfaenger/suggest-batch", data={"limit": "keine-zahl"}, follow_redirects=False)
+    assert seen["limit"] == 100
+
+    # BLOCKER: Ein leeres Formularfeld (bei <input type="number"> ohne "required" per
+    # HTML5 nicht verhindert) ist der eigentliche Praxisfall — ein Nutzer löscht den
+    # Inhalt und klickt "Starten". Auch das darf keinen 1000er-Lauf auslösen.
+    c.post("/empfaenger/suggest-batch", data={"limit": ""}, follow_redirects=False)
+    assert seen["limit"] == 100
+
+
+def test_no_route_is_shadowed_by_a_parametrised_one():
+    """Generischer Schutz gegen die 422-Falle aus dem suggest-batch-Fehler.
+
+    Starlette matcht Routen in Registrierungsreihenfolge. Steht eine parametrisierte
+    Route vor einer statischen gleicher Segmentzahl, verschluckt sie diese.
+    """
+    import app.main as m
+
+    routes = []
+    for r in m.app.routes:
+        for method in sorted(getattr(r, "methods", []) or []):
+            if method in ("HEAD", "OPTIONS"):
+                continue
+            routes.append((method, r.path))
+
+    def segments(path):
+        return [("*" if s.startswith("{") else s) for s in path.strip("/").split("/")]
+
+    shadowed = []
+    for i, (m1, p1) in enumerate(routes):
+        for m2, p2 in routes[i + 1 :]:
+            if m1 != m2:
+                continue
+            a, b = segments(p1), segments(p2)
+            if len(a) != len(b) or a == b:
+                continue
+            if all(x == "*" or x == y for x, y in zip(a, b, strict=True)):
+                shadowed.append(f"{m1} {p1} verdeckt {m2} {p2}")
+
+    assert shadowed == []
+
+
+async def test_recipient_row_fragment_skips_batch_status_count(client, monkeypatch):
+    """Regression (Review-Befund J): /fragment/empfaenger rendert nur die Zeilentabelle
+    (partials/recipient_rows.html) und nutzt weder missing_total noch progress — der
+    Bestand-Zählaufruf aus _batch_status_context darf hier nicht mitlaufen."""
+    from app.paperless import DocumentPage
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    async def fake_list(*_a, **_kw):
+        return [], DocumentPage(documents=[], count=0, page=1, page_size=50), None
+
+    monkeypatch.setattr(sync, "list_recipient_documents", fake_list)
+
+    calls = 0
+
+    async def spy(*_a, **_kw):
+        nonlocal calls
+        calls += 1
+        return 42
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    resp = c.get("/fragment/empfaenger")
+    assert resp.status_code == 200
+    assert calls == 0
+
+
+async def test_batch_status_skips_missing_count_without_llm_feature(client, monkeypatch):
+    """Regression (Review-Befund A): Ist Paperless verbunden, aber das KI-Feature aus,
+    darf der teure Netzwerk-Zählaufruf nicht laufen — ``batch_status.html`` blendet den
+    Block dann ohnehin per ``recipient_enabled and feature_llm`` aus."""
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: False))
+    calls = 0
+
+    async def spy(*_a, **_kw):
+        nonlocal calls
+        calls += 1
+        return 42
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+    assert calls == 0
+
+
+async def test_batch_status_default_limit_never_exceeds_batch_max(client, monkeypatch):
+    """Regression (Review-Befund B): Bei kleinem ``RECIPIENT_BATCH_MAX`` darf die
+    Vorbelegung des Mengenfelds nicht über sein eigenes ``max`` hinausgehen — sonst
+    blockiert die HTML5-Constraint-Validierung das Absenden des Formulars."""
+    import app.main as m
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+    monkeypatch.setattr(sync.settings, "recipient_batch_max", 50)
+
+    async def spy(*_a, **_kw):
+        return 500
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+
+    class _FakeRequest:
+        app = application
+
+    ctx = await m._batch_status_context(_FakeRequest())
+    assert ctx["batch_max"] == 50
+    assert ctx["default_limit"] <= ctx["batch_max"]
+
+
+async def test_batch_status_start_button_stays_enabled_when_count_fails(client, monkeypatch):
+    """BLOCKER-Regression: Wirft ``count_missing_recipients`` (z.B. Paperless-Aussetzer),
+    darf die Oberfläche NICHT "0 Dokument(e) ohne Empfänger" mit deaktiviertem
+    Start-Button zeigen — das friert den Button dauerhaft ein, bis die Seite manuell
+    neu geladen wird (kommen ja keine weiteren SSE-Ereignisse mehr). Stattdessen muss
+    der Bestand als unbekannt ausgewiesen werden und der Button nutzbar bleiben."""
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    async def boom(*_a, **_kw):
+        raise RuntimeError("Paperless nicht erreichbar")
+
+    monkeypatch.setattr(sync, "count_missing_recipients", boom)
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+    assert "disabled" not in resp.text
+    assert "0 Dokument(e)" not in resp.text
+    assert "kann gerade nicht ermittelt werden" in resp.text
+
+
+def test_recipients_page_shows_batch_toolbar_container(client):
+    # Ohne Paperless bleibt die Toolbar leer, der Container mit data-fragment
+    # muss aber da sein — sonst kann das Live-Update nicht greifen.
+    c, _ = client
+    resp = c.get("/empfaenger")
+    assert 'id="batch-status"' in resp.text
+    # Query-Parameter (page/q/missing) haengen an der Fragment-URL, damit die Route
+    # dieselben Filter kennt wie die aktuelle Seite (siehe Fix-Runde 1) — daher Prefix-
+    # statt Exact-Match.
+    assert 'data-fragment="/fragment/empfaenger/batch-status?' in resp.text
+
+
+async def test_batch_status_forms_carry_current_filters_as_hidden_fields(client, monkeypatch):
+    """Fix-Runde 1 (Important-Befund): Ohne Hidden-Felder fuer page/q/missing wirft der
+    Redirect nach Start/Stopp den Anwender auf Seite 1 ohne Filter zurueck, selbst wenn
+    er auf Seite 3 mit aktivem Filter stand. Beide Formulare muessen die *aktuellen*
+    Werte tragen — nicht nur irgendeine Hidden-Feld-Struktur."""
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    async def spy(*_a, **_kw):
+        return 5
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    # Formular "KI-Vorschlag starten" (Lauf steht, progress.running ist False).
+    resp = c.get("/fragment/empfaenger/batch-status?page=3&q=rechnung&missing=1")
+    assert resp.status_code == 200
+    assert '<input type="hidden" name="page" value="3" />' in resp.text
+    assert '<input type="hidden" name="q" value="rechnung" />' in resp.text
+    assert '<input type="hidden" name="missing" value="1" />' in resp.text
+
+    # Formular "Abbrechen" (Lauf laeuft, progress.running ist True).
+    sync.batch_progress.running = True
+    resp = c.get("/fragment/empfaenger/batch-status?page=3&q=rechnung&missing=1")
+    assert resp.status_code == 200
+    assert '<input type="hidden" name="page" value="3" />' in resp.text
+    assert '<input type="hidden" name="q" value="rechnung" />' in resp.text
+    assert '<input type="hidden" name="missing" value="1" />' in resp.text

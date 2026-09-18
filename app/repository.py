@@ -141,6 +141,10 @@ class Repository:
         """Signalisiert der UI eine Änderung an der Empfänger-Übersicht (SSE-Token)."""
         self._emit(f"rec:{paperless_id}")
 
+    def notify_batch(self) -> None:
+        """Signalisiert der UI den Fortschritt des KI-Batch-Laufs (SSE-Token)."""
+        self._emit("batch:recipient")
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -581,7 +585,14 @@ class Repository:
         confidence: float | None,
         reasoning: str | None,
         status: RecipientStatus,
+        notify: bool = True,
     ) -> None:
+        """``notify=False`` unterdrückt das einzelne ``rec:<id>``-SSE-Ereignis.
+
+        Genutzt vom KI-Batch-Lauf: Dort meldet das gedrosselte ``notify_batch()``
+        ohnehin den Fortschritt — ein zusätzliches ungedrosseltes Ereignis pro Dokument
+        würde die Drossel wirkungslos machen.
+        """
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             self._conn.execute(
@@ -594,13 +605,15 @@ class Repository:
                 (paperless_id, suggested_label, confidence, reasoning, status.value, now),
             )
             self._conn.commit()
-        self.notify_recipient(paperless_id)
+        if notify:
+            self.notify_recipient(paperless_id)
 
-    def mark_recipient_applied(self, paperless_id: int) -> None:
+    def mark_recipient_applied(self, paperless_id: int, *, notify: bool = True) -> None:
         self.set_recipient_cache(
             paperless_id,
             suggested_label=None,
             confidence=None,
             reasoning=None,
             status=RecipientStatus.APPLIED,
+            notify=notify,
         )

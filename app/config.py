@@ -112,6 +112,8 @@ class Settings(BaseSettings):
     recipient_llm_min_confidence: float = Field(
         default=0.75, alias="RECIPIENT_LLM_MIN_CONFIDENCE"
     )
+    # Obergrenze, wie viele Dokumente ein einzelner Batch-Lauf maximal verarbeitet.
+    recipient_batch_max: int = Field(default=1000, alias="RECIPIENT_BATCH_MAX")
 
     @property
     def partial_suffix_list(self) -> list[str]:
