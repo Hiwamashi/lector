@@ -585,7 +585,7 @@ class PaperlessSync:
         if not self.recipient_llm_enabled or self._batch_running:
             return 0
         maximum = self.settings.recipient_batch_max
-        effective = min(limit or maximum, maximum)
+        effective = maximum if limit is None else min(limit, maximum)
         self._batch_running = True
         processed = 0
         try:

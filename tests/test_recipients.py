@@ -292,6 +292,55 @@ async def test_batch_auto_applies_when_field_empty(tmp_path):
     assert repo.get_recipient_cache(7).status == RecipientStatus.APPLIED
 
 
+class _CtxClient:
+    """Reicht einen bereits fertigen Client als async Context Manager durch."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def __aenter__(self):
+        return self._inner
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def test_batch_limit_zero_does_not_fall_back_to_maximum(tmp_path):
+    # limit=0 ist explizit "keine Dokumente", nicht "kein Limit" — 0 ist falsy und darf
+    # nicht via `limit or maximum` auf die Settings-Obergrenze (hier Default 1000)
+    # zurückfallen. _collect_missing_ids wird durch einen Spy ersetzt, damit der Test
+    # den tatsächlich durchgereichten Effektiv-Wert prüft statt sich auf Seiteneffekte
+    # der Dokumentverarbeitung zu verlassen.
+    from app import paperless_sync as ps
+    from app.config import Settings
+
+    repo = Repository(tmp_path / "i.db")
+    settings = Settings(
+        PAPERLESS_URL="http://x",
+        PAPERLESS_TOKEN="t",
+        FEATURE_RECIPIENT_LLM=True,
+        ANTHROPIC_API_KEY="k",
+    )
+    sync = ps.PaperlessSync(settings, repo)
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+    # Feldauflösung vorab cachen, damit kein echter Client-Aufruf nötig ist.
+    sync._recipient_field = field
+    sync._recipient_field_resolved = True
+    sync._paperless = lambda: _CtxClient(object())
+
+    seen_limits: list[int] = []
+
+    async def fake_collect(client, field, limit):
+        seen_limits.append(limit)
+        return [], 0
+
+    sync._collect_missing_ids = fake_collect
+
+    processed = await sync.suggest_recipients_batch(limit=0)
+    assert processed == 0
+    assert seen_limits == [0]
+
+
 # ---- Retry / Backoff im LLM-Client --------------------------------------
 
 
