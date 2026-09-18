@@ -403,12 +403,22 @@ def _clamp_batch_limit(raw: str, maximum: int) -> int:
     return max(1, min(value, maximum))
 
 
-async def _batch_status_context(request: Request) -> dict:
+async def _batch_status_context(
+    request: Request, page: int = 1, q: str | None = None, missing: bool = False
+) -> dict:
     """Kontext der Batch-Toolbar.
 
     ``missing_total`` wird getrennt ermittelt: Das ``count`` der Listenansicht ist der
     Treffer-Zähler der aktuellen Suche und bei inaktivem Filter **nicht** die Zahl der
     Dokumente ohne Empfänger — der Batch arbeitet aber immer nur über diese.
+
+    ``page``/``q``/``missing`` sind die aktuellen Filter der Listenansicht. Die Formulare
+    im Partial tragen sie als Hidden-Felder mit, damit der Redirect nach dem Start/Stopp
+    eines Laufs auf dieselbe Seite mit denselben Filtern zurückführt statt auf Seite 1
+    ohne Filter zu springen. Diese Funktion liefert den Kontext sowohl für den vollen
+    Seitenaufbau als auch für die eigenständige Fragment-Route
+    ``/fragment/empfaenger/batch-status`` — deshalb müssen die Werte hier und nicht nur
+    in ``_recipient_context`` gesetzt werden.
     """
     sync: PaperlessSync = request.app.state.sync
     settings = sync.settings
@@ -428,6 +438,11 @@ async def _batch_status_context(request: Request) -> dict:
         "batch_max": settings.recipient_batch_max,
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
+        "page": page,
+        "filters": {"q": q or "", "missing": missing},
+        "batch_fragment_query": urlencode(
+            {"page": page, "q": q or "", "missing": "1" if missing else ""}
+        ),
     }
 
 
@@ -441,15 +456,15 @@ async def _recipient_context(request: Request, page: int, q: str | None, missing
         "rows": rows,
         "options": field.labels if field else [],
         "field_present": field is not None,
-        "page": page_obj.page,
         "total_pages": page_obj.total_pages,
         "count": page_obj.count,
-        "filters": {"q": q or "", "missing": missing},
         "fragment_query": urlencode(frag),
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
     }
-    ctx.update(await _batch_status_context(request))
+    # page_obj.page statt des rohen page-Parameters: Falls Paperless die Seite klemmt,
+    # sollen Hidden-Felder und Pager dieselbe, tatsächlich angezeigte Seite tragen.
+    ctx.update(await _batch_status_context(request, page_obj.page, q, missing))
     return ctx
 
 
@@ -462,9 +477,9 @@ async def recipients(
 ):
     sync: PaperlessSync = request.app.state.sync
     if not sync.recipient_enabled:
-        return templates.TemplateResponse(
-            request, "recipients.html", {"recipient_enabled": False, "rows": []}
-        )
+        ctx = await _batch_status_context(request, page, q or None, bool(missing))
+        ctx["rows"] = []
+        return templates.TemplateResponse(request, "recipients.html", ctx)
     ctx = await _recipient_context(request, page, q or None, bool(missing))
     return templates.TemplateResponse(request, "recipients.html", ctx)
 
@@ -484,10 +499,14 @@ async def recipients_fragment(
 
 
 @app.get("/fragment/empfaenger/batch-status", response_class=HTMLResponse)
-async def recipients_batch_status(request: Request):
-    return templates.TemplateResponse(
-        request, "partials/batch_status.html", await _batch_status_context(request)
-    )
+async def recipients_batch_status(
+    request: Request,
+    page: int = Query(1, ge=1),
+    q: str | None = Query(None),
+    missing: str | None = Query(None),
+):
+    ctx = await _batch_status_context(request, page, q or None, bool(missing))
+    return templates.TemplateResponse(request, "partials/batch_status.html", ctx)
 
 
 # Muss VOR /empfaenger/{paperless_id} stehen: Starlette matcht Routen in

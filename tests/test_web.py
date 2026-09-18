@@ -261,4 +261,38 @@ def test_recipients_page_shows_batch_toolbar_container(client):
     c, _ = client
     resp = c.get("/empfaenger")
     assert 'id="batch-status"' in resp.text
-    assert 'data-fragment="/fragment/empfaenger/batch-status"' in resp.text
+    # Query-Parameter (page/q/missing) haengen an der Fragment-URL, damit die Route
+    # dieselben Filter kennt wie die aktuelle Seite (siehe Fix-Runde 1) — daher Prefix-
+    # statt Exact-Match.
+    assert 'data-fragment="/fragment/empfaenger/batch-status?' in resp.text
+
+
+async def test_batch_status_forms_carry_current_filters_as_hidden_fields(client, monkeypatch):
+    """Fix-Runde 1 (Important-Befund): Ohne Hidden-Felder fuer page/q/missing wirft der
+    Redirect nach Start/Stopp den Anwender auf Seite 1 ohne Filter zurueck, selbst wenn
+    er auf Seite 3 mit aktivem Filter stand. Beide Formulare muessen die *aktuellen*
+    Werte tragen — nicht nur irgendeine Hidden-Feld-Struktur."""
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    async def spy(*_a, **_kw):
+        return 5
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    # Formular "KI-Vorschlag starten" (Lauf steht, progress.running ist False).
+    resp = c.get("/fragment/empfaenger/batch-status?page=3&q=rechnung&missing=1")
+    assert resp.status_code == 200
+    assert '<input type="hidden" name="page" value="3" />' in resp.text
+    assert '<input type="hidden" name="q" value="rechnung" />' in resp.text
+    assert '<input type="hidden" name="missing" value="1" />' in resp.text
+
+    # Formular "Abbrechen" (Lauf laeuft, progress.running ist True).
+    sync.batch_progress.running = True
+    resp = c.get("/fragment/empfaenger/batch-status?page=3&q=rechnung&missing=1")
+    assert resp.status_code == 200
+    assert '<input type="hidden" name="page" value="3" />' in resp.text
+    assert '<input type="hidden" name="q" value="rechnung" />' in resp.text
+    assert '<input type="hidden" name="missing" value="1" />' in resp.text

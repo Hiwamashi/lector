@@ -6,6 +6,9 @@
     <span class="progress-label">{{ progress.done }} / {{ progress.total }} verarbeitet{% if progress.failed %}, {{ progress.failed }} fehlgeschlagen{% endif %}</span>
   </div>
   <form method="post" action="/empfaenger/suggest-batch/stop">
+    <input type="hidden" name="page" value="{{ page }}" />
+    <input type="hidden" name="q" value="{{ filters.q }}" />
+    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
     <button type="submit" class="link-button">Abbrechen</button>
   </form>
   {% else %}
@@ -15,6 +18,9 @@
     {% if progress.aborted_reason %}({{ progress.aborted_reason }}){% endif %}
   </span>
   <form method="post" action="/empfaenger/suggest-batch">
+    <input type="hidden" name="page" value="{{ page }}" />
+    <input type="hidden" name="q" value="{{ filters.q }}" />
+    <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
     <input type="number" name="limit" min="1" max="{{ batch_max }}" value="{{ default_limit }}" />
     <button type="submit" {% if not missing_total %}disabled{% endif %}>KI-Vorschlag starten</button>
   </form>
