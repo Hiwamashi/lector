@@ -468,3 +468,16 @@ def test_batch_status_running_keeps_count_outside_the_bar(client, monkeypatch):
     # ... und meldet seinen Stand an Hilfstechnik.
     assert 'role="progressbar"' in resp.text
     assert 'aria-valuenow="15"' in resp.text
+
+
+def test_pages_carry_live_status_hint(client):
+    """Ein gescheiterter Fragment-Refresh darf nicht stumm bleiben.
+
+    app.js blendet diesen Hinweis ein, wenn ein Refresh fehlschlägt oder die
+    SSE-Verbindung abreißt — sonst steht die Seite unbemerkt auf veralteten Daten.
+    """
+    c, _ = client
+    resp = c.get("/")
+    assert 'id="live-status"' in resp.text
+    assert "hidden" in resp.text
+    assert "veraltet" in resp.text

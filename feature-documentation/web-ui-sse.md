@@ -57,6 +57,13 @@ einem Internal Server Error mit Stacktrace:
 Ergänzend verwirft `app/static/app.js` Fragment-Antworten mit Fehlerstatus (`r.ok`), statt
 sie einzusetzen — der zuletzt erfolgreich geladene Inhalt bleibt dann stehen.
 
+**Damit das nicht still passiert**, blendet `app.js` in dem Fall die Hinweiszeile
+`#live-status` aus `base.html` ein („Live-Aktualisierung unterbrochen — die Anzeige kann
+veraltet sein"). Sie verschwindet beim nächsten erfolgreichen Refresh von selbst. Ausgelöst
+wird sie auch, wenn die SSE-Verbindung abreißt (`source.onerror`). Ohne diesen Hinweis stünde
+die Seite unbemerkt auf altem Stand — bei einem 45-Minuten-Lauf sähe eine eingefrorene
+Tabelle genauso aus wie eine, in der gerade nichts passiert.
+
 ## Batch-Statusleiste
 
 Der Zähltext (`12 / 100 verarbeitet`) steht **neben** dem Fortschrittsbalken, nicht darin:
