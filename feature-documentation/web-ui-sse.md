@@ -72,7 +72,12 @@ Zwei Fallstricke stecken in dieser Zustandsführung, beide durch
    obwohl ein anderer im selben Zyklus fehlgeschlagen ist.
 2. **Getrennte Ursachen.** Fehlgeschlagener Refresh (`refreshFailed`) und abgerissener
    Stream (`streamDown`) werden getrennt geführt. Sonst überdeckt ein gelungener Refresh
-   eine tote SSE-Verbindung, obwohl dann gar keine Ereignisse mehr eintreffen. Ohne diesen Hinweis stünde
+   eine tote SSE-Verbindung, obwohl dann gar keine Ereignisse mehr eintreffen.
+3. **Nur der jüngste Zyklus zählt.** Jeder Aufruf zieht eine Sequenznummer (`cycle`); ein
+   Ergebnis wird verworfen, wenn inzwischen ein neuerer Zyklus gestartet ist. Die
+   Entprellung von 250 ms verhindert nur Bursts, nicht einen langsamen Zyklus, dessen
+   Antwort nach der eines später gestarteten eintrifft — sonst überschreibt ein veralteter
+   Erfolg den aktuellen Fehlerzustand. Ohne diesen Hinweis stünde
 die Seite unbemerkt auf altem Stand — bei einem 45-Minuten-Lauf sähe eine eingefrorene
 Tabelle genauso aus wie eine, in der gerade nichts passiert.
 

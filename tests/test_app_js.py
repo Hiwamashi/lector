@@ -50,9 +50,12 @@ global.window = { EventSource: function () {}, location: { pathname: "/empfaenge
 // Reihenfolge der Antworten laut Szenario; "ok" = 200, sonst Fehlerstatus.
 let i = 0;
 global.fetch = (_url, _opts) => {
-  const ok = scenario.responses[i++];
+  const n = i++;
+  const ok = scenario.responses[n];
+  const delay = (scenario.delays || [])[n] || 0;
   const body = () => Promise.resolve("<tr></tr>");
-  return Promise.resolve({ ok: ok, status: ok ? 200 : 503, text: body });
+  const res = { ok: ok, status: ok ? 200 : 503, text: body };
+  return new Promise((r) => setTimeout(() => r(res), delay));
 };
 
 let sse = null;
@@ -64,8 +67,13 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
 (async () => {
   if (scenario.streamDown) sse.onerror();
   sse.onmessage({ data: "batch:recipient" });
+  if (scenario.secondCycleAfter) {
+    // Nach Ablauf der Entprellung einen zweiten Zyklus starten, der den ersten überholt.
+    await new Promise((r) => setTimeout(r, scenario.secondCycleAfter));
+    sse.onmessage({ data: "batch:recipient" });
+  }
   // Entprellung (250 ms) plus Zeit für die Fetches abwarten.
-  await new Promise((r) => setTimeout(r, 600));
+  await new Promise((r) => setTimeout(r, 900));
   if (scenario.streamRecovers) { sse.onopen(); await new Promise((r) => setTimeout(r, 50)); }
   console.log(JSON.stringify({ hinweisSichtbar: hidden === false }));
 })();
@@ -124,3 +132,22 @@ def test_beide_fragmente_erfolgreich_blendet_hinweis_aus(tmp_path):
         tmp_path,
     )
     assert ergebnis == {"hinweisSichtbar": False}
+
+
+def test_veralteter_zyklus_ueberschreibt_aktuellen_fehler_nicht(tmp_path):
+    """Regression: Zyklen können sich überholen.
+
+    Zyklus 1 lädt erfolgreich, aber langsam (600 ms). Zyklus 2 startet danach und
+    schlägt sofort fehl — der Hinweis erscheint. Träfe danach das veraltete
+    Erfolgsergebnis von Zyklus 1 ein, würde es den Hinweis fälschlich ausblenden.
+    """
+    ergebnis = _run(
+        {
+            "responses": [True, False],   # Zyklus 1 ok, Zyklus 2 Fehler
+            "delays": [600, 0],           # Zyklus 1 antwortet als Letzter
+            "secondCycleAfter": 300,      # nach Ablauf der Entprellung
+            "streamDown": False,
+        },
+        tmp_path,
+    )
+    assert ergebnis == {"hinweisSichtbar": True}

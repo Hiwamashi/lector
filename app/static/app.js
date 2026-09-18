@@ -18,6 +18,11 @@
   // ueberdeckt eine abgerissene SSE-Verbindung.
   var refreshFailed = false;
   var streamDown = false;
+  // Laufende Zyklen koennen sich ueberholen: die Entprellung verhindert nur Bursts
+  // innerhalb von 250 ms, nicht einen langsamen Zyklus, dessen Antwort nach der eines
+  // spaeter gestarteten eintrifft. Nur das Ergebnis des juengsten Zyklus zaehlt, sonst
+  // ueberschreibt ein veralteter Erfolg den aktuellen Fehlerzustand.
+  var cycle = 0;
 
   function updateLiveStatus() {
     var el = document.getElementById("live-status");
@@ -31,6 +36,7 @@
   }
 
   function refreshFragment() {
+    var mine = ++cycle;
     var jobs = [];
 
     var table = document.querySelector("table.history[data-fragment]");
@@ -59,6 +65,7 @@
     if (!jobs.length) return;
 
     Promise.allSettled(jobs).then(function (results) {
+      if (mine !== cycle) return;  // von einem neueren Zyklus ueberholt
       refreshFailed = results.some(function (r) { return r.status === "rejected"; });
       updateLiveStatus();
     });
