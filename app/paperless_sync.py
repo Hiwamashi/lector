@@ -81,6 +81,11 @@ class BatchProgress:
     total: int = 0
     done: int = 0
     failed: int = 0
+    # Dokumente, die zwischen Einplanung und Verarbeitung anderweitig einen Empfänger
+    # oder Vorschlag bekommen haben (manuell oder Einzelvorschlag) — zählen bewusst
+    # weder als "done" noch als "failed", sollen aber sichtbar sein statt den
+    # Fortschrittsbalken einfach stehen zu lassen.
+    skipped: int = 0
     remaining: int = 0
     stopped: bool = False
     aborted_reason: str | None = None
@@ -135,6 +140,18 @@ class PaperlessSync:
         """Bittet den laufenden Batch, nach dem aktuellen Dokument zu enden."""
         if self._progress.running:
             self._batch_stop = True
+
+    async def shutdown(self) -> None:
+        """Bricht einen laufenden Batch beim Herunterfahren des Prozesses ab und wartet ihn ab.
+
+        Ohne diesen Schritt könnte der Task bei einem SIGTERM mitten im Lauf auf eine
+        bereits geschlossene Repository-Verbindung zugreifen, weil das Lifespan-``finally``
+        sonst sofort mit ``repo.close()`` fortfährt, während der Task noch läuft.
+        """
+        task = self._batch_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def _paperless(self) -> PaperlessClient:
         return PaperlessClient(self.settings.paperless_url, self.settings.paperless_token)
@@ -634,6 +651,11 @@ class PaperlessSync:
         self._progress = BatchProgress(running=True)
         streak = 0
         last_publish = 0.0
+        # Nur die jenseits des Limits gefundenen Dokumente (aus _collect_missing_ids) —
+        # bleibt der Lauf durch Stopp/Fehlerserie/Ausnahme vor dem Ende der Liste stehen,
+        # zählt das ``finally`` unten die eingeplanten, aber nicht mehr erreichten
+        # Dokumente hinzu. Vorbelegt, falls die Ausnahme schon vor der Zuweisung greift.
+        rest = 0
 
         def publish(force: bool = False) -> None:
             nonlocal last_publish
@@ -646,6 +668,10 @@ class PaperlessSync:
             async with self._paperless() as client:
                 field = await self._recipient_field_cached(client)
                 if field is None or not field.labels:
+                    self._progress.aborted_reason = (
+                        "Empfänger-Feld ist in Paperless nicht vorhanden oder hat keine "
+                        "Auswahloptionen — Lauf beendet, ohne ein Dokument zu bearbeiten."
+                    )
                     return 0
                 doc_ids, rest = await self._collect_missing_ids(client, field, effective)
                 self._progress.total = len(doc_ids)
@@ -658,39 +684,60 @@ class PaperlessSync:
                             break
                         # Erneut prüfen: Der Lauf kann lange dauern; in der Zwischenzeit kann
                         # ein Dokument per UI bearbeitet worden sein (manueller Empfänger /
-                        # Einzelvorschlag). Dann nicht erneut verarbeiten/überschreiben.
+                        # Einzelvorschlag). Dann nicht erneut verarbeiten/überschreiben — zählt
+                        # aber sichtbar als "übersprungen", nicht stillschweigend gar nicht.
                         cache = self.repo.get_recipient_cache(doc_id)
                         if cache and cache.status != RecipientStatus.NONE:
-                            continue
-                        try:
-                            doc = await client.get_document(doc_id)
-                            correspondent = await self._correspondent_name(client, doc)
-                            await self._suggest_for_doc(
-                                client, suggester, field, doc, correspondent,
-                                guard_concurrent=True,
-                            )
-                            self._progress.done += 1
-                            streak = 0
-                        except Exception:
-                            log.exception(
-                                "Empfänger-Vorschlag für Dokument %s fehlgeschlagen", doc_id
-                            )
-                            self._progress.failed += 1
-                            streak += 1
-                            if streak >= BATCH_ERROR_STREAK:
-                                self._progress.aborted_reason = (
-                                    f"{streak} Fehler in Folge — Lauf abgebrochen. "
-                                    "Bitte Log und API-Zugang prüfen."
+                            self._progress.skipped += 1
+                        else:
+                            try:
+                                doc = await client.get_document(doc_id)
+                                correspondent = await self._correspondent_name(client, doc)
+                                await self._suggest_for_doc(
+                                    client, suggester, field, doc, correspondent,
+                                    guard_concurrent=True,
                                 )
-                                break
+                                self._progress.done += 1
+                                streak = 0
+                            except Exception:
+                                log.exception(
+                                    "Empfänger-Vorschlag für Dokument %s fehlgeschlagen", doc_id
+                                )
+                                self._progress.failed += 1
+                                streak += 1
+                                if streak >= BATCH_ERROR_STREAK:
+                                    self._progress.aborted_reason = (
+                                        f"{streak} Fehler in Folge — Lauf abgebrochen. "
+                                        "Bitte Log und API-Zugang prüfen."
+                                    )
+                                    publish()
+                                    break
+                        # Auch beim Überspringen melden — sonst bleibt der Fortschrittsbalken
+                        # bei vielen Übersprüngen in Folge minutenlang stehen, weil publish()
+                        # sonst nur bei done/failed erreicht würde.
                         publish()
+        except Exception as exc:
+            # Ausnahme VOR/ZWISCHEN der Dokumentschleife (z.B. Paperless während des
+            # Batch-Starts neu gestartet) darf den Lauf nicht wortlos mit "0 verarbeitet"
+            # enden lassen — sonst zeigt die Oberfläche einen unauffälligen Erfolg vor.
+            log.exception("Empfänger-Batch vor/während der Verarbeitung abgebrochen")
+            self._progress.aborted_reason = (
+                f"Lauf abgebrochen — unerwarteter Fehler: {exc}"
+            )
         finally:
             self._progress.running = False
+            # Eingeplante, aber wegen Stopp/Fehlerserie/Ausnahme nicht mehr erreichte
+            # Dokumente zählen zum offenen Rest dazu — sonst zeigt "offen" nur den
+            # Limit-Rest und unterschlägt einen abgebrochenen Lauf fast vollständig.
+            processed = self._progress.done + self._progress.failed + self._progress.skipped
+            unprocessed = max(0, self._progress.total - processed)
+            self._progress.remaining = rest + unprocessed
             self._progress.finished_at = datetime.now(UTC)
             publish(force=True)
         log.info(
-            "Empfänger-Batch beendet: %s verarbeitet, %s Fehler, %s offen",
-            self._progress.done, self._progress.failed, self._progress.remaining,
+            "Empfänger-Batch beendet: %s verarbeitet, %s übersprungen, %s Fehler, %s offen",
+            self._progress.done, self._progress.skipped, self._progress.failed,
+            self._progress.remaining,
         )
         return self._progress.done
 
@@ -765,11 +812,17 @@ class PaperlessSync:
                 cache = self.repo.get_recipient_cache(doc.id)
                 if cache and cache.status != RecipientStatus.NONE:
                     return suggestion
+            # Im Batch-Lauf (guard_concurrent=True) löst JEDES Dokument sonst zusätzlich zum
+            # gedrosselten "batch:recipient"-Ereignis ein eigenes ungedrosseltes "rec:<id>"
+            # aus — 1500 Dokumente erzeugen dann 1500 SSE-Ereignisse, die die Drossel gerade
+            # verhindern soll. Der Einzel-Vorschlag (guard_concurrent=False) meldet weiterhin
+            # sofort, weil dort kein Batch-Ereignis nachzieht.
+            notify = not guard_concurrent
             if auto:
                 option_id = field.label_to_id.get(suggestion.label or "")
                 if option_id:
                     await client.set_custom_fields(doc.id, {field.field_id: option_id})
-                    self.repo.mark_recipient_applied(doc.id)
+                    self.repo.mark_recipient_applied(doc.id, notify=notify)
                     return suggestion
             status = RecipientStatus.SUGGESTED if suggestion.label else RecipientStatus.UNKNOWN
             self.repo.set_recipient_cache(
@@ -778,6 +831,7 @@ class PaperlessSync:
                 confidence=suggestion.confidence,
                 reasoning=suggestion.reasoning,
                 status=status,
+                notify=notify,
             )
         return suggestion
 

@@ -31,6 +31,10 @@ _MAX_CONTENT_CHARS = 6000
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE = 1.0
 _RETRY_STATUS = frozenset({429, 529})
+# Deckel für ein vom Server vorgegebenes retry-after (z.B. "retry-after: 600"): Ohne
+# Obergrenze hängt der Batch-Lauf minutenlang in einem einzigen Dokument fest, und
+# "Abbrechen" bleibt so lange wirkungslos, obwohl die Oberfläche "läuft" anzeigt.
+_MAX_RETRY_AFTER = 60.0
 
 _SYSTEM = (
     "Du ordnest eingescannte Haushaltsdokumente dem richtigen Empfänger innerhalb einer "
@@ -139,7 +143,7 @@ class RecipientSuggester:
             header = resp.headers.get("retry-after")
             if header:
                 try:
-                    return max(0.0, float(header))
+                    return max(0.0, min(float(header), _MAX_RETRY_AFTER))
                 except ValueError:
                     pass
         return _BACKOFF_BASE * (2**attempt)

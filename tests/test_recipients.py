@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -412,6 +414,24 @@ async def test_retry_honours_retry_after_header(monkeypatch):
     assert slept == [7.0]
 
 
+async def test_retry_after_header_is_capped(monkeypatch):
+    # Review-Befund G: Ein Server-seitiges retry-after von 600s darf den Lauf nicht
+    # zehn Minuten in einem Dokument haengen lassen — "Abbrechen" waere so lange
+    # wirkungslos. Die Wartezeit wird auf _MAX_RETRY_AFTER gedeckelt.
+    suggester, slept, _ = _suggester_with(
+        [
+            httpx.Response(429, headers={"retry-after": "600"}),
+            httpx.Response(200, json=_ok_payload()),
+        ],
+        monkeypatch,
+    )
+    async with suggester:
+        await suggester.suggest(
+            title="t", correspondent=None, content="c", options=["Sascha"]
+        )
+    assert slept == [rl._MAX_RETRY_AFTER]
+
+
 async def test_retry_skips_client_errors(monkeypatch):
     # 400 wird durch Warten nicht besser — genau ein Versuch, keine Wartezeit.
     suggester, slept, calls = _suggester_with([httpx.Response(400)], monkeypatch)
@@ -505,7 +525,7 @@ class _PatternSuggester:
         return RecipientSuggestion(label="Sascha", confidence=0.9, reasoning="r")
 
 
-def _batch_sync(tmp_path, monkeypatch, doc_ids, suggester):
+def _batch_sync(tmp_path, monkeypatch, doc_ids, suggester, *, rest=0):
     """Baut einen PaperlessSync, dessen Batch-Lauf gegen Stubs statt gegen das Netz läuft."""
     from contextlib import asynccontextmanager
 
@@ -539,7 +559,7 @@ def _batch_sync(tmp_path, monkeypatch, doc_ids, suggester):
         return field
 
     async def fake_collect(_client, _field, _limit):
-        return list(doc_ids), 0
+        return list(doc_ids), rest
 
     monkeypatch.setattr(sync, "_recipient_field_cached", fake_field)
     monkeypatch.setattr(sync, "_collect_missing_ids", fake_collect)
@@ -611,13 +631,180 @@ async def test_success_resets_error_streak(tmp_path, monkeypatch):
 
 async def test_progress_publishes_are_throttled(tmp_path, monkeypatch):
     # 30 Dokumente duerfen keine 30 SSE-Ereignisse ausloesen: die Drossel laesst
-    # nur Start, Ende und hoechstens alle 2 s eines durch.
+    # nur Start, Ende und hoechstens alle 2 s eines durch. Zaehlt ALLE ausgeloesten
+    # SSE-Ereignisse (nicht nur notify_batch) — sonst sieht der Test den Umweg über
+    # das ungedrosselte "rec:<id>"-Ereignis pro Dokument nicht (Review-Befund C):
+    # set_recipient_cache/mark_recipient_applied loesen sonst zusaetzlich zum
+    # gedrosselten "batch:recipient" ein eigenes Ereignis PRO Dokument aus.
     sync, repo = _batch_sync(tmp_path, monkeypatch, list(range(1, 31)),
                              _StubSuggester("Sascha", 0.9))
     emitted: list[str] = []
     monkeypatch.setattr(repo, "notify_batch", lambda: emitted.append("batch:recipient"))
+    monkeypatch.setattr(
+        repo, "notify_recipient", lambda paperless_id: emitted.append(f"rec:{paperless_id}")
+    )
 
     await sync.suggest_recipients_batch(limit=50)
     # Start + Ende sind erzwungen; dazwischen darf im schnellen Testlauf nichts kommen.
+    # Ohne den Fix käme zusätzlich EIN "rec:<id>"-Ereignis pro der 30 Dokumente dazu.
     assert len(emitted) <= 4
     assert sync.batch_progress.done == 30
+
+
+async def test_single_suggest_still_notifies_immediately(tmp_path):
+    # Gegenprobe zu C: Der nutzerinitiierte Einzel-Vorschlag (kein Batch-Lauf) muss
+    # weiterhin sofort ein "rec:<id>"-Ereignis auslösen — dort gibt es kein
+    # nachziehendes "batch:recipient", das den Client sonst nie erreichen würde.
+    repo = Repository(tmp_path / "single.db")
+    sync = _sync_for_suggest(repo)
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+    client = _WriteCapturingClient([])
+    emitted: list[str] = []
+    repo.notify_recipient = lambda paperless_id: emitted.append(f"rec:{paperless_id}")
+
+    await sync._suggest_for_doc(
+        client, _StubSuggester("Sascha", 0.9), field, _doc_with_id(7), None,
+        guard_concurrent=False,
+    )
+    assert emitted == ["rec:7"]
+
+
+# ---- Ausnahme vor/waehrend der Dokumentschleife wird nicht verschluckt --
+
+
+async def test_exception_before_loop_sets_aborted_reason(tmp_path, monkeypatch):
+    # Review-Befund D: Wirft _collect_missing_ids (z.B. weil Paperless gerade neu
+    # startet), darf der Lauf nicht wortlos mit "0 verarbeitet" enden — die Oberfläche
+    # muss den Fehlschlag über aborted_reason zeigen koennen.
+    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3], _StubSuggester("Sascha", 0.9))
+
+    async def boom(_client, _field, _limit):
+        raise RuntimeError("Paperless nicht erreichbar")
+
+    monkeypatch.setattr(sync, "_collect_missing_ids", boom)
+
+    processed = await sync.suggest_recipients_batch(limit=10)
+    p = sync.batch_progress
+    assert processed == 0
+    assert p.running is False
+    assert p.aborted_reason is not None
+    assert "Paperless nicht erreichbar" in p.aborted_reason
+
+
+async def test_missing_recipient_field_sets_aborted_reason(tmp_path, monkeypatch):
+    # Der fruehe Ausstieg, weil das Empfaenger-Feld fehlt oder keine Optionen hat, soll
+    # ebenfalls einen Grund nennen statt wortlos "0 verarbeitet" zu melden.
+    from contextlib import asynccontextmanager
+
+    from app import paperless_sync as ps
+    from app.config import Settings
+
+    repo = Repository(tmp_path / "missing_field.db")
+    sync = ps.PaperlessSync(
+        Settings(
+            PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t",
+            FEATURE_RECIPIENT_LLM=True, ANTHROPIC_API_KEY="k",
+        ),
+        repo,
+    )
+    client = _WriteCapturingClient([])
+
+    @asynccontextmanager
+    async def fake_paperless():
+        yield client
+
+    async def fake_field(_client):
+        return None
+
+    monkeypatch.setattr(sync, "_paperless", fake_paperless)
+    monkeypatch.setattr(sync, "_recipient_field_cached", fake_field)
+
+    processed = await sync.suggest_recipients_batch(limit=10)
+    p = sync.batch_progress
+    assert processed == 0
+    assert p.aborted_reason is not None
+    assert p.running is False
+
+
+# ---- Sauberer Shutdown bricht einen laufenden Batch ab -------------------
+
+
+class _HangingSuggester:
+    """Stub, dessen suggest() nie von selbst zurueckkehrt — nur durch Cancel beendbar."""
+
+    async def suggest(self, **_):
+        await asyncio.Event().wait()
+
+
+async def test_shutdown_cancels_running_batch(tmp_path, monkeypatch):
+    # Review-Befund F: Ein SIGTERM mitten im Lauf darf den Task nicht auf der
+    # Repository-Verbindung weiterlaufen lassen, nachdem repo.close() schon geschehen
+    # ist. shutdown() muss den laufenden Batch abbrechen und abwarten.
+    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3], _HangingSuggester())
+
+    sync.start_batch(limit=10)
+    await asyncio.sleep(0)  # Task anlaufen lassen, bis er im "hängenden" suggest() wartet
+    assert sync.batch_progress.running is True
+
+    await asyncio.wait_for(sync.shutdown(), timeout=2.0)
+
+    assert sync.batch_progress.running is False
+
+
+async def test_shutdown_without_running_batch_is_a_no_op(tmp_path, monkeypatch):
+    sync, _ = _batch_sync(tmp_path, monkeypatch, [1, 2, 3], _StubSuggester("Sascha", 0.9))
+    await sync.shutdown()  # darf ohne laufenden Batch nicht scheitern
+    assert sync.batch_progress.running is False
+
+
+# ---- Uebersprungene Dokumente zaehlen sichtbar, Rest ist korrekt ---------
+
+
+async def test_skipped_documents_are_counted_and_still_publish(tmp_path, monkeypatch):
+    # Review-Befund H.2: Ein zwischenzeitlich anderweitig versehenes Dokument (Cache-
+    # Status != none) darf weder als "done" noch als "failed" verschwinden — es muss
+    # sichtbar als "skipped" gezaehlt werden, und der Fortschritt muss trotzdem
+    # gemeldet werden (kein uebersprungenes publish()).
+    sync, repo = _batch_sync(tmp_path, monkeypatch, [1, 2, 3], _StubSuggester("Sascha", 0.9))
+    repo.set_recipient_cache(
+        2, suggested_label="Familie", confidence=0.5, reasoning=None,
+        status=RecipientStatus.SUGGESTED,
+    )
+    publishes: list[None] = []
+    monkeypatch.setattr(repo, "notify_batch", lambda: publishes.append(None))
+
+    await sync.suggest_recipients_batch(limit=10)
+    p = sync.batch_progress
+    assert p.skipped == 1
+    assert p.done == 2
+    assert p.failed == 0
+    assert p.total == 3
+    # Start + Ende sind erzwungen, aber der Skip muss zumindest publish() erreicht haben
+    # (die Drossel selbst kann es unterdruecken, publish() darf aber nicht ganz fehlen).
+    assert len(publishes) >= 2
+
+
+async def test_remaining_counts_unprocessed_planned_docs_after_stop(tmp_path, monkeypatch):
+    # Review-Befund H.1: Bei 1500 offen, limit=1000, Stopp nach 10 zeigte "offen" bisher
+    # nur den Limit-Rest (500) — tatsaechlich sind es 1490. Hier: 4 eingeplant, 500
+    # zusaetzlich jenseits des Limits (rest), Stopp nach dem ersten Dokument.
+    sync, _ = _batch_sync(
+        tmp_path, monkeypatch, [1, 2, 3, 4], _StubSuggester("Sascha", 0.9), rest=500,
+    )
+
+    original = sync._suggest_for_doc
+
+    async def stop_after_first(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        sync.stop_batch()
+        return result
+
+    monkeypatch.setattr(sync, "_suggest_for_doc", stop_after_first)
+
+    await sync.suggest_recipients_batch(limit=10)
+    p = sync.batch_progress
+    assert p.stopped is True
+    assert p.done == 1
+    # 3 eingeplante, aber wegen Stopp nicht mehr erreichte Dokumente + 500 jenseits
+    # des Limits = 503 tatsaechlich offen — nicht nur die 500 aus "rest".
+    assert p.remaining == 503
