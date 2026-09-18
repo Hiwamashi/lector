@@ -1,0 +1,23 @@
+{% if recipient_enabled and feature_llm %}
+<div class="recipient-toolbar">
+  {% if progress.running %}
+  <div class="progress">
+    <div class="progress-bar" style="width: {{ ((progress.done / progress.total * 100) if progress.total else 0) | round | int }}%"></div>
+    <span class="progress-label">{{ progress.done }} / {{ progress.total }} verarbeitet{% if progress.failed %}, {{ progress.failed }} fehlgeschlagen{% endif %}</span>
+  </div>
+  <form method="post" action="/empfaenger/suggest-batch/stop">
+    <button type="submit" class="link-button">Abbrechen</button>
+  </form>
+  {% else %}
+  <span class="muted">
+    {{ missing_total }} Dokument(e) ohne Empfänger
+    {% if progress.stopped %}— letzter Lauf abgebrochen{% endif %}
+    {% if progress.aborted_reason %}({{ progress.aborted_reason }}){% endif %}
+  </span>
+  <form method="post" action="/empfaenger/suggest-batch">
+    <input type="number" name="limit" min="1" max="{{ batch_max }}" value="{{ default_limit }}" />
+    <button type="submit">KI-Vorschlag starten</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}

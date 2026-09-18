@@ -520,6 +520,17 @@ class PaperlessSync:
     def recipient_options(self) -> list[str]:
         return self._recipient_field.labels if self._recipient_field else []
 
+    async def count_missing_recipients(self) -> int:
+        """Zählt Dokumente ohne gesetzten Empfänger (nur der Zähler, keine Seiteninhalte)."""
+        async with self._paperless() as client:
+            field = await self._recipient_field_cached(client)
+            if field is None:
+                return 0
+            page = await client.search_documents(
+                page=1, page_size=1, missing_field_id=field.field_id
+            )
+            return page.count
+
     async def list_recipient_documents(
         self, *, page: int = 1, search: str | None = None, only_missing: bool = False
     ) -> tuple[list[RecipientRow], DocumentPage, SelectField | None]:

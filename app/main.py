@@ -394,13 +394,47 @@ def _recipient_redirect(page: int, q: str | None, missing: bool) -> str:
     return f"/empfaenger?{urlencode(params)}"
 
 
+def _clamp_batch_limit(raw: str, maximum: int) -> int:
+    """Hält die gewünschte Menge in 1..maximum; Unsinn fällt auf die Obergrenze zurück."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return maximum
+    return max(1, min(value, maximum))
+
+
+async def _batch_status_context(request: Request) -> dict:
+    """Kontext der Batch-Toolbar.
+
+    ``missing_total`` wird getrennt ermittelt: Das ``count`` der Listenansicht ist der
+    Treffer-Zähler der aktuellen Suche und bei inaktivem Filter **nicht** die Zahl der
+    Dokumente ohne Empfänger — der Batch arbeitet aber immer nur über diese.
+    """
+    sync: PaperlessSync = request.app.state.sync
+    settings = sync.settings
+    missing_total = 0
+    if sync.recipient_enabled:
+        try:
+            missing_total = await sync.count_missing_recipients()
+        except Exception:
+            log.exception("Bestand ohne Empfänger konnte nicht ermittelt werden")
+    return {
+        "progress": sync.batch_progress,
+        "missing_total": missing_total,
+        "default_limit": min(missing_total, 100) or 1,
+        "batch_max": settings.recipient_batch_max,
+        "feature_llm": sync.recipient_llm_enabled,
+        "recipient_enabled": sync.recipient_enabled,
+    }
+
+
 async def _recipient_context(request: Request, page: int, q: str | None, missing: bool) -> dict:
     sync: PaperlessSync = request.app.state.sync
     rows, page_obj, field = await sync.list_recipient_documents(
         page=page, search=q, only_missing=missing
     )
     frag = {"q": q or "", "missing": "1" if missing else "", "page": page_obj.page}
-    return {
+    ctx = {
         "rows": rows,
         "options": field.labels if field else [],
         "field_present": field is not None,
@@ -411,8 +445,9 @@ async def _recipient_context(request: Request, page: int, q: str | None, missing
         "fragment_query": urlencode(frag),
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
-        "batch_running": sync.batch_progress.running,
     }
+    ctx.update(await _batch_status_context(request))
+    return ctx
 
 
 @app.get("/empfaenger", response_class=HTMLResponse)
@@ -445,18 +480,38 @@ async def recipients_fragment(
     return templates.TemplateResponse(request, "partials/recipient_rows.html", ctx)
 
 
+@app.get("/fragment/empfaenger/batch-status", response_class=HTMLResponse)
+async def recipients_batch_status(request: Request):
+    return templates.TemplateResponse(
+        request, "partials/batch_status.html", await _batch_status_context(request)
+    )
+
+
 # Muss VOR /empfaenger/{paperless_id} stehen: Starlette matcht Routen in
 # Registrierungsreihenfolge, sonst faengt die parametrisierte Route "suggest-batch"
 # als paperless_id ab und die Anfrage scheitert mit 422 (int_parsing).
 @app.post("/empfaenger/suggest-batch")
 async def recipient_suggest_batch(
     request: Request,
+    limit: str = Form(""),
     page: int = Form(1),
     q: str = Form(""),
     missing: str = Form(""),
 ):
     sync: PaperlessSync = request.app.state.sync
-    sync.start_batch()
+    sync.start_batch(_clamp_batch_limit(limit, sync.settings.recipient_batch_max))
+    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
+
+
+@app.post("/empfaenger/suggest-batch/stop")
+async def recipient_suggest_batch_stop(
+    request: Request,
+    page: int = Form(1),
+    q: str = Form(""),
+    missing: str = Form(""),
+):
+    sync: PaperlessSync = request.app.state.sync
+    sync.stop_batch()
     return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
 
 

@@ -144,3 +144,62 @@ def test_recipients_suggest_batch_route_not_shadowed(client):
     resp = c.post("/empfaenger/suggest-batch", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/empfaenger")
+
+
+def test_recipients_stop_route_reachable(client):
+    c, _ = client
+    resp = c.post("/empfaenger/suggest-batch/stop", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/empfaenger")
+
+
+def test_batch_status_fragment_without_paperless(client):
+    c, _ = client
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+
+
+def test_batch_limit_is_clamped(client, monkeypatch):
+    # Ein absurd hohes Limit darf die Obergrenze aus den Settings nicht überschreiten.
+    c, application = client
+    seen = {}
+    monkeypatch.setattr(
+        application.state.sync, "start_batch", lambda limit=None: seen.update(limit=limit)
+    )
+    c.post("/empfaenger/suggest-batch", data={"limit": "999999"}, follow_redirects=False)
+    assert seen["limit"] == application.state.sync.settings.recipient_batch_max
+
+    c.post("/empfaenger/suggest-batch", data={"limit": "keine-zahl"}, follow_redirects=False)
+    assert seen["limit"] >= 1
+
+
+def test_no_route_is_shadowed_by_a_parametrised_one():
+    """Generischer Schutz gegen die 422-Falle aus dem suggest-batch-Fehler.
+
+    Starlette matcht Routen in Registrierungsreihenfolge. Steht eine parametrisierte
+    Route vor einer statischen gleicher Segmentzahl, verschluckt sie diese.
+    """
+    import app.main as m
+
+    routes = []
+    for r in m.app.routes:
+        for method in sorted(getattr(r, "methods", []) or []):
+            if method in ("HEAD", "OPTIONS"):
+                continue
+            routes.append((method, r.path))
+
+    def segments(path):
+        return [("*" if s.startswith("{") else s) for s in path.strip("/").split("/")]
+
+    shadowed = []
+    for i, (m1, p1) in enumerate(routes):
+        for m2, p2 in routes[i + 1 :]:
+            if m1 != m2:
+                continue
+            a, b = segments(p1), segments(p2)
+            if len(a) != len(b) or a == b:
+                continue
+            if all(x == "*" or x == y for x, y in zip(a, b, strict=True)):
+                shadowed.append(f"{m1} {p1} verdeckt {m2} {p2}")
+
+    assert shadowed == []
