@@ -169,8 +169,17 @@ def test_batch_limit_is_clamped(client, monkeypatch):
     c.post("/empfaenger/suggest-batch", data={"limit": "999999"}, follow_redirects=False)
     assert seen["limit"] == application.state.sync.settings.recipient_batch_max
 
+    # BLOCKER-Regression: Ein unlesbarer Wert darf NIEMALS auf die Obergrenze (hier
+    # Default 1000) zurückfallen — das würde einen versehentlichen Maximallauf auslösen.
+    # Der Rückfall ist die konservative Vorbelegung (höchstens 100).
     c.post("/empfaenger/suggest-batch", data={"limit": "keine-zahl"}, follow_redirects=False)
-    assert seen["limit"] >= 1
+    assert seen["limit"] == 100
+
+    # BLOCKER: Ein leeres Formularfeld (bei <input type="number"> ohne "required" per
+    # HTML5 nicht verhindert) ist der eigentliche Praxisfall — ein Nutzer löscht den
+    # Inhalt und klickt "Starten". Auch das darf keinen 1000er-Lauf auslösen.
+    c.post("/empfaenger/suggest-batch", data={"limit": ""}, follow_redirects=False)
+    assert seen["limit"] == 100
 
 
 def test_no_route_is_shadowed_by_a_parametrised_one():
@@ -203,6 +212,36 @@ def test_no_route_is_shadowed_by_a_parametrised_one():
                 shadowed.append(f"{m1} {p1} verdeckt {m2} {p2}")
 
     assert shadowed == []
+
+
+async def test_recipient_row_fragment_skips_batch_status_count(client, monkeypatch):
+    """Regression (Review-Befund J): /fragment/empfaenger rendert nur die Zeilentabelle
+    (partials/recipient_rows.html) und nutzt weder missing_total noch progress — der
+    Bestand-Zählaufruf aus _batch_status_context darf hier nicht mitlaufen."""
+    from app.paperless import DocumentPage
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    async def fake_list(*_a, **_kw):
+        return [], DocumentPage(documents=[], count=0, page=1, page_size=50), None
+
+    monkeypatch.setattr(sync, "list_recipient_documents", fake_list)
+
+    calls = 0
+
+    async def spy(*_a, **_kw):
+        nonlocal calls
+        calls += 1
+        return 42
+
+    monkeypatch.setattr(sync, "count_missing_recipients", spy)
+
+    resp = c.get("/fragment/empfaenger")
+    assert resp.status_code == 200
+    assert calls == 0
 
 
 async def test_batch_status_skips_missing_count_without_llm_feature(client, monkeypatch):
@@ -253,6 +292,29 @@ async def test_batch_status_default_limit_never_exceeds_batch_max(client, monkey
     ctx = await m._batch_status_context(_FakeRequest())
     assert ctx["batch_max"] == 50
     assert ctx["default_limit"] <= ctx["batch_max"]
+
+
+async def test_batch_status_start_button_stays_enabled_when_count_fails(client, monkeypatch):
+    """BLOCKER-Regression: Wirft ``count_missing_recipients`` (z.B. Paperless-Aussetzer),
+    darf die Oberfläche NICHT "0 Dokument(e) ohne Empfänger" mit deaktiviertem
+    Start-Button zeigen — das friert den Button dauerhaft ein, bis die Seite manuell
+    neu geladen wird (kommen ja keine weiteren SSE-Ereignisse mehr). Stattdessen muss
+    der Bestand als unbekannt ausgewiesen werden und der Button nutzbar bleiben."""
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+
+    async def boom(*_a, **_kw):
+        raise RuntimeError("Paperless nicht erreichbar")
+
+    monkeypatch.setattr(sync, "count_missing_recipients", boom)
+
+    resp = c.get("/fragment/empfaenger/batch-status")
+    assert resp.status_code == 200
+    assert "disabled" not in resp.text
+    assert "0 Dokument(e)" not in resp.text
+    assert "kann gerade nicht ermittelt werden" in resp.text
 
 
 def test_recipients_page_shows_batch_toolbar_container(client):

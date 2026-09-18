@@ -139,6 +139,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await worker.stop()
+        # Ein laufender Empfänger-Batch muss VOR repo.close() enden — sonst könnte der
+        # Hintergrund-Task bei einem SIGTERM mitten im Lauf auf die bereits geschlossene
+        # SQLite-Verbindung zugreifen.
+        await sync.shutdown()
         repo.close()
 
 
@@ -395,11 +399,20 @@ def _recipient_redirect(page: int, q: str | None, missing: bool) -> str:
 
 
 def _clamp_batch_limit(raw: str, maximum: int) -> int:
-    """Hält die gewünschte Menge in 1..maximum; Unsinn fällt auf die Obergrenze zurück."""
+    """Hält die gewünschte Menge in 1..maximum.
+
+    Ein fehlendes oder unlesbares Feld (leeres Formularfeld — ein
+    ``<input type="number">`` ohne ``required`` lässt sich leer abschicken, HTML5
+    blockt das nicht) darf **niemals** den Maximallauf auslösen. Der Rückfall ist
+    daher die konservative Vorbelegung (höchstens 100, nie über der Obergrenze) statt
+    ``maximum`` — sonst löst ein versehentlich geleertes Feld einen Lauf über
+    ``RECIPIENT_BATCH_MAX`` Dokumente aus.
+    """
+    fallback = min(100, maximum)
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return maximum
+        return fallback
     return max(1, min(value, maximum))
 
 
@@ -408,9 +421,18 @@ async def _batch_status_context(
 ) -> dict:
     """Kontext der Batch-Toolbar.
 
-    ``missing_total`` wird getrennt ermittelt: Das ``count`` der Listenansicht ist der
-    Treffer-Zähler der aktuellen Suche und bei inaktivem Filter **nicht** die Zahl der
-    Dokumente ohne Empfänger — der Batch arbeitet aber immer nur über diese.
+    ``missing_total`` zählt Dokumente **ohne gesetzten Empfänger** (Paperless-Feld leer).
+    Das ist bewusst nicht dieselbe Menge, die ein Lauf tatsächlich verarbeitet: Der Batch
+    überspringt zusätzlich Dokumente, die bereits einen KI-Vorschlag/-Cache-Eintrag haben
+    (Vorschlag unter der Konfidenzschwelle oder „unbekannt" setzt das Feld nicht). Ein
+    exakter Abgleich bräuchte bei jedem Seitenaufruf einen Vollscan und ist zu teuer — die
+    Anzeige benennt daher präzise, was sie zählt, statt eine 1:1-Deckung zu suggerieren.
+
+    ``missing_total_unknown`` unterscheidet „Bestand ist 0" von „Bestand konnte nicht
+    ermittelt werden" (z.B. Paperless-Aussetzer): Im Fehlerfall bleibt ``missing_total``
+    zwar 0, das Template darf daraus aber **nicht** ableiten, dass nichts zu tun ist, und
+    den Start-Button nicht deaktivieren — sonst bleibt der Button nach einem einzigen
+    Aussetzer beim Nachladen des Fragments dauerhaft grau, bis die Seite neu geladen wird.
 
     ``page``/``q``/``missing`` sind die aktuellen Filter der Listenansicht. Die Formulare
     im Partial tragen sie als Hidden-Felder mit, damit der Redirect nach dem Start/Stopp
@@ -423,6 +445,7 @@ async def _batch_status_context(
     sync: PaperlessSync = request.app.state.sync
     settings = sync.settings
     missing_total = 0
+    missing_total_unknown = False
     # Nur ermitteln, wenn der Wert auch angezeigt wird (batch_status.html blendet den
     # Block sonst ohnehin aus) — spart den Netzwerkaufruf bei jedem Laden von /empfaenger,
     # wenn Paperless zwar verbunden, das KI-Feature aber deaktiviert ist.
@@ -431,9 +454,11 @@ async def _batch_status_context(
             missing_total = await sync.count_missing_recipients()
         except Exception:
             log.exception("Bestand ohne Empfänger konnte nicht ermittelt werden")
+            missing_total_unknown = True
     return {
         "progress": sync.batch_progress,
         "missing_total": missing_total,
+        "missing_total_unknown": missing_total_unknown,
         "default_limit": min(missing_total, 100, settings.recipient_batch_max) or 1,
         "batch_max": settings.recipient_batch_max,
         "feature_llm": sync.recipient_llm_enabled,
@@ -446,7 +471,9 @@ async def _batch_status_context(
     }
 
 
-async def _recipient_context(request: Request, page: int, q: str | None, missing: bool) -> dict:
+async def _recipient_context(
+    request: Request, page: int, q: str | None, missing: bool, *, with_batch_status: bool = True
+) -> dict:
     sync: PaperlessSync = request.app.state.sync
     rows, page_obj, field = await sync.list_recipient_documents(
         page=page, search=q, only_missing=missing
@@ -462,9 +489,13 @@ async def _recipient_context(request: Request, page: int, q: str | None, missing
         "feature_llm": sync.recipient_llm_enabled,
         "recipient_enabled": sync.recipient_enabled,
     }
-    # page_obj.page statt des rohen page-Parameters: Falls Paperless die Seite klemmt,
-    # sollen Hidden-Felder und Pager dieselbe, tatsächlich angezeigte Seite tragen.
-    ctx.update(await _batch_status_context(request, page_obj.page, q, missing))
+    # ``partials/recipient_rows.html`` (das Zeilen-Fragment unter /fragment/empfaenger)
+    # nutzt weder missing_total noch progress — der Batch-Kontext würde dort nur einen
+    # ungenutzten Paperless-Zählaufruf bezahlen. Nur der volle Seitenaufbau braucht ihn.
+    if with_batch_status:
+        # page_obj.page statt des rohen page-Parameters: Falls Paperless die Seite klemmt,
+        # sollen Hidden-Felder und Pager dieselbe, tatsächlich angezeigte Seite tragen.
+        ctx.update(await _batch_status_context(request, page_obj.page, q, missing))
     return ctx
 
 
@@ -494,7 +525,7 @@ async def recipients_fragment(
     sync: PaperlessSync = request.app.state.sync
     if not sync.recipient_enabled:
         return HTMLResponse("", status_code=404)
-    ctx = await _recipient_context(request, page, q or None, bool(missing))
+    ctx = await _recipient_context(request, page, q or None, bool(missing), with_batch_status=False)
     return templates.TemplateResponse(request, "partials/recipient_rows.html", ctx)
 
 
