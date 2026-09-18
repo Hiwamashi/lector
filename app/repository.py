@@ -318,7 +318,11 @@ class Repository:
                 "FROM document_events WHERE document_id = ? ORDER BY id ASC",
                 (document_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # ``timestamp`` kommt als SQLite-Text ("YYYY-MM-DD HH:MM:SS", UTC ohne tz-Info).
+        # Ungeparst ist er nicht formatierbar (``fmt_dt`` erwartet ein datetime) und wuerde
+        # ausserdem in UTC angezeigt, waehrend die uebrige App Ortszeit zeigt. Jeder andere
+        # Zeitstempel im Repository laeuft ebenfalls durch _parse_dt.
+        return [dict(r) | {"timestamp": _parse_dt(r["timestamp"])} for r in rows]
 
     # ---- paperless_invoices (entkoppeltes GiroCode/SevDesk-Feature) ------
 
@@ -540,7 +544,9 @@ class Repository:
                 "FROM invoice_events WHERE invoice_id = ? ORDER BY id ASC",
                 (invoice_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Wie bei list_events: SQLite liefert den Zeitstempel als Text (UTC, ohne
+        # tz-Info). Ungeparst waere er nicht formatierbar und stuende in UTC da.
+        return [dict(r) | {"timestamp": _parse_dt(r["timestamp"])} for r in rows]
 
     # ---- document_recipients (KI-Empfänger-Vorschlag-Cache) --------------
 

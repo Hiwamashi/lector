@@ -95,7 +95,7 @@
 <ol class="events">
   {% for ev in events %}
   <li>
-    <span class="event-time">{{ ev.timestamp }}</span>
+    <span class="event-time">{{ ev.timestamp | fmt_dt }}</span>
     <span class="event-type">{{ ev.event_type }}</span>
     <span class="event-msg">{{ ev.message or "" }}</span>
   </li>

@@ -97,6 +97,12 @@ def test_invoice_events(tmp_path):
     events = repo.list_invoice_events(inv_id)
     assert events[-1]["event_type"] == "synced"
     assert events[-1]["message"] == "ok"
+    # Wie bei den Dokument-Ereignissen: SQLite liefert Text. Ungeparst laesst er sich
+    # nicht formatieren und wuerde in UTC angezeigt statt in Ortszeit.
+    from datetime import datetime
+
+    assert isinstance(events[-1]["timestamp"], datetime)
+    assert events[-1]["timestamp"].tzinfo is not None
 
 
 def test_export_invoice_is_idempotent(tmp_path):

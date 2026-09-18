@@ -58,6 +58,12 @@ def test_events_and_counts(tmp_path):
     repo.add_event(doc_id, EventType.DONE, "fertig")
     events = repo.list_events(doc_id)
     assert [e["event_type"] for e in events] == ["detected", "done"]
+    # SQLite liefert den Zeitstempel als Text. Ungeparst ist er weder formatierbar
+    # noch in Ortszeit lesbar — genau daran ist die Detailansicht mit 500 gescheitert.
+    from datetime import datetime
+
+    assert all(isinstance(e["timestamp"], datetime) for e in events)
+    assert all(e["timestamp"].tzinfo is not None for e in events)
     counts = repo.status_counts()
     assert counts.get("pending") == 1
 
