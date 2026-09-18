@@ -156,6 +156,27 @@ def test_invoices_sorting_changes_order(client):
     assert frag.text.index("Alpha") < frag.text.index("Beta")
 
 
+def test_rechnungsdetail_zeigt_ereigniszeit_formatiert(client):
+    """Die Ereigniszeiten der Rechnungen standen roh und in UTC da, waehrend die
+    uebrige App Ortszeit im Format TT.MM.JJJJ HH:MM zeigt."""
+    import re
+
+    c, application = client
+    repo = application.state.repo
+    from app.models import InvoiceEventType
+
+    inv_id = repo.upsert_invoice(paperless_id=42, title="Strom", correspondent="Stadtwerke")
+    repo.add_invoice_event(inv_id, InvoiceEventType.SYNCED, "eingelesen")
+
+    resp = c.get(f"/invoices/{inv_id}")
+    assert resp.status_code == 200
+    zeit = re.search(r'<span class="event-time">([^<]*)</span>', resp.text)
+    assert zeit is not None, "keine Ereigniszeit gerendert"
+    assert re.fullmatch(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}", zeit.group(1).strip()), (
+        f"Ereigniszeit nicht im App-Format: {zeit.group(1)!r}"
+    )
+
+
 def test_sort_links_url_encode_filters(client):
     c, _ = client
     # Suchbegriff mit Sonderzeichen, die einen Query-String zerstören würden.

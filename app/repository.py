@@ -544,7 +544,9 @@ class Repository:
                 "FROM invoice_events WHERE invoice_id = ? ORDER BY id ASC",
                 (invoice_id,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Wie bei list_events: SQLite liefert den Zeitstempel als Text (UTC, ohne
+        # tz-Info). Ungeparst waere er nicht formatierbar und stuende in UTC da.
+        return [dict(r) | {"timestamp": _parse_dt(r["timestamp"])} for r in rows]
 
     # ---- document_recipients (KI-Empfänger-Vorschlag-Cache) --------------
 
