@@ -1,8 +1,10 @@
 {% if not rows %}
 <tr class="empty"><td colspan="5">Keine Dokumente.</td></tr>
 {% endif %}
+{# Signatur: waehrend eines KI-Laufs aendert sich der Vorschlag, nicht die Zeile drumherum. #}
 {% for row in rows %}
-<tr>
+<tr data-row-id="{{ row.paperless_id }}"
+    data-rev="{{ row.current_recipient or '' }}:{{ row.cache.status if row.cache else '' }}:{{ row.cache.suggested_label if row.cache else '' }}">
   <td class="invoice-date">{{ row.document_date | fmt_date }}</td>
   <td class="filename">{{ row.title }}</td>
   <td>{{ row.correspondent or "—" }}</td>

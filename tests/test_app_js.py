@@ -35,8 +35,37 @@ const echterTimeout = setTimeout;
 global.setTimeout = (fn, ms) => echterTimeout(fn, Math.round((ms || 0) * skala));
 global.clearTimeout = clearTimeout;
 
+// Zeilen-Double fuer den Vergleich vor/nach einem Abgleich. app.js liest je Zeile nur
+// data-row-id und data-rev und setzt im Trefferfall eine Klasse — mehr muss der Harness
+// nicht koennen, ein echter DOM-Parser waere hier Ballast.
+let aufgeleuchtet = [];
+function parseRows(html) {
+  const rows = [];
+  const re = /<tr\\s+data-row-id="([^"]*)"\\s+data-rev="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(html || "")) !== null) {
+    const row = { id: m[1], rev: m[2] };
+    row.getAttribute = (name) => (name === "data-row-id" ? row.id : row.rev);
+    row.classList = {
+      add: (c) => { if (c === "row-updated") aufgeleuchtet.push(row.id); },
+      remove: () => {},
+    };
+    rows.push(row);
+  }
+  return rows;
+}
+
 let tbodyInhalt = null;
-const tbody = { set innerHTML(v) { tbodyInhalt = v; }, get innerHTML() { return tbodyInhalt; } };
+let tbodyRows = [];
+const tbody = {
+  set innerHTML(v) { tbodyInhalt = v; tbodyRows = parseRows(v); },
+  get innerHTML() { return tbodyInhalt; },
+  querySelectorAll: () => tbodyRows,
+};
+// Ausgangsbestand wie vom Server gerendert: ohne ihn waere JEDE Zeile des ersten
+// Abgleichs neu und wuerde aufleuchten.
+if (scenario.initialRows) tbody.innerHTML = scenario.initialRows;
+
 const table = {
   getAttribute: () => "/fragment/empfaenger",
   querySelector: () => tbody,
@@ -104,6 +133,7 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
   if (scenario.streamRecovers) { sse.onopen(); await new Promise((r) => echterTimeout(r, 50)); }
   console.log(JSON.stringify({
     hinweisSichtbar: hidden === false, inhalt: tbodyInhalt, batchInhalt: batchInhalt,
+    aufgeleuchtet: aufgeleuchtet,
   }));
   // Der Abfragetakt plant sich endlos weiter — ohne das bliebe node haengen.
   process.exit(0);
@@ -268,3 +298,65 @@ def test_haengender_request_haelt_den_abfragetakt_nicht_an(tmp_path):
     # gelungen, und er meldet den letzten Stand, nicht die Vorgeschichte.)
     angekommen = int(ergebnis["batchInhalt"].removeprefix("BATCH"))
     assert angekommen >= 3, f"Takt kam nach dem Haenger nur auf {angekommen} Staende"
+
+
+# --- Aufleuchten geänderter Zeilen ------------------------------------------
+#
+# Die Listen aktualisieren sich von selbst. Ohne sichtbares Signal geschieht eine
+# Änderung unbemerkt — und ein Signal, das bei JEDEM Abgleich feuert, ist genauso
+# wertlos wie gar keins. Geprüft wird deshalb beides: dass es feuert, wenn sich etwas
+# geändert hat, und dass es schweigt, wenn nicht.
+
+_ZEILE = '<tr data-row-id="{id}"\n    data-rev="{rev}"><td>x</td></tr>'
+
+
+def _rows(*paare: tuple[str, str]) -> str:
+    return "\n".join(_ZEILE.format(id=i, rev=r) for i, r in paare)
+
+
+def test_geaenderte_zeile_leuchtet_auf(tmp_path):
+    ergebnis = _run(
+        {
+            "responses": [True],
+            "initialRows": _rows(("1", "processing:2:9:0"), ("2", "done:5:5:0")),
+            "bodies": [_rows(("1", "processing:4:9:0"), ("2", "done:5:5:0"))],
+        },
+        tmp_path,
+    )
+    assert ergebnis["aufgeleuchtet"] == ["1"]
+
+
+def test_unveraenderte_zeilen_leuchten_nicht_auf(tmp_path):
+    """Sonst blinkt bei jedem Takt die ganze Tabelle und sagt damit nichts mehr aus."""
+    bestand = _rows(("1", "done:9:9:0"), ("2", "done:5:5:0"))
+    ergebnis = _run(
+        {"responses": [True], "initialRows": bestand, "bodies": [bestand]}, tmp_path
+    )
+    assert ergebnis["aufgeleuchtet"] == []
+
+
+def test_neu_hinzugekommene_zeile_leuchtet_auf(tmp_path):
+    """Ein frisch eingegangenes Dokument ist der wichtigste Fall überhaupt."""
+    ergebnis = _run(
+        {
+            "responses": [True],
+            "initialRows": _rows(("1", "done:9:9:0")),
+            "bodies": [_rows(("7", "pending:0:0:0"), ("1", "done:9:9:0"))],
+        },
+        tmp_path,
+    )
+    assert ergebnis["aufgeleuchtet"] == ["7"]
+
+
+def test_verschobene_zeile_leuchtet_nicht_auf(tmp_path):
+    """Der Vergleich läuft über die id, nicht über die Position: eine Zeile, die durch
+    eine neue nur nach unten rutscht, hat sich nicht geändert."""
+    ergebnis = _run(
+        {
+            "responses": [True],
+            "initialRows": _rows(("1", "done:9:9:0"), ("2", "done:5:5:0")),
+            "bodies": [_rows(("2", "done:5:5:0"), ("1", "done:9:9:0"))],
+        },
+        tmp_path,
+    )
+    assert ergebnis["aufgeleuchtet"] == []

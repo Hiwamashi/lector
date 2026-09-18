@@ -1,13 +1,34 @@
 {% if not documents %}
-<tr class="empty"><td colspan="7">Keine Dokumente.</td></tr>
+<tr class="empty"><td colspan="7">
+  <span class="empty-title">Noch nichts eingegangen.</span>
+  <span class="empty-hint">
+    Sobald eine Datei im überwachten Eingangsordner landet, erscheint sie hier und wird
+    automatisch verarbeitet.
+  </span>
+</td></tr>
 {% endif %}
+{# data-rev ist die Signatur der veraenderlichen Felder. app.js vergleicht sie vor und
+   nach einem Live-Abgleich und laesst nur die Zeilen aufleuchten, die sich wirklich
+   geaendert haben. Wer hier ein Feld ergaenzt, das sich im Betrieb aendert, sollte es
+   auch in die Signatur aufnehmen. #}
 {% for doc in documents %}
-<tr>
+<tr data-row-id="{{ doc.id }}"
+    data-rev="{{ doc.status }}:{{ doc.processed_pages }}:{{ doc.total_pages }}:{{ doc.attempt_count }}">
   <td class="filename"><a href="/documents/{{ doc.id }}">{{ doc.original_filename }}</a></td>
   <td><span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span></td>
   <td>{{ doc.doc_type or "—" }}</td>
-  <td>
-    {% if doc.total_pages %}{{ doc.processed_pages }}/{{ doc.total_pages }}{% else %}—{% endif %}
+  <td class="progress-cell">
+    {%- if doc.total_pages -%}
+      {%- if doc.status == "processing" -%}
+        {%- set pct = (doc.processed_pages / doc.total_pages * 100) | round(0, 'floor') | int -%}
+        {# Der Balken ist rein optisch, die Zahl daneben traegt die Aussage — deshalb
+           aria-hidden, sonst liest ein Screenreader beides. #}
+        <span class="progress-inline" aria-hidden="true">
+          <span class="progress-inline-bar" style="width: {{ pct }}%"></span>
+        </span>
+      {%- endif -%}
+      <span class="progress-inline-text">{{ doc.processed_pages }}/{{ doc.total_pages }}</span>
+    {%- else -%}—{%- endif -%}
   </td>
   <td>{{ doc.attempt_count }}</td>
   <td>{{ doc.created_at | fmt_dt }}</td>
