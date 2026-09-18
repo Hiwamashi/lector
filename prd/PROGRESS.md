@@ -57,8 +57,9 @@ Dokument zurückgeschrieben. Standardmäßig deaktiviert (`FEATURE_PAPERLESS_SYN
 | Empfänger-Zuordnung pro Dokument (Paperless select-Feld, `/empfaenger`) | ✅ |
 | KI-Empfänger-Vorschlag (Anthropic, `app/recipient_llm.py`) — einzeln + Batch, Auto-Apply | ✅ |
 | Tabelle `document_recipients` (KI-Vorschlag-Cache) | ✅ |
+| Batch-Lauf: Menge wählbar, Retry mit Backoff, Fortschritt + Abbruch | ✅ |
 
-98 Tests grün. `ruff` sauber.
+119 Tests grün. `ruff` sauber.
 Feature-Doku unter `feature-documentation/paperless-integration/`
 (neu: `rechnungs-ui.md`, `empfaenger-zuordnung.md`).
 Empfänger-Feature **live gegen die Paperless-Instanz verifiziert**: select-Feld-Auflösung,
