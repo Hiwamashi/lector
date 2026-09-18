@@ -196,10 +196,7 @@ async def test_collect_missing_ids_skips_cached_and_reaches_later_docs(tmp_path,
     from app import paperless_sync as ps
     from app.config import Settings
 
-    # Kleine Seitengröße + Deckel, damit der frühere Bug (immer dieselbe erste Seite)
-    # ohne den Skip greifen würde.
     monkeypatch.setattr(ps, "RECIPIENT_PAGE_SIZE", 2)
-    monkeypatch.setattr(ps, "RECIPIENT_BATCH_MAX", 2)
 
     repo = Repository(tmp_path / "b.db")
     # Die ersten beiden fehlenden Dokumente haben bereits einen Vorschlag.
@@ -216,9 +213,11 @@ async def test_collect_missing_ids_skips_cached_and_reaches_later_docs(tmp_path,
     field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
     client = _FakeClient([1, 2, 3, 4, 5], page_size=2)
 
-    ids = await sync._collect_missing_ids(client, field)
-    # Trotz Deckel=2 dürfen die gecachten 1,2 nicht alles belegen — 3,4 müssen drankommen.
+    ids, remaining = await sync._collect_missing_ids(client, field, limit=2)
+    # Trotz Limit=2 dürfen die gecachten 1,2 nicht alles belegen — 3,4 müssen drankommen.
     assert ids == [3, 4]
+    # 5 bleibt ungeplant liegen und muss als Rest gemeldet werden.
+    assert remaining == 1
 
 
 # ---- Batch überschreibt keinen währenddessen gesetzten Empfänger --------
@@ -400,3 +399,18 @@ async def test_retry_covers_timeouts(monkeypatch):
         )
     assert result.label == "Sascha"
     assert calls["n"] == 2
+
+
+async def test_collect_reports_no_rest_when_limit_suffices(tmp_path, monkeypatch):
+    from app import paperless_sync as ps
+    from app.config import Settings
+
+    monkeypatch.setattr(ps, "RECIPIENT_PAGE_SIZE", 2)
+    repo = Repository(tmp_path / "c.db")
+    sync = ps.PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo)
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+    client = _FakeClient([1, 2, 3], page_size=2)
+
+    ids, remaining = await sync._collect_missing_ids(client, field, limit=10)
+    assert ids == [1, 2, 3]
+    assert remaining == 0

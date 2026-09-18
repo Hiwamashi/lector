@@ -53,8 +53,6 @@ log = logging.getLogger("lector.paperless_sync")
 
 # Seitengröße der Empfänger-Übersicht.
 RECIPIENT_PAGE_SIZE = 50
-# Obergrenze, wie viele Dokumente ein einzelner Batch-Lauf maximal verarbeitet.
-RECIPIENT_BATCH_MAX = 1000
 
 
 def _parse_paperless_date(value: str | None) -> datetime | None:
@@ -564,7 +562,7 @@ class PaperlessSync:
             async with self._suggester() as suggester:
                 return await self._suggest_for_doc(client, suggester, field, doc, correspondent)
 
-    def start_batch(self) -> None:
+    def start_batch(self, limit: int | None = None) -> None:
         """Startet den Batch-Lauf im Hintergrund und hält eine Task-Referenz.
 
         Ohne gehaltene Referenz könnte der Event-Loop den Task verwerfen, da er nur
@@ -574,17 +572,20 @@ class PaperlessSync:
         # gelaufen ist (dort ist _batch_running noch False) — verhindert doppelte Läufe.
         if not self.recipient_llm_enabled or self._batch_running or self._batch_task is not None:
             return
-        self._batch_task = asyncio.create_task(self.suggest_recipients_batch())
+        self._batch_task = asyncio.create_task(self.suggest_recipients_batch(limit))
         self._batch_task.add_done_callback(lambda _: setattr(self, "_batch_task", None))
 
-    async def suggest_recipients_batch(self) -> int:
-        """Schlägt für alle Dokumente ohne Empfänger einen vor (Hintergrund-Lauf).
+    async def suggest_recipients_batch(self, limit: int | None = None) -> int:
+        """Schlägt für bis zu ``limit`` Dokumente ohne Empfänger einen vor (Hintergrund-Lauf).
 
-        Liefert die Anzahl verarbeiteter Dokumente. Bereits mit Vorschlag/Empfänger versehene
+        ``None`` bedeutet die in den Einstellungen hinterlegte Obergrenze. Liefert die
+        Anzahl verarbeiteter Dokumente. Bereits mit Vorschlag/Empfänger versehene
         Dokumente werden übersprungen, sodass der Lauf gefahrlos wiederholbar ist.
         """
         if not self.recipient_llm_enabled or self._batch_running:
             return 0
+        maximum = self.settings.recipient_batch_max
+        effective = min(limit or maximum, maximum)
         self._batch_running = True
         processed = 0
         try:
@@ -592,12 +593,10 @@ class PaperlessSync:
                 field = await self._recipient_field_cached(client)
                 if field is None or not field.labels:
                     return 0
-                doc_ids = await self._collect_missing_ids(client, field)
-                if len(doc_ids) >= RECIPIENT_BATCH_MAX:
-                    log.warning(
-                        "Batch-Lauf auf %s Dokumente begrenzt; weitere bleiben offen.",
-                        RECIPIENT_BATCH_MAX,
-                    )
+                doc_ids, rest = await self._collect_missing_ids(client, field, effective)
+                if rest:
+                    log.warning("Batch-Lauf auf %s Dokumente begrenzt; %s bleiben offen.",
+                                effective, rest)
                 async with self._suggester() as suggester:
                     for doc_id in doc_ids:
                         # Erneut prüfen: Der Lauf kann lange dauern; in der Zwischenzeit kann
@@ -624,18 +623,19 @@ class PaperlessSync:
         return processed
 
     async def _collect_missing_ids(
-        self, client: PaperlessClient, field: SelectField
-    ) -> list[int]:
-        """Sammelt IDs von Dokumenten ohne Empfänger, die noch keinen Vorschlag haben.
+        self, client: PaperlessClient, field: SelectField, limit: int
+    ) -> tuple[list[int], int]:
+        """Sammelt bis zu ``limit`` IDs von Dokumenten ohne Empfänger und ohne Vorschlag.
 
-        Bereits gecachte Dokumente (Status != ``none``) werden übersprungen, damit der auf
-        ``RECIPIENT_BATCH_MAX`` gedeckelte Lauf bei jeder Wiederholung tatsächlich neue
-        Dokumente erreicht — und nicht dauerhaft an den ersten (bereits vorgeschlagenen)
-        Dokumenten hängen bleibt.
+        Liefert zusätzlich den Rest: wie viele passende Dokumente wegen des Limits
+        **nicht** eingeplant wurden. Bereits gecachte Dokumente (Status != ``none``)
+        werden übersprungen, damit ein wiederholter Lauf tatsächlich neue Dokumente
+        erreicht und nicht an den ersten hängen bleibt.
         """
         ids: list[int] = []
+        rest = 0
         page = 1
-        while len(ids) < RECIPIENT_BATCH_MAX:
+        while True:
             page_obj = await client.search_documents(
                 page=page, page_size=RECIPIENT_PAGE_SIZE, missing_field_id=field.field_id
             )
@@ -647,13 +647,14 @@ class PaperlessSync:
                 cache = caches.get(doc_id)
                 if cache and cache.status != RecipientStatus.NONE:
                     continue
-                ids.append(doc_id)
-                if len(ids) >= RECIPIENT_BATCH_MAX:
-                    break
+                if len(ids) < limit:
+                    ids.append(doc_id)
+                else:
+                    rest += 1
             if page >= page_obj.total_pages:
                 break
             page += 1
-        return ids
+        return ids, rest
 
     async def _suggest_for_doc(
         self,
