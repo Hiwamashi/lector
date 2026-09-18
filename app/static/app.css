@@ -198,3 +198,8 @@ body {
 .batch-bar { height: 0.4rem; background: var(--border); border-radius: 999px; overflow: hidden; }
 .batch-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
 @media (prefers-reduced-motion: reduce) { .batch-bar-fill { transition: none; } }
+
+/* Hinweis auf unterbrochene Live-Aktualisierung: sichtbar, aber nicht alarmierend —
+   die Daten sind nicht falsch, nur moeglicherweise aelter als sie aussehen. */
+.live-status { margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--accent);
+  background: var(--accent-soft); color: var(--ink); font-size: 0.9rem; }

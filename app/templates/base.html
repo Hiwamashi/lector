@@ -20,6 +20,12 @@
     <span class="brand-sub">OCR-Veredelung für Paperless</span>
   </header>
   <main class="container">
+    {# Wird von app.js eingeblendet, wenn ein Fragment-Refresh scheitert. Ohne diesen
+       Hinweis bliebe die Seite stumm auf veralteten Daten stehen. #}
+    <p id="live-status" class="live-status" role="status" hidden>
+      Live-Aktualisierung unterbrochen — die Anzeige kann veraltet sein.
+      <a class="link" href="">Neu laden</a>
+    </p>
     {% block content %}{% endblock %}
   </main>
   <script src="/static/app.js" defer></script>
