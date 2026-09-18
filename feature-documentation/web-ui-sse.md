@@ -108,6 +108,51 @@ Zwei Fallstricke stecken in dieser Zustandsführung, beide durch
 die Seite unbemerkt auf altem Stand — bei einem 45-Minuten-Lauf sähe eine eingefrorene
 Tabelle genauso aus wie eine, in der gerade nichts passiert.
 
+## Aufleuchten geänderter Zeilen
+
+Die Historientabelle aktualisiert sich von selbst; ein einfacher `innerHTML`-Tausch macht diese Änderung unsichtbar — die Zeile steht danach genauso da wie vorher, nur mit anderem Inhalt. Wer nicht zufällig hinsieht, bemerkt nichts und vergleicht gegen sein Gedächtnis.
+
+Deshalb markiert `app.js` nur die Zeilen optisch, die sich **wirklich** geändert haben.
+
+### Wie es funktioniert
+
+Jede Listenzeile trägt zwei Attribute:
+- **`data-row-id`**: eindeutige Kennung (z. B. `doc.id`)
+- **`data-rev`**: Signatur der veränderlichen Felder, z. B. `"processing:5:12:1"` (status:processed_pages:total_pages:attempt_count)
+
+Der Workflow (in `app.js` Funktionen `signaturen()`, `applyRows()`, `markiere()`):
+
+1. **Vor dem HTML-Tausch:** `signaturen(container)` scannt alle Zeilen und erstellt eine Map `{ row-id → data-rev }`.
+2. **HTML wird neu geladen** und ersetzt den `tbody`-Inhalt.
+3. **Nach dem Tausch:** Die neuen Zeilen werden gegen die alte Map abgeglichen.
+4. **Markierung:** Nur Zeilen, deren `data-rev` sich **geändert hat** oder deren `data-row-id` völlig neu ist, bekommen die Klasse `.row-updated`. Diese stellt den Hintergrund für `FLASH_MS` (1600 ms) auf Akzent-Farbe ein und entfernt die Klasse dann per Timeout.
+
+### Vergleich läuft über die ID, nicht die Position
+
+Eine Zeile, die nur um ein oder zwei Positionen nach oben rutscht (weil eine frühere Zeile den Status wechselte), leuchtet **nicht** auf — nur die Zeilen mit geändertem `data-rev`. Das ist wichtig für lange Listen, in denen ständig Zeilen neu sortiert werden würden.
+
+### Warum nicht `animationend`?
+
+Die Klasse wird per `setTimeout` entfernt, nicht per `animationend`-Ereignis. Unter `prefers-reduced-motion: reduce` läuft die Animation nicht, es feuert also kein `animationend`. Eine Zeile bliebe dauerhaft markiert. Mit Timeout funktioniert es in beiden Modi.
+
+### Wichtiger Hinweis für künftige Änderungen
+
+**Wer ein Feld ergänzt, das sich im Betrieb ändern kann, muss es auch in `data-rev` aufnehmen,** sonst bleibt die Änderung unsichtbar.
+
+Beispiel aus `partials/history_rows.html` (Zeile 16):
+```html
+data-rev="{{ doc.status }}:{{ doc.processed_pages }}:{{ doc.total_pages }}:{{ doc.attempt_count }}"
+```
+
+Wenn z. B. ein neues Feld `doc.error_code` hinzukommt und sich beim Fehlerfall ändert, muss es auch in `data-rev` aufgenommen werden:
+```html
+data-rev="{{ doc.status }}:{{ doc.processed_pages }}:{{ doc.total_pages }}:{{ doc.attempt_count }}:{{ doc.error_code }}"
+```
+
+### Test-Abdeckung
+
+Die Logik wird in `tests/test_app_js.py` über einen Node-Harness abgedeckt, der ein gefaktes DOM bietet. Das Test-Skript wird übersprungen, wenn `node` nicht vorhanden ist.
+
 ## Batch-Statusleiste
 
 Sitzt in `partials/batch_status.html` und wird während eines Laufs als eigene Karte

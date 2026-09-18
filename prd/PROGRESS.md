@@ -129,6 +129,31 @@ Alle zuvor offenen Verifikationspunkte sind vom Anwender geschlossen:
   auf dem NAS (`Teams/Docker/paperless-ngx-stack`) ausgeführt, Dienst auf Port 8001 erreichbar.
 - **Paperless & SevDesk:** Sync und Beleg-Upload gegen die produktiven Konten bestätigt.
 
+## Zusatz-Feature: UI-Politur (2026-09-19)
+
+Bewusst kein Redesign: Layout, Navigation, Informationsarchitektur, Routen und der
+Akzentfarbton bleiben unveraendert. Ergaenzt wurde, was gefehlt hat.
+
+- **Dunkel-Modus** ueber `@media (prefers-color-scheme: dark)`, ausschliesslich als
+  Tokenblock. Kein Umschalter, keine ENV-Variable — die Systemeinstellung entscheidet.
+  Zwei neue Token: `--surface-alt` (vorher als `#fafbfc` fest verdrahtet) und
+  `--on-accent` (Weiss auf hellem Akzent waere im Dunkeln unlesbar gewesen, 2.4:1).
+  Kontraste geprueft, alle ueber WCAG AA.
+- **Aufleuchten geaenderter Zeilen:** Jede Listenzeile traegt `data-row-id` und `data-rev`;
+  `app.js` vergleicht die Signaturen vor und nach dem Fragment-Tausch und markiert nur
+  tatsaechlich geaenderte oder neue Zeilen. Vorher aktualisierte sich die Liste unbemerkt.
+- **Fortschrittsbalken in der Listenzeile**, bewusst nur bei `status = processing` —
+  dieselbe Ueberlegung wie bei der Batch-Karte: Bewegung soll etwas bedeuten.
+- **Aktive Statuskachel** (`aria-current`), **`:focus-visible`** fuer Tastaturbedienung,
+  **`:active`**-Rueckmeldung auf Schaltflaechen, **Leerzustaende mit Hinweis** statt
+  einer blossen Feststellung.
+- **Nebenbei behoben:** Der Zeitstempel im Verlauf der Detailansicht lief als einziger
+  ohne `| fmt_dt` und stand roh da.
+
+Tests: 155 gruen. Neu abgedeckt sind das Zeilen-Aufleuchten (vier Faelle im
+Node-Harness, u. a. dass eine nur verschobene Zeile NICHT aufleuchtet) sowie
+Fortschrittsbalken und Zeilensignatur im Web-Test.
+
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
 - UI ohne HTMX/Tailwind-Laufzeit: serverseitiges Jinja2 + offline-CSS + Vanilla-JS-SSE
