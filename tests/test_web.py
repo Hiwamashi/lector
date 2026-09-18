@@ -461,13 +461,110 @@ def test_batch_status_running_keeps_count_outside_the_bar(client, monkeypatch):
 
     resp = c.get("/fragment/empfaenger/batch-status")
     assert resp.status_code == 200
-    assert "12 / 100 verarbeitet" in resp.text
-    # Der Balken trägt nur die Füllung, keinen Text ...
-    assert "batch-bar-fill" in resp.text
+    assert "12" in resp.text and "von 100 verarbeitet" in resp.text
+    # Der Balken trägt nur Segmente, keinen Text ...
     assert "progress-label" not in resp.text
     # ... und meldet seinen Stand an Hilfstechnik.
     assert 'role="progressbar"' in resp.text
     assert 'aria-valuenow="15"' in resp.text
+    assert 'aria-valuetext="12 von 100 verarbeitet"' in resp.text
+
+
+def test_batch_bar_zeigt_die_drei_ausgaenge_als_segmente(client, monkeypatch):
+    """Ein Lauf hat drei Ausgänge — der Balken zeigt sie getrennt statt als eine Füllung.
+
+    Sonst erzählt der Balken, 15 % seien erledigt, obwohl nur 12 von 15 tatsächlich
+    verarbeitet wurden und einer fehlgeschlagen ist.
+    """
+    from app.paperless_sync import BatchProgress
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+    monkeypatch.setattr(
+        type(sync),
+        "batch_progress",
+        property(
+            lambda self: BatchProgress(
+                running=True, total=100, done=12, failed=1, skipped=2
+            )
+        ),
+    )
+
+    text = c.get("/fragment/empfaenger/batch-status").text
+    assert "batch-seg--done" in text and "flex-basis: 12.0%" in text
+    assert "batch-seg--skipped" in text and "flex-basis: 2.0%" in text
+    assert "batch-seg--failed" in text and "flex-basis: 1.0%" in text
+    # Legende nennt nur, was tatsächlich angefallen ist, plus den Rest der Runde.
+    assert "2 übersprungen" in text
+    assert "1 fehlgeschlagen" in text
+    assert "85 in dieser Runde offen" in text
+
+
+def test_batch_ohne_uebersprungene_zeigt_kein_leeres_segment(client, monkeypatch):
+    """Nullwerte gehören weder in den Balken noch in die Legende."""
+    from app.paperless_sync import BatchProgress
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+    monkeypatch.setattr(
+        type(sync),
+        "batch_progress",
+        property(lambda self: BatchProgress(running=True, total=50, done=2)),
+    )
+
+    text = c.get("/fragment/empfaenger/batch-status").text
+    assert "batch-seg--skipped" not in text
+    assert "batch-seg--failed" not in text
+    assert "übersprungen" not in text
+    assert "fehlgeschlagen" not in text
+
+
+def test_laufender_batch_ist_fuer_app_js_erkennbar(client, monkeypatch):
+    """app.js pollt nur während eines Laufs — dafür braucht es die Markierung im Fragment.
+
+    Ohne sie hinge der Fortschritt wieder allein am SSE-Strom, und ein gepufferter
+    Reverse Proxy ließe die Zahl stillstehen, ohne dass etwas nach einem Fehler aussieht.
+    """
+    from app.paperless_sync import BatchProgress
+
+    c, application = client
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "recipient_enabled", property(lambda self: True))
+    monkeypatch.setattr(type(sync), "recipient_llm_enabled", property(lambda self: True))
+    monkeypatch.setattr(
+        type(sync),
+        "batch_progress",
+        property(lambda self: BatchProgress(running=True, total=50, done=2)),
+    )
+    assert "data-batch-running" in c.get("/fragment/empfaenger/batch-status").text
+
+    monkeypatch.setattr(
+        type(sync),
+        "batch_progress",
+        property(lambda self: BatchProgress(running=False)),
+    )
+    assert "data-batch-running" not in c.get("/fragment/empfaenger/batch-status").text
+
+
+def test_statische_dateien_tragen_einen_fingerabdruck(client):
+    """Ohne Versionsangabe liefert der Browser nach einem Deploy altes CSS/JS aus.
+
+    Starlette setzt für /static kein ``Cache-Control``; Browser cachen dann heuristisch
+    und revalidieren stundenlang nicht. Genau daran sind frühere Fixes an app.js
+    unsichtbar geblieben: frisches HTML, altes Skript.
+    """
+    import re
+
+    c, _ = client
+    html = c.get("/").text
+    treffer = re.findall(r'/static/(app\.css|app\.js)\?v=([0-9a-f]{10})', html)
+    assert {name for name, _ in treffer} == {"app.css", "app.js"}
+    # Gleicher Inhalt, gleiche URL — sonst waere jeder Seitenaufruf ein Cache-Miss.
+    assert c.get("/").text == html
 
 
 def test_pages_carry_live_status_hint(client):

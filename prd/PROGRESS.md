@@ -59,7 +59,28 @@ Dokument zurückgeschrieben. Standardmäßig deaktiviert (`FEATURE_PAPERLESS_SYN
 | Tabelle `document_recipients` (KI-Vorschlag-Cache) | ✅ |
 | Batch-Lauf: Menge wählbar, Retry mit Backoff, Fortschritt + Abbruch | ✅ |
 
-129 Tests grün. `ruff` sauber. (Fix-Runde nach Schlussreview: leeres/unlesbares Mengenfeld
+146 Tests grün. `ruff` sauber.
+
+**Fix-Runde Fortschrittsanzeige (2026-09-18):** Der Zähler stand still und der
+Fortschrittsbalken fehlte. Ursache war **nicht** die Live-Logik, sondern das Ausliefern der
+statischen Dateien: `/static/app.css` und `/static/app.js` gingen ohne `Cache-Control` und
+ohne Versionsangabe raus, Browser cachten heuristisch und revalidierten nicht — frisches
+HTML traf auf altes CSS/JS, und mehrere vorangegangene Fixes an `app.js` sind nie im Browser
+angekommen. `base.html` bindet die Dateien jetzt über `static_url()` mit Inhalts-Fingerabdruck
+ein. Ergänzend hängt der Fortschritt nicht mehr allein an SSE: solange ein Lauf läuft
+(`data-batch-running`), fragt `app.js` alle 2 s von sich aus nach — gepufferte
+`text/event-stream`-Verbindungen hinter einem Reverse Proxy wirken sonst gesund, während
+nichts mehr ankommt. Die Pause liegt dabei **zwischen** den Zyklen: Ein festes
+`setInterval` ließe bei Antwortzeiten oberhalb der Pause jeden Zyklus vom nächsten
+überholen, der Veralterungsschutz verwürfe dann jede Antwort — die Anzeige stünde dauerhaft
+still. Und jeder Fragment-Request hat eine Frist von 15 s: `fetch` bricht von sich aus nie
+ab, ein hängender Request hielte den Takt sonst für immer an. Beides im Review gefunden,
+beides mit Regressionstest belegt (Gegenprobe gegen die jeweils fehlerhafte Fassung
+durchgeführt).
+Der Balken zeigt jetzt die drei Ausgänge (verarbeitet / übersprungen / fehlgeschlagen) als
+farbige Segmente mit Legende und einem Puls an der Füllkante als Lebenszeichen.
+
+(Fix-Runde nach Schlussreview: leeres/unlesbares Mengenfeld
 fällt auf die Vorbelegung statt auf das Maximum zurück, Start-Button bleibt bei einem
 Paperless-Aussetzer nutzbar, SSE-Drossel greift auch über den Einzel-`rec:<id>`-Pfad,
 Ausnahmen vor der Dokumentschleife und der leere Empfänger-Feld-Fall setzen `aborted_reason`

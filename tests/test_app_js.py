@@ -27,6 +27,14 @@ const scenario = JSON.parse(process.argv[2]);
 let hidden = true;               // Ausgangszustand des Hinweises
 const liveStatus = { set hidden(v) { hidden = v; }, get hidden() { return hidden; } };
 
+// Zeitraffer: Poll-Pause und Antwortzeiten werden mit demselben Faktor gestaucht, die
+// Reihenfolge der Ereignisse bleibt damit exakt erhalten. Ohne das dauerte ein Test, der
+// eine Antwort langsamer als die 2000-ms-Pause machen muss, mehrere Sekunden.
+const skala = scenario.scale || 1;
+const echterTimeout = setTimeout;
+global.setTimeout = (fn, ms) => echterTimeout(fn, Math.round((ms || 0) * skala));
+global.clearTimeout = clearTimeout;
+
 let tbodyInhalt = null;
 const tbody = { set innerHTML(v) { tbodyInhalt = v; }, get innerHTML() { return tbodyInhalt; } };
 const table = {
@@ -34,11 +42,17 @@ const table = {
   querySelector: () => tbody,
 };
 
+let batchInhalt = null;
 const batchStatus = { getAttribute: () => "/fragment/empfaenger/batch-status",
-                      set innerHTML(_v) {} };
+                      set innerHTML(v) { batchInhalt = v; } };
 
 global.document = {
-  querySelector: (sel) => (sel.startsWith("table.history") ? table : null),
+  querySelector: (sel) => {
+    if (sel.startsWith("table.history")) return table;
+    // Marker eines laufenden KI-Laufs — Signal fuer den Abfragetakt in app.js.
+    if (sel.indexOf("data-batch-running") >= 0) return scenario.batchRunning ? {} : null;
+    return null;
+  },
   getElementById: (id) => {
     if (id === "live-status") return liveStatus;
     // Zweites Fragment nur, wenn das Szenario es verlangt — so laufen wahlweise
@@ -51,14 +65,24 @@ global.window = { EventSource: function () {}, location: { pathname: "/empfaenge
 
 // Reihenfolge der Antworten laut Szenario; "ok" = 200, sonst Fehlerstatus.
 let i = 0;
-global.fetch = (_url, _opts) => {
+let batchAntwort = 0;
+global.fetch = (url, _opts) => {
   const n = i++;
-  const ok = scenario.responses[n];
-  const delay = (scenario.delays || [])[n] || 0;
-  const inhalt = (scenario.bodies || [])[n] || "<tr></tr>";
+  const ok = n < scenario.responses.length ? scenario.responses[n] : true;
+  const vorgabe = (scenario.delays || [])[n];
+  const delay = vorgabe === undefined ? (scenario.defaultDelay || 0) : vorgabe;
+  let inhalt = (scenario.bodies || [])[n];
+  if (inhalt === undefined) {
+    // Fortlaufend nummeriert, damit ein Test sieht, WIE OFT der Stand ankam.
+    inhalt = String(url).indexOf("batch-status") >= 0
+      ? "BATCH" + ++batchAntwort
+      : "<tr></tr>";
+  }
   const body = () => Promise.resolve(inhalt);
   const res = { ok: ok, status: ok ? 200 : 503, text: body };
-  return new Promise((r) => setTimeout(() => r(res), delay));
+  // delay < 0 heisst: antwortet NIE — gestauter Proxy, halboffene Verbindung.
+  if (delay < 0) return new Promise(() => {});
+  return new Promise((r) => echterTimeout(() => r(res), Math.round(delay * skala)));
 };
 
 let sse = null;
@@ -75,10 +99,14 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
     await new Promise((r) => setTimeout(r, scenario.secondCycleAfter));
     sse.onmessage({ data: "batch:recipient" });
   }
-  // Entprellung (250 ms) plus Zeit für die Fetches abwarten.
-  await new Promise((r) => setTimeout(r, 900));
-  if (scenario.streamRecovers) { sse.onopen(); await new Promise((r) => setTimeout(r, 50)); }
-  console.log(JSON.stringify({ hinweisSichtbar: hidden === false, inhalt: tbodyInhalt }));
+  // Entprellung (250 ms) plus Zeit für die Fetches abwarten — in echten Millisekunden.
+  await new Promise((r) => echterTimeout(r, 900));
+  if (scenario.streamRecovers) { sse.onopen(); await new Promise((r) => echterTimeout(r, 50)); }
+  console.log(JSON.stringify({
+    hinweisSichtbar: hidden === false, inhalt: tbodyInhalt, batchInhalt: batchInhalt,
+  }));
+  // Der Abfragetakt plant sich endlos weiter — ohne das bliebe node haengen.
+  process.exit(0);
 })();
 """
 
@@ -169,3 +197,74 @@ def test_veralteter_zyklus_ueberschreibt_neueren_inhalt_nicht(tmp_path):
         tmp_path,
     )
     assert ergebnis["inhalt"] == "NEU"
+
+
+def test_langsame_antworten_halten_den_fortschritt_nicht_an(tmp_path):
+    """Regression: Der Abfragetakt darf sich nicht selbst überholen.
+
+    Als fester ``setInterval(refreshFragment, 2000)`` gebaut, zog jeder Tick die
+    Sequenznummer hoch. Brauchte eine Antwort länger als die Taktpause — bei einem
+    Batch-Lauf der Normalfall, das Fragment kostet einen Paperless-Zählaufruf —, war sie
+    beim Eintreffen bereits überholt und wurde vom Veralterungsschutz verworfen. Bei
+    durchgehend langsamen Antworten kam damit **kein einziger** Stand an: Die Zahl stand
+    still, obwohl im Sekundentakt gefragt wurde. Genau der Zustand, den der Takt beheben
+    soll.
+
+    Hier antwortet jeder Request 1,5-mal so langsam wie die Taktpause. Es muss trotzdem
+    mehrfach ein Stand ankommen.
+    """
+    ergebnis = _run(
+        {
+            "responses": [],
+            "withBatchStatus": True,
+            "batchRunning": True,
+            "defaultDelay": 3000,  # langsamer als BATCH_POLL_MS (2000)
+            "scale": 0.05,         # Zeitraffer, Reihenfolge bleibt erhalten
+        },
+        tmp_path,
+    )
+    assert ergebnis["batchInhalt"] is not None, "kein einziger Stand angekommen"
+    angekommen = int(ergebnis["batchInhalt"].removeprefix("BATCH"))
+    assert angekommen >= 2, f"nur {angekommen} Stand/Staende angekommen"
+
+
+def test_ohne_laufenden_batch_kein_abfragetakt(tmp_path):
+    """Ausserhalb eines Laufs bleibt es bei SSE — sonst fragt die Seite dauerhaft nach."""
+    ergebnis = _run(
+        {"responses": [], "withBatchStatus": True, "batchRunning": False,
+         "defaultDelay": 0, "scale": 0.05},
+        tmp_path,
+    )
+    # Der einzige Zyklus stammt aus dem SSE-Ereignis des Harness, nicht aus einem Takt.
+    assert ergebnis["batchInhalt"] == "BATCH1"
+
+
+def test_haengender_request_haelt_den_abfragetakt_nicht_an(tmp_path):
+    """Regression: Ein Request ohne Antwort darf den Takt nicht dauerhaft stoppen.
+
+    Der Takt plant den nächsten Zyklus erst, wenn der vorige durch ist. ``fetch`` hat von
+    sich aus keine Frist, und ``Promise.allSettled`` löst erst auf, wenn **alle**
+    Teil-Requests durch sind — ein hängender Request (gestauter Reverse Proxy, halboffene
+    Verbindung) ließ die Kette damit nie weiterlaufen. Die Anzeige stand still, ohne dass
+    etwas nach einem Fehler aussah: genau der Zustand, den der Takt beheben soll.
+
+    Hier hängen die beiden Requests des ersten Zyklus für immer. Die Frist in
+    ``loadFragment`` muss sie abräumen, damit spätere Zyklen wieder Stände liefern.
+    """
+    ergebnis = _run(
+        {
+            "responses": [],
+            "withBatchStatus": True,
+            "batchRunning": True,
+            "delays": [-1, -1],  # erster Zyklus: Tabelle und Batch-Status antworten nie
+            "defaultDelay": 0,
+            "scale": 0.02,  # Zeitraffer: Frist 15 s → 300 ms, Poll-Pause 2 s → 40 ms
+        },
+        tmp_path,
+    )
+    assert ergebnis["batchInhalt"] is not None, "Takt nach haengendem Request tot"
+    # Nicht nur ein Zufallstreffer: Nach dem Hänger müssen mehrere Stände ankommen.
+    # (Der Veraltet-Hinweis steht am Ende zu Recht nicht mehr — die späteren Zyklen sind
+    # gelungen, und er meldet den letzten Stand, nicht die Vorgeschichte.)
+    angekommen = int(ergebnis["batchInhalt"].removeprefix("BATCH"))
+    assert angekommen >= 3, f"Takt kam nach dem Haenger nur auf {angekommen} Staende"

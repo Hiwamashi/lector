@@ -7,6 +7,7 @@ Retry und Retention betreut. Live-Updates laufen über Server-Sent Events.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -112,12 +113,44 @@ RECIPIENT_STATUS_LABELS = {
 }
 
 
+STATIC_DIR = BASE_DIR / "static"
+
+
+def static_url(name: str) -> str:
+    """URL einer statischen Datei mit Inhalts-Fingerabdruck (``?v=…``).
+
+    Ohne diesen Zusatz liefert Starlette ``/static/app.css`` zwar mit ``ETag`` und
+    ``Last-Modified`` aus, aber **ohne** ``Cache-Control``. Browser wenden dann
+    heuristisches Caching an (RFC 9111 §4.2.2) und benutzen die alte Datei stundenlang
+    weiter, ohne zu revalidieren. Nach einem Deploy sieht der Anwender dadurch frisches
+    HTML mit altem CSS/JS — die Ursache dafuer, dass Fixes an ``app.js`` scheinbar
+    wirkungslos blieben und der Fortschrittsbalken unsichtbar war.
+
+    Der Fingerabdruck wird beim ersten Zugriff aus dem Dateiinhalt gebildet und im
+    Prozess gehalten: Ein neues Image bedeutet einen neuen Prozess und damit eine neue
+    URL, eine unveraenderte Datei behaelt ihre URL (und bleibt im Cache nutzbar).
+    """
+    if name not in _static_versions:
+        try:
+            digest = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:10]
+        except OSError:
+            # Fehlende Datei nicht zum Startfehler machen — ohne Fingerabdruck ausliefern.
+            digest = ""
+        _static_versions[name] = digest
+    version = _static_versions[name]
+    return f"/static/{name}?v={version}" if version else f"/static/{name}"
+
+
+_static_versions: dict[str, str] = {}
+
+
 templates.env.filters["fmt_dt"] = _fmt_dt
 templates.env.filters["fmt_date"] = _fmt_date
 templates.env.globals["status_labels"] = STATUS_LABELS
 templates.env.globals["sevdesk_labels"] = SEVDESK_LABELS
 templates.env.globals["giro_labels"] = GIRO_LABELS
 templates.env.globals["recipient_status_labels"] = RECIPIENT_STATUS_LABELS
+templates.env.globals["static_url"] = static_url
 
 
 @asynccontextmanager
