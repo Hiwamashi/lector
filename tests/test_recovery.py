@@ -1,7 +1,18 @@
+import os
+import time
+from datetime import UTC
+
+from app import recovery
 from app.config import Settings
 from app.fileops import file_hash as compute_file_hash
-from app.models import DocStatus, Document
-from app.recovery import OriginalLocation, _find_in_processed, locate_original
+from app.models import DocStatus, DocType, Document, EventType
+from app.recovery import (
+    OriginalLocation,
+    _find_in_processed,
+    locate_original,
+    resolve_stale_processing,
+)
+from app.repository import Repository
 
 
 def _settings(tmp_path, **overrides):
@@ -91,3 +102,263 @@ def test_locate_original_not_found_when_processed_match_has_wrong_hash(tmp_path)
     doc = _document(src, original_filename="Rechnung.pdf", file_hash="a" * 64)
     assert compute_file_hash(fremd) != doc.file_hash
     assert locate_original(doc, s) == OriginalLocation.NOT_FOUND
+
+
+# ---- resolve_stale_processing: Entscheidungstabelle D1 (Aufgabe 2.1) -----------------
+
+
+def _stale(repo, s, *, filename="scan.pdf", in_watch_dir=True, doc_type=None, output_path=None):
+    """Legt einen Vorgang an, der auf `processing` haengt, und ruft ihn ueber das
+    Repository ab -- wie beim echten Prozessabbruch, statt `Document` roh zu
+    konstruieren, damit `resolve_stale_processing` (das `repo.list_processing()` nutzt)
+    ihn findet.
+    """
+    src = s.watch_dir / filename
+    if in_watch_dir:
+        src.write_bytes(b"original")
+    doc_id = repo.create_document(original_filename=filename, source_path=str(src))
+    repo.set_status(doc_id, DocStatus.PROCESSING)  # setzt started_at
+    fields = {}
+    if doc_type is not None:
+        fields["doc_type"] = doc_type
+    if output_path is not None:
+        fields["output_path"] = output_path
+    if fields:
+        repo.update_document(doc_id, **fields)
+    return doc_id, src
+
+
+def test_resolve_processed_dir_row_finishes_regardless_of_output_path(tmp_path):
+    """Tabellenzeile 1: Original im Verarbeitet-Ordner -> abschliessen, `output_path`
+    ist dabei "egal" -- hier bewusst gesetzt, um genau das zu belegen."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    content = b"original"
+    processed_file = s.processed_dir / "scan.pdf"
+    processed_file.write_bytes(content)
+    doc_id = repo.create_document(
+        original_filename="scan.pdf",
+        source_path=str(s.watch_dir / "scan.pdf"),  # existiert nicht mehr
+        file_hash=compute_file_hash(processed_file),
+    )
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+    repo.update_document(
+        doc_id, doc_type=DocType.PDF, output_path=str(s.consume_dir / "irrelevant.pdf")
+    )
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.DONE
+    assert processed_file.exists()  # lag schon dort, `move_into` war nicht noetig
+
+
+def test_resolve_watch_dir_with_output_path_finishes_and_moves_original(tmp_path):
+    """Tabellenzeile 2: Original im Eingang, `output_path` gesetzt -> abschliessen,
+    Original nachziehen (D4, OCR-Weg -> `done`)."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(
+        repo, s, doc_type=DocType.PDF, output_path=str(s.consume_dir / "scan.pdf")
+    )
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.DONE
+    assert not src.exists()
+    assert (s.processed_dir / "scan.pdf").exists()
+
+
+def test_resolve_not_found_row_fails_with_explanatory_message(tmp_path):
+    """Tabellenzeile 4: Original nirgends auffindbar -> gescheitert mit Meldung."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _src = _stale(repo, s, in_watch_dir=False, doc_type=DocType.PDF)
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.error_message and "auffindbar" in doc.error_message
+
+
+# ---- Grenzfall D2 (Aufgabe 2.2) -------------------------------------------------------
+
+
+def test_resolve_ambiguous_with_recent_consume_file_fails(tmp_path):
+    """Datei mit erwartetem Namen im Ausgabeordner, veraendert NACH `started_at` ->
+    `failed` mit Pruefhinweis fuer Paperless."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(repo, s, doc_type=DocType.PDF)  # kein output_path -> Grenzfall D2
+
+    time.sleep(1.1)  # klar nach started_at (Sekundenaufloesung in SQLite)
+    (s.consume_dir / "scan.pdf").write_bytes(b"moeglicherweise schon abgelegtes Ergebnis")
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.error_message and "Paperless" in doc.error_message
+    assert src.exists()  # keine Doppelverarbeitung: Original bleibt liegen
+
+
+def test_resolve_ambiguous_without_recent_consume_file_requeues(tmp_path):
+    """Unterscheidet sich von obigem Test nur im Aenderungszeitpunkt der Datei: liegt sie
+    VOR `started_at`, ist sie ein harmloser Altbestand -> neu einreihen (`pending`)."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "scan.pdf"
+    src.write_bytes(b"original")
+    doc_id = repo.create_document(original_filename="scan.pdf", source_path=str(src))
+
+    (s.consume_dir / "scan.pdf").write_bytes(b"alter, unbeteiligter Bestand")
+    time.sleep(1.1)  # started_at liegt danach
+
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+    repo.update_document(doc_id, doc_type=DocType.PDF)
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    assert repo.get_document(doc_id).status == DocStatus.PENDING
+
+
+def test_resolve_ambiguous_without_doc_type_requeues_without_consume_probe(tmp_path):
+    """Ruling R3: Ohne erkannten `doc_type` starb der Vorgang vor der Erkennung -- die
+    Stichprobe im Ausgabeordner entfaellt, selbst wenn dort zufaellig eine juengere,
+    namentlich passende Datei liegt."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _src = _stale(repo, s)  # doc_type bleibt None
+
+    time.sleep(1.1)
+    (s.consume_dir / "scan.pdf").write_bytes(b"waere ohne R3 als 'kuerzlich' gewertet worden")
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    assert repo.get_document(doc_id).status == DocStatus.PENDING
+
+
+def test_resolve_ambiguous_time_comparison_is_utc_not_local(tmp_path):
+    """Ruling R2, Regressionsschutz: Der Vergleich muss `started_at` explizit als UTC in
+    Epoch umrechnen. Die Ausgabedatei liegt hier 30 Minuten VOR dem echten (UTC-)
+    Prozessbeginn -- korrekt aufgeloest also `pending`. Eine Zeitzone oestlich von UTC
+    (Europe/Berlin, im September UTC+2) faellt bei einer naiven Lokalzeit-Interpretation
+    von `started_at` (z.B. via `time.mktime`) rechnerisch VOR die Datei zurueck; der
+    Vergleich wuerde dann faelschlich `> started_at` ergeben und diesen Test mit `failed`
+    statt `pending` zum Scheitern bringen.
+    """
+    original_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Berlin"
+    time.tzset()
+    try:
+        s = _settings(tmp_path)
+        repo = Repository(s.db_path)
+        doc_id, _src = _stale(repo, s, doc_type=DocType.PDF)
+
+        doc = repo.get_document(doc_id)
+        assert doc.started_at is not None
+        correct_started_epoch = doc.started_at.replace(tzinfo=UTC).timestamp()
+
+        consume_file = s.consume_dir / "scan.pdf"
+        consume_file.write_bytes(b"vor Prozessbeginn abgelegter, unbeteiligter Bestand")
+        mtime = correct_started_epoch - 1800  # 30 Minuten vor Prozessbeginn, echte UTC-Zeit
+        os.utime(consume_file, (mtime, mtime))
+
+        resolved = resolve_stale_processing(repo, s)
+
+        assert resolved == 1
+        assert repo.get_document(doc_id).status == DocStatus.PENDING
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
+
+
+# ---- Abschluss D4 (Aufgabe 2.3) -------------------------------------------------------
+
+
+def test_resolve_finishes_erechnung_to_skipped_status(tmp_path):
+    """E-Rechnungs-Weg: eigener Endzustand `skipped_erechnung`, nicht `done`."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(
+        repo,
+        s,
+        filename="rechnung.xml",
+        doc_type=DocType.ERECHNUNG_XML,
+        output_path=str(s.consume_dir / "rechnung.xml"),
+    )
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.SKIPPED_ERECHNUNG
+    assert not src.exists()
+    assert (s.processed_dir / "rechnung.xml").exists()
+
+
+# ---- Verlaufseintrag (Aufgabe 2.4) ----------------------------------------------------
+
+
+def test_resolve_writes_event_naming_interruption_and_resolution(tmp_path):
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _src = _stale(repo, s, doc_type=DocType.PDF)  # -> Grenzfall D2, ohne Konsum-Datei
+
+    resolve_stale_processing(repo, s)
+
+    events = repo.list_events(doc_id)
+    assert events
+    last = events[-1]
+    assert last["event_type"] == EventType.RETRY_SCHEDULED.value
+    assert "Neustart" in last["message"]
+    assert "eingereiht" in last["message"]
+
+
+# ---- Fehlerkapselung (Aufgabe 2.5) ----------------------------------------------------
+
+
+def test_resolve_isolates_failure_of_a_single_document(tmp_path, monkeypatch):
+    """Drei Vorgaenge, der mittlere loest beim Auflösen eine Ausnahme aus -- die beiden
+    anderen werden dennoch aufgeloest, und der Rueckgabewert zaehlt nur diese beiden."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+
+    doc_ids = []
+    for i in range(3):
+        doc_id, _src = _stale(
+            repo,
+            s,
+            filename=f"scan{i}.pdf",
+            doc_type=DocType.PDF,
+            output_path=str(s.consume_dir / f"scan{i}.pdf"),
+        )
+        doc_ids.append(doc_id)
+
+    broken_id = doc_ids[1]
+    real_locate_original = recovery.locate_original
+
+    def flaky_locate_original(document, settings):
+        if document.id == broken_id:
+            raise RuntimeError("kaputt")
+        return real_locate_original(document, settings)
+
+    monkeypatch.setattr(recovery, "locate_original", flaky_locate_original)
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 2
+    assert repo.get_document(doc_ids[0]).status == DocStatus.DONE
+    assert repo.get_document(broken_id).status == DocStatus.PROCESSING  # unangetastet
+    assert repo.get_document(doc_ids[2]).status == DocStatus.DONE
