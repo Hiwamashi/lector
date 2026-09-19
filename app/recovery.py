@@ -174,9 +174,16 @@ def _find_recent_in_consume(doc: Document, settings: Settings) -> Path | None:
     Es geht hier nicht darum, ob überhaupt abgelegt wurde (das kann der Ausgabeordner nicht
     beweisen, siehe `locate_original`), sondern ob eine namentlich passende Datei **nach**
     dem Beginn dieses Vorgangs verändert wurde und damit auf eine mögliche, aber unsichere
-    Ablage genau in diesem Absturzfenster hindeutet. Der erwartete Name folgt derselben
-    Regel wie `_output_pdf_name` in `app/pipeline.py`: Stamm von `original_filename` plus
-    `.pdf`, optional mit dem `_1`, `_2`, …-Zusatz aus `unique_target` (`app/fileops.py`).
+    Ablage genau in diesem Absturzfenster hindeutet.
+
+    Ruling R8 (ersetzt die ursprüngliche, zu pauschale Namensregel): Der erwartete Name
+    hängt vom Dokumenttyp ab, weil die beiden Wege unterschiedlich ablegen. Der
+    E-Rechnungs-Weg (`_handle_erechnung`, `app/pipeline.py`) legt per
+    `copy_into(source, consume_dir, ...)` ab — `unique_target` verwendet dort `src.name`,
+    also den **unveränderten** Originalnamen samt Endung (z.B. `.xml`). Nur der OCR-Weg
+    (`_handle_ocr`) erzeugt tatsächlich `<Stamm>.pdf` (`_output_pdf_name`,
+    `app/pipeline.py`). Beide Fälle berücksichtigen weiterhin den `_1`, `_2`, …-Zusatz aus
+    `unique_target` (`app/fileops.py`) bei Namenskollision.
 
     Ruling R2: `document.started_at` kommt aus SQLite als UTC (`Repository.set_status`,
     `datetime('now')`, siehe `app/repository.py`). `Path.stat().st_mtime` ist ein
@@ -186,7 +193,10 @@ def _find_recent_in_consume(doc: Document, settings: Settings) -> Path | None:
     if doc.started_at is None or not settings.consume_dir.exists():
         return None
     started_epoch = doc.started_at.replace(tzinfo=UTC).timestamp()
-    expected_name = f"{Path(doc.original_filename).stem}.pdf"
+    if doc.doc_type in (DocType.ERECHNUNG_XML, DocType.ERECHNUNG_PDF):
+        expected_name = doc.original_filename  # unverändert durchgereicht, siehe Ruling R8
+    else:
+        expected_name = f"{Path(doc.original_filename).stem}.pdf"
     stem = Path(expected_name).stem
     suffix = Path(expected_name).suffix
     pattern = re.compile(rf"^{re.escape(stem)}(_\d+)?{re.escape(suffix)}$")

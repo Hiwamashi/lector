@@ -208,6 +208,53 @@ def test_resolve_ambiguous_with_recent_consume_file_fails(tmp_path):
     assert src.exists()  # keine Doppelverarbeitung: Original bleibt liegen
 
 
+def test_resolve_ambiguous_erechnung_uses_original_name_not_pdf_and_fails_when_recent(
+    tmp_path,
+):
+    """Fix-Runde 1, Ruling R8: Der E-Rechnungs-Weg legt per `copy_into` unter dem
+    UNVERAENDERTEN Originalnamen ab (`unique_target` nutzt `src.name`, siehe
+    `_handle_erechnung` in `app/pipeline.py`), nicht unter `<Stamm>.pdf`. Die Stichprobe
+    im Grenzfall D2 muss deshalb nach `rechnung.xml` suchen. Suchte sie faelschlich nach
+    `rechnung.pdf` (die urspruengliche, zu pauschale Regel aus Brief/Aufgabe 2.2), wuerde
+    der Treffer nie gefunden und der Vorgang faelschlich neu eingereiht -- beim naechsten
+    Durchlauf legt `_handle_erechnung` die Datei ein zweites Mal ab (Doppelablage)."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(repo, s, filename="rechnung.xml", doc_type=DocType.ERECHNUNG_XML)
+
+    time.sleep(1.1)  # klar nach started_at
+    (s.consume_dir / "rechnung.xml").write_bytes(b"moeglicherweise schon abgelegte E-Rechnung")
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.error_message and "Paperless" in doc.error_message
+    assert src.exists()  # keine Doppelablage: Original bleibt liegen
+
+
+def test_resolve_ambiguous_erechnung_requeues_when_consume_file_is_older(tmp_path):
+    """Gegentest zu obigem: eine gleichnamige Datei im Ausgabeordner VOR `started_at` ist
+    harmloser Altbestand -> neu einreihen, wie beim OCR-Weg."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "rechnung.xml"
+    src.write_bytes(b"original")
+    doc_id = repo.create_document(original_filename="rechnung.xml", source_path=str(src))
+
+    (s.consume_dir / "rechnung.xml").write_bytes(b"alter, unbeteiligter Bestand")
+    time.sleep(1.1)  # started_at liegt danach
+
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+    repo.update_document(doc_id, doc_type=DocType.ERECHNUNG_XML)
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    assert repo.get_document(doc_id).status == DocStatus.PENDING
+
+
 def test_resolve_ambiguous_without_recent_consume_file_requeues(tmp_path):
     """Unterscheidet sich von obigem Test nur im Aenderungszeitpunkt der Datei: liegt sie
     VOR `started_at`, ist sie ein harmloser Altbestand -> neu einreihen (`pending`)."""
