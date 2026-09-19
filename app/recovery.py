@@ -147,6 +147,12 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
 
     Ruling R3: Ist `doc.doc_type` `None`, starb der Vorgang vor der Erkennung — dann kann
     nichts abgelegt worden sein, die Stichprobe entfällt und es wird direkt neu eingereiht.
+
+    Ruling R10: Fällt die Stichprobe positiv aus (Treffer im Ausgabeordner), wird das
+    Original zusätzlich in den Fehlerordner verschoben, bevor der Vorgang auf `failed`
+    gesetzt wird — sonst bliebe es im Eingang liegen und der Watcher würde daraus beim
+    nächsten Scan ein zweites, neues Dokument machen (siehe `_find_recent_in_consume`
+    für die Kette).
     """
     candidate = _find_recent_in_consume(doc, settings) if doc.doc_type is not None else None
     if candidate is not None:
@@ -156,6 +162,16 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
             "wurde — vor einer erneuten Ablage in Paperless prüfen, ob das Dokument dort "
             "schon existiert."
         )
+        # Ruling R10: Original aus dem Eingang entfernen, bevor der Vorgang auf `failed`
+        # gesetzt wird. Bliebe es im Eingang liegen, würde `find_by_hash_active`
+        # (schließt `failed` per `status != 'failed'` aus, siehe app/repository.py)
+        # diesen Vorgang beim nächsten Watcher-Scan nicht mehr als aktiv erkennen — der
+        # Watcher legte dann ein zweites, neues Dokument an und verarbeitete es
+        # vollständig durch: genau die Doppelablage, die dieser Zweig verhindern soll.
+        # Muster wie im endgültigen Fehlerfall (`_handle_failure`, `app/pipeline.py`).
+        source = Path(doc.source_path)
+        if source.exists():
+            move_into(source, settings.error_dir)
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
         repo.add_event(doc.id, EventType.FAILED, message)
         return

@@ -191,7 +191,10 @@ def test_resolve_not_found_row_fails_with_explanatory_message(tmp_path):
 
 def test_resolve_ambiguous_with_recent_consume_file_fails(tmp_path):
     """Datei mit erwartetem Namen im Ausgabeordner, veraendert NACH `started_at` ->
-    `failed` mit Pruefhinweis fuer Paperless."""
+    `failed` mit Pruefhinweis fuer Paperless. Ruling R10: Das Original muss dabei aus dem
+    Eingang in den Fehlerordner wandern (siehe die beiden dedizierten R10-Tests unten fuer
+    die Begruendung) -- bleibe es im Eingang liegen, wuerde der Watcher es beim naechsten
+    Scan als neues Dokument aufnehmen."""
     s = _settings(tmp_path)
     repo = Repository(s.db_path)
     doc_id, src = _stale(repo, s, doc_type=DocType.PDF)  # kein output_path -> Grenzfall D2
@@ -205,7 +208,8 @@ def test_resolve_ambiguous_with_recent_consume_file_fails(tmp_path):
     doc = repo.get_document(doc_id)
     assert doc.status == DocStatus.FAILED
     assert doc.error_message and "Paperless" in doc.error_message
-    assert src.exists()  # keine Doppelverarbeitung: Original bleibt liegen
+    assert not src.exists()  # nicht mehr im Eingang -- kein erneuter Watcher-Fund moeglich
+    assert (s.error_dir / "scan.pdf").exists()  # zur manuellen Pruefung erhalten
 
 
 def test_resolve_ambiguous_erechnung_uses_original_name_not_pdf_and_fails_when_recent(
@@ -231,7 +235,8 @@ def test_resolve_ambiguous_erechnung_uses_original_name_not_pdf_and_fails_when_r
     doc = repo.get_document(doc_id)
     assert doc.status == DocStatus.FAILED
     assert doc.error_message and "Paperless" in doc.error_message
-    assert src.exists()  # keine Doppelablage: Original bleibt liegen
+    assert not src.exists()  # Ruling R10: nicht mehr im Eingang
+    assert (s.error_dir / "rechnung.xml").exists()
 
 
 def test_resolve_ambiguous_erechnung_requeues_when_consume_file_is_older(tmp_path):
@@ -253,6 +258,60 @@ def test_resolve_ambiguous_erechnung_requeues_when_consume_file_is_older(tmp_pat
 
     assert resolved == 1
     assert repo.get_document(doc_id).status == DocStatus.PENDING
+
+
+# ---- Ruling R10 (Fix-Runde 2): Original beim Treffer im Ausgabeordner in den ----------
+# ---- Fehlerordner verschieben, statt es im Eingang liegen zu lassen -------------------
+
+
+def test_resolve_ambiguous_recent_hit_moves_original_to_error_dir(tmp_path):
+    """Ohne das Verschieben bliebe das Original im Eingang liegen, obwohl der Vorgang auf
+    `failed` steht. `find_by_hash_active` schliesst `failed` per `status != 'failed'`
+    (`app/repository.py`) explizit aus -- der Watcher (`Worker._intake_file`) wuerde die
+    liegen gebliebene Datei beim naechsten Scan deshalb als *neues*, aktives Dokument
+    aufnehmen und vollstaendig durchverarbeiten: genau die Doppelablage, die dieser Zweig
+    verhindern soll. Das Original muss deshalb im Fehlerordner ankommen (zur manuellen
+    Pruefung erhalten), nicht im Eingang bleiben."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(repo, s, doc_type=DocType.PDF)  # kein output_path -> Grenzfall D2
+
+    time.sleep(1.1)  # klar nach started_at
+    (s.consume_dir / "scan.pdf").write_bytes(b"moeglicherweise schon abgelegtes Ergebnis")
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    assert repo.get_document(doc_id).status == DocStatus.FAILED
+    assert not src.exists()
+    assert (s.error_dir / "scan.pdf").exists()
+
+
+def test_resolve_ambiguous_recent_hit_leaves_nothing_for_watcher_to_reintake(tmp_path):
+    """Nachweis, dass die Wiedereinschleusung tatsaechlich ausgeschlossen ist. Ein
+    vollstaendiger Worker-Lauf ist dafuer nicht noetig: `Worker._scan_loop` iteriert
+    einzig ueber Dateien in `settings.watch_dir` (siehe `app/worker.py`) -- ist der
+    Eingang nach der Aufloesung leer, gibt es dort nichts mehr, worueber der Scan
+    stolpern und `_intake_file` ausloesen koennte. Die Kette ist also bereits am
+    Dateisystem geschlossen. Ergaenzend belegt `find_by_hash_active` fuer denselben Hash
+    weiterhin `None`: selbst wenn eine gleich gehashte Datei anderswo aufgetaucht waere,
+    wuerde der bereits `failed` stehende Vorgang nicht als aktives Duplikat durchgehen --
+    das bestaetigt, dass die Dedup-Abfrage selbst unveraendert und korrekt bleibt
+    (Ruling R10 aendert nur das Liegenlassen der Datei, nicht `find_by_hash_active`)."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    file_hash_value = "f" * 64
+    doc_id, src = _stale(repo, s, doc_type=DocType.PDF)
+    repo.update_document(doc_id, file_hash=file_hash_value)
+
+    time.sleep(1.1)  # klar nach started_at
+    (s.consume_dir / "scan.pdf").write_bytes(b"moeglicherweise schon abgelegtes Ergebnis")
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    assert not any(s.watch_dir.iterdir())  # nichts mehr da, worueber der Scan stolpern koennte
+    assert repo.find_by_hash_active(file_hash_value) is None
 
 
 def test_resolve_ambiguous_without_recent_consume_file_requeues(tmp_path):
