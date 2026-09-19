@@ -47,13 +47,13 @@
 
 - [ ] 4.1 Regressionsprobe: Die neuen Tests gegen die *unveränderte* Fassung laufen lassen und
       belegen, dass sie dort fehlschlagen — sonst beweisen sie nichts
-- [ ] 4.2 `feature-documentation/pipeline-lifecycle-retry.md` um die Auflösung beim Start
+- [x] 4.2 `feature-documentation/pipeline-lifecycle-retry.md` um die Auflösung beim Start
       ergänzen, inklusive der Entscheidungstabelle und des Grenzfalls — verifiziert durch
       Sichtprüfung gegen `design.md`
-- [ ] 4.3 `prd/PROGRESS.md` um die umgesetzte Lücke ergänzen und den Eintrag in der
+- [x] 4.3 `prd/PROGRESS.md` um die umgesetzte Lücke ergänzen und den Eintrag in der
       Lücken-Tabelle von `openspec/changes/baseline-specs-kernpipeline/proposal.md` als
       erledigt kennzeichnen
-- [ ] 4.4 Vollständiger Lauf: `uv run pytest` grün und `uv run ruff check` sauber
-- [ ] 4.5 `openspec sync` für diese Change ausführen, damit das neue Requirement in
+- [x] 4.4 Vollständiger Lauf: `uv run pytest` grün und `uv run ruff check` sauber
+- [x] 4.5 `openspec sync` für diese Change ausführen, damit das neue Requirement in
       `openspec/specs/verarbeitungs-lebenszyklus/spec.md` steht — verifiziert durch
       `openspec validate --specs`
