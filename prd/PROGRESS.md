@@ -154,6 +154,26 @@ Tests: 155 gruen. Neu abgedeckt sind das Zeilen-Aufleuchten (vier Faelle im
 Node-Harness, u. a. dass eine nur verschobene Zeile NICHT aufleuchtet) sowie
 Fortschrittsbalken und Zeilensignatur im Web-Test.
 
+## Zusatz-Feature: Recovery unterbrochener Verarbeitung (2026-09-20)
+
+Die erste der acht benannten Lücken in `baseline-specs-kernpipeline` ist geschlossen:
+**Nach einem Prozessabbruch bleibt kein Vorgang dauerhaft in `processing` zurück.**
+
+Der Dienst löst beim Start jeden Vorgang auf, der im Zustand `processing` hängen geblieben ist.
+Für die Auflösung werden zwei Tatsachen herangezogen, die bereits in der Datenbank stehen: wo
+das Original liegt (Eingang, verarbeitet oder nirgends) und ob ein Ablageort vermerkt ist.
+Dies führt zu einer Entscheidungstabelle (D1), die Abschluss, Neuversuch oder endgültiges
+Scheitern bestimmt — nicht der Ausgabeordner allein. Ein Grenzfall (D2), in dem nicht
+eindeutig bestimmbar ist, ob die Ablage bereits stattfand, wird als gescheitert aufgelöst:
+Die Fehlerkosten sind asymmetrisch (sichtbarer Fehler reversibel, Doppelablage erst in Paperless
+aufgefallen), darum wird im Zweifel die sichtbare Variante gewählt.
+
+Der Aufruf erfolgt in der Startsequenz (`lifespan`, `app/main.py:166`), vor dem Start des
+Workers und vor der Annahme neuer Arbeit. Alle Artefakte (Code, Tests, Design, Spec) sind
+in der Change `recovery-unterbrochener-verarbeitung` enthalten.
+
+179 Tests gruen.
+
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
 - UI ohne HTMX/Tailwind-Laufzeit: serverseitiges Jinja2 + offline-CSS + Vanilla-JS-SSE
