@@ -164,15 +164,19 @@ Für die Auflösung werden zwei Tatsachen herangezogen, die bereits in der Daten
 das Original liegt (Eingang, verarbeitet oder nirgends) und ob ein Ablageort vermerkt ist.
 Dies führt zu einer Entscheidungstabelle (D1), die Abschluss, Neuversuch oder endgültiges
 Scheitern bestimmt — nicht der Ausgabeordner allein. Ein Grenzfall (D2), in dem nicht
-eindeutig bestimmbar ist, ob die Ablage bereits stattfand, wird als gescheitert aufgelöst:
-Die Fehlerkosten sind asymmetrisch (sichtbarer Fehler reversibel, Doppelablage erst in Paperless
-aufgefallen), darum wird im Zweifel die sichtbare Variante gewählt.
+eindeutig bestimmbar ist, ob die Ablage bereits stattfand, hat zwei Ausgänge: Findet die
+Stichprobe im Ausgabeordner eine namentlich passende, nach Vorgangsbeginn veränderte Datei,
+wird der Vorgang als gescheitert aufgelöst und das Original in den Fehlerordner verschoben
+(sonst würde der Watcher es erneut aufnehmen und eine Doppelablage erzeugen); ohne Treffer
+wird der Vorgang neu eingereiht. Die Fehlerkosten sind asymmetrisch (sichtbarer Fehler
+reversibel, Doppelablage erst in Paperless aufgefallen), darum wird im Treffer-Fall die
+sichtbare Variante gewählt.
 
 Der Aufruf erfolgt in der Startsequenz (`lifespan`, `app/main.py:166`), vor dem Start des
 Workers und vor der Annahme neuer Arbeit. Alle Artefakte (Code, Tests, Design, Spec) sind
 in der Change `recovery-unterbrochener-verarbeitung` enthalten.
 
-179 Tests gruen.
+181 Tests gruen.
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 

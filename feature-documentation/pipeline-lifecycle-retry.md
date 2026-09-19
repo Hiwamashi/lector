@@ -50,7 +50,7 @@ entfernt jede eingelesene Datei. Ein Fehlen beweist also nicht, dass die Ablage 
 | `processed_dir` | egal | **Abgeschlossen:** Ablage lag vor dem Verschieben, ist also passiert |
 | `watch_dir` | ja | **Abgeschlossen:** Ablage war erfolgt, Original jetzt nachziehen |
 | `watch_dir` | nein | siehe Grenzfall D2 |
-| nirgends auffindbar | egal | **Gescheitert:** Erklärende Meldung, Fehlerordner |
+| nirgends auffindbar | egal | **Gescheitert:** Erklärende Meldung, kein Verschieben (nichts vorhanden) |
 
 Abgeschlossene Vorgänge durchlaufen die gleiche Finalisierung (`_finish`, `app/recovery.py:213`)
 wie im Normalablauf: Original nachziehen (falls noch im `watch_dir`), dokumenttypgerechten
@@ -64,8 +64,17 @@ Ergebnisdatei und dem Datenbank-Vermerk (Neuversuch wäre eine Doppelablage).
 
 Die Auflösung führt eine Stichprobe im Ausgabeordner durch: Liegt dort eine Datei mit dem
 **erwarteten Namen**, die **nach dem Beginn dieses Vorgangs** (`document.started_at`) verändert
-wurde? Wenn ja, wird der Vorgang als unklar markiert und **als gescheitert** aufgelöst
-(`DocStatus.FAILED`). Andernfalls wird er neu eingereiht (`DocStatus.PENDING`).
+wurde?
+
+**Treffer im Ausgabeordner gefunden:** Der Vorgang wird **als gescheitert** aufgelöst
+(`DocStatus.FAILED`) **und das Original wird in den Fehlerordner verschoben**
+(`move_into(settings.error_dir)`, siehe Ruling R10 `app/recovery.py:151–171`). Das Original
+bleibt **nicht** im Eingangsordner liegen, sonst würde der Watcher beim nächsten Scan ein
+zweites, neues Dokument erkennen (da `find_by_hash_active` diesen Vorgang nun mit `status=failed`
+ausschließt) — genau die Doppelablage, die dieser Grenzfall verhindern soll.
+
+**Kein Treffer:** Der Vorgang wird neu eingereiht (`DocStatus.PENDING`), das Original bleibt
+im Eingangsordner. Der nächste Verarbeitungslauf versucht es erneut.
 
 **Warum im Zweifel gescheitert statt Neuversuch?** Die Fehlerkosten sind asymmetrisch:
 - Ein zu Unrecht als gescheitert markierter Vorgang ist **sichtbar und reversibel:** ein Blick
