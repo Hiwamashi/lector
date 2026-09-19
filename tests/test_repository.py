@@ -73,3 +73,16 @@ def test_dedup_by_hash(tmp_path):
     repo.create_document(original_filename="a.pdf", source_path="/scan-in/a.pdf", file_hash="h1")
     assert repo.find_by_hash_active("h1") is not None
     assert repo.find_by_hash_active("nope") is None
+
+
+def test_list_processing_returns_only_processing(tmp_path):
+    repo = make_repo(tmp_path)
+    pending_id = repo.create_document(original_filename="a.pdf", source_path="/scan-in/a.pdf")
+    processing_id = repo.create_document(original_filename="b.pdf", source_path="/scan-in/b.pdf")
+    done_id = repo.create_document(original_filename="c.pdf", source_path="/scan-in/c.pdf")
+    repo.set_status(processing_id, DocStatus.PROCESSING)
+    repo.set_status(done_id, DocStatus.DONE)
+    result = repo.list_processing()
+    assert [d.id for d in result] == [processing_id]
+    assert pending_id not in [d.id for d in result]
+    assert done_id not in [d.id for d in result]
