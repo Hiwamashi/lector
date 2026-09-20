@@ -1,9 +1,9 @@
 import os
 import time
-from datetime import UTC
 
 from app import recovery
 from app.config import Settings
+from app.fileops import copy_into
 from app.fileops import file_hash as compute_file_hash
 from app.models import DocStatus, DocType, Document, EventType
 from app.recovery import (
@@ -186,6 +186,53 @@ def test_resolve_not_found_row_fails_with_explanatory_message(tmp_path):
     assert doc.error_message and "auffindbar" in doc.error_message
 
 
+# ---- Befund 2 (Abschluss-Review), Ruling R13: output_path vor der Ortsbestimmung -----
+
+
+def test_resolve_output_path_set_finishes_even_when_original_not_found(tmp_path):
+    """Befund 2: Ein vermerkter Ablageort ist der staerkere Beleg als der Ort des
+    Originals -- z.B. weil der Retention-Job das Original bereits aus `processed`
+    geloescht hat (zugesicherter Migrationsfall fuer Altbestand, siehe design.md). Ohne
+    Ruling R13 wuerde `locate_original` hier NOT_FOUND liefern und der Vorgang
+    faelschlich auf `failed` laufen, obwohl die Ablage laengst erfolgt war."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _src = _stale(
+        repo,
+        s,
+        in_watch_dir=False,
+        doc_type=DocType.PDF,
+        output_path=str(s.consume_dir / "scan.pdf"),
+    )
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.DONE
+    assert doc.error_message is None
+
+
+def test_resolve_output_path_set_finishes_erechnung_even_when_original_not_found(tmp_path):
+    """Wie oben, aber fuer den E-Rechnungs-Weg -- Endzustand `skipped_erechnung`, nicht
+    `done` (Ruling R13 gilt fuer beide Wege gleich)."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _src = _stale(
+        repo,
+        s,
+        filename="rechnung.xml",
+        in_watch_dir=False,
+        doc_type=DocType.ERECHNUNG_XML,
+        output_path=str(s.consume_dir / "rechnung.xml"),
+    )
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    assert repo.get_document(doc_id).status == DocStatus.SKIPPED_ERECHNUNG
+
+
 # ---- Grenzfall D2 (Aufgabe 2.2) -------------------------------------------------------
 
 
@@ -258,6 +305,47 @@ def test_resolve_ambiguous_erechnung_requeues_when_consume_file_is_older(tmp_pat
 
     assert resolved == 1
     assert repo.get_document(doc_id).status == DocStatus.PENDING
+
+
+# ---- Befund 1 (Abschluss-Review), Ruling R12: st_ctime statt st_mtime ----------------
+
+
+def test_resolve_ambiguous_erechnung_via_real_copy_into_is_detected_as_recent(tmp_path):
+    """Befund 1: `_handle_erechnung` legt per `copy_into` ab (`shutil.copy2`, siehe
+    `app/fileops.py`) -- `copy2` ueberträgt die mtime der QUELLE auf die Kopie. Die Ablage
+    im Ausgabeordner traegt deshalb die (fruehere) mtime des Originals aus dem Eingang,
+    nicht den tatsaechlichen Ablagezeitpunkt. Ein reiner `st_mtime`-Vergleich gegen
+    `started_at` schlaegt fuer E-Rechnungen deshalb STRUKTURELL immer fehl -- die
+    Schutzstichprobe griffe nie, siehe Bericht.
+
+    Dieser Test stellt die Ablage ueber den echten `copy_into`-Weg her (wie
+    `_handle_erechnung` es tut), nicht per `write_bytes` wie in
+    `test_resolve_ambiguous_erechnung_uses_original_name_not_pdf_and_fails_when_recent` --
+    jener Test umgeht mit `write_bytes` genau die Stelle, an der es bricht, und bleibt
+    deshalb gruen, obwohl der Fehler vorliegt.
+
+    Ruling R12: `st_ctime` spiegelt das Ablegen selbst (hier: den `copy2`-Aufruf) und liegt
+    zuverlaessig nach `started_at`, unabhaengig von der mtime der Quelle -- der Vergleich
+    nimmt deshalb das juengere von `st_mtime` und `st_ctime`.
+    """
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(repo, s, filename="rechnung.xml", doc_type=DocType.ERECHNUNG_XML)
+
+    # Quelle traegt eine mtime deutlich VOR started_at -- simuliert eine Datei, die schon
+    # eine Weile im Eingang lag (Stabilitaetsfenster), bevor sie aufgenommen wurde.
+    old = time.time() - 3600
+    os.utime(src, (old, old))
+
+    time.sleep(1.1)  # Ablage (per copy_into) findet klar NACH started_at statt
+    copy_into(src, s.consume_dir)  # echter Weg wie _handle_erechnung, nicht write_bytes
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.error_message and "Paperless" in doc.error_message
 
 
 # ---- Ruling R10 (Fix-Runde 2): Original beim Treffer im Ausgabeordner in den ----------
@@ -335,6 +423,49 @@ def test_resolve_ambiguous_without_recent_consume_file_requeues(tmp_path):
     assert repo.get_document(doc_id).status == DocStatus.PENDING
 
 
+# ---- Befund 3 (Abschluss-Review), Ruling R14: Requeue mit Zaehler und Backoff --------
+
+
+def test_resolve_ambiguous_requeue_increments_attempt_and_schedules_retry(tmp_path):
+    """Befund 3: Ohne Ruling R14 setzte die erneute Einreihung nur `status=pending`, ohne
+    `attempt_count` hochzusetzen oder `next_retry_at` zu setzen -- `RETRY_MAX` griff nie,
+    und der Vorgang waere beim naechsten Start sofort wieder dran (kein Backoff). Dieser
+    Test belegt, dass beides jetzt geschieht, solange `retry_max` noch nicht erreicht
+    ist."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _src = _stale(repo, s, doc_type=DocType.PDF)  # -> Grenzfall D2, kein Konsum-Treffer
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.PENDING
+    assert doc.attempt_count == 1
+    assert doc.next_retry_at is not None
+
+
+def test_resolve_ambiguous_requeue_fails_permanently_at_retry_max(tmp_path):
+    """Gegentest: Ist `retry_max` mit diesem Versuch erreicht, endet der Vorgang
+    endgueltig auf `failed` -- wie bei `_handle_failure` (`app/pipeline.py`) -- und das
+    Original wandert in den Fehlerordner, statt im Eingang liegen zu bleiben (sonst
+    naehme der Watcher es beim naechsten Scan wieder als neues Dokument auf)."""
+    s = _settings(tmp_path, RETRY_MAX=2)
+    repo = Repository(s.db_path)
+    doc_id, src = _stale(repo, s, doc_type=DocType.PDF)
+    repo.update_document(doc_id, attempt_count=1)  # ein Versuch bereits verbraucht
+
+    resolved = resolve_stale_processing(repo, s)
+
+    assert resolved == 1
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.attempt_count == 2
+    assert doc.error_message and "Versuche" in doc.error_message
+    assert not src.exists()
+    assert (s.error_dir / "scan.pdf").exists()
+
+
 def test_resolve_ambiguous_without_doc_type_requeues_without_consume_probe(tmp_path):
     """Ruling R3: Ohne erkannten `doc_type` starb der Vorgang vor der Erkennung -- die
     Stichprobe im Ausgabeordner entfaellt, selbst wenn dort zufaellig eine juengere,
@@ -354,12 +485,21 @@ def test_resolve_ambiguous_without_doc_type_requeues_without_consume_probe(tmp_p
 
 def test_resolve_ambiguous_time_comparison_is_utc_not_local(tmp_path):
     """Ruling R2, Regressionsschutz: Der Vergleich muss `started_at` explizit als UTC in
-    Epoch umrechnen. Die Ausgabedatei liegt hier 30 Minuten VOR dem echten (UTC-)
+    Epoch umrechnen. Die Ausgabedatei entsteht hier klar VOR dem echten (UTC-)
     Prozessbeginn -- korrekt aufgeloest also `pending`. Eine Zeitzone oestlich von UTC
     (Europe/Berlin, im September UTC+2) faellt bei einer naiven Lokalzeit-Interpretation
-    von `started_at` (z.B. via `time.mktime`) rechnerisch VOR die Datei zurueck; der
-    Vergleich wuerde dann faelschlich `> started_at` ergeben und diesen Test mit `failed`
-    statt `pending` zum Scheitern bringen.
+    von `started_at` (z.B. via `time.mktime`) rechnerisch um zwei Stunden VOR die Datei
+    zurueck; der Vergleich wuerde dann faelschlich `> started_at` ergeben und diesen Test
+    mit `failed` statt `pending` zum Scheitern bringen.
+
+    Ruling R12 aendert den Aufbau dieses Tests: Anders als `st_mtime` laesst sich
+    `st_ctime` nicht per `os.utime` zurueckdatieren -- jede Metadatenaenderung an einer
+    Datei (auch `os.utime` selbst) hebt `ctime` auf "jetzt" an. Die Ausgabedatei muss
+    deshalb tatsaechlich VOR dem Start des Vorgangs angelegt werden, nicht nachher mit
+    zurueckdatierter mtime -- wie bei den anderen "Altbestand"-Tests oben (z.B.
+    `test_resolve_ambiguous_without_recent_consume_file_requeues`). Die Zwei-Stunden-
+    Groessenordnung des Zeitzonenfehlers bleibt dabei bequem messbar, auch wenn der reale
+    Abstand hier nur eine gute Sekunde betraegt.
     """
     original_tz = os.environ.get("TZ")
     os.environ["TZ"] = "Europe/Berlin"
@@ -367,16 +507,16 @@ def test_resolve_ambiguous_time_comparison_is_utc_not_local(tmp_path):
     try:
         s = _settings(tmp_path)
         repo = Repository(s.db_path)
-        doc_id, _src = _stale(repo, s, doc_type=DocType.PDF)
-
-        doc = repo.get_document(doc_id)
-        assert doc.started_at is not None
-        correct_started_epoch = doc.started_at.replace(tzinfo=UTC).timestamp()
+        src = s.watch_dir / "scan.pdf"
+        src.write_bytes(b"original")
 
         consume_file = s.consume_dir / "scan.pdf"
         consume_file.write_bytes(b"vor Prozessbeginn abgelegter, unbeteiligter Bestand")
-        mtime = correct_started_epoch - 1800  # 30 Minuten vor Prozessbeginn, echte UTC-Zeit
-        os.utime(consume_file, (mtime, mtime))
+        time.sleep(1.1)  # started_at liegt danach -- echte UTC-Zeit, keine Lokalzeit
+
+        doc_id = repo.create_document(original_filename="scan.pdf", source_path=str(src))
+        repo.set_status(doc_id, DocStatus.PROCESSING)
+        repo.update_document(doc_id, doc_type=DocType.PDF)
 
         resolved = resolve_stale_processing(repo, s)
 
@@ -437,7 +577,12 @@ def test_resolve_writes_event_naming_interruption_and_resolution(tmp_path):
 
 def test_resolve_isolates_failure_of_a_single_document(tmp_path, monkeypatch):
     """Drei Vorgaenge, der mittlere loest beim Auflösen eine Ausnahme aus -- die beiden
-    anderen werden dennoch aufgeloest, und der Rueckgabewert zaehlt nur diese beiden."""
+    anderen werden dennoch aufgeloest, und der Rueckgabewert zaehlt nur diese beiden.
+
+    Fault-Injection sitzt an `_finish`, nicht mehr an `locate_original`: Seit Ruling R13
+    (Befund 2, Abschluss-Review) wird bei gesetztem `output_path` -- wie bei allen drei
+    Vorgaengen hier -- direkt `_finish` aufgerufen; `locate_original` kommt in diesem Fall
+    gar nicht mehr zum Zug und waere als Injektionspunkt wirkungslos."""
     s = _settings(tmp_path)
     repo = Repository(s.db_path)
 
@@ -453,14 +598,14 @@ def test_resolve_isolates_failure_of_a_single_document(tmp_path, monkeypatch):
         doc_ids.append(doc_id)
 
     broken_id = doc_ids[1]
-    real_locate_original = recovery.locate_original
+    real_finish = recovery._finish
 
-    def flaky_locate_original(document, settings):
+    def flaky_finish(document, repo_, settings_):
         if document.id == broken_id:
             raise RuntimeError("kaputt")
-        return real_locate_original(document, settings)
+        return real_finish(document, repo_, settings_)
 
-    monkeypatch.setattr(recovery, "locate_original", flaky_locate_original)
+    monkeypatch.setattr(recovery, "_finish", flaky_finish)
 
     resolved = resolve_stale_processing(repo, s)
 

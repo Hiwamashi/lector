@@ -115,10 +115,22 @@ def resolve_stale_processing(repo: Repository, settings: Settings) -> int:
 
 
 def _resolve_one(doc: Document, repo: Repository, settings: Settings) -> None:
-    """Wendet die Entscheidungstabelle D1 auf einen einzelnen Vorgang an."""
+    """Wendet die Entscheidungstabelle D1 auf einen einzelnen Vorgang an.
+
+    Ruling R13 (Befund 2, Abschluss-Review): `doc.output_path` wird **vor** der
+    Ortsbestimmung geprüft, nicht danach. Ein vermerkter Ablageort belegt bereits, dass
+    das Ergebnis in `consume` lag — unabhängig davon, wo (oder ob überhaupt noch) das
+    Original zu finden ist. `_finish` verschiebt das Original ohnehin nur, wenn es noch
+    existiert; fehlt es (etwa weil der Retention-Job es längst aus `processed` gelöscht
+    hat — der im Design zugesicherte Migrationsfall für Altbestand), bleibt das
+    folgenlos. Erst wenn kein Ablageort vermerkt ist, entscheidet `locate_original` nach
+    der bisherigen Fallunterscheidung.
+    """
+    if doc.output_path:
+        _finish(doc, repo, settings)
+        return
     location = locate_original(doc, settings)
     if location == OriginalLocation.PROCESSED_DIR:
-        # Ort egal für output_path — die Ablage lag bereits davor, sie ist passiert.
         _finish(doc, repo, settings)
         return
     if location == OriginalLocation.NOT_FOUND:
@@ -130,10 +142,7 @@ def _resolve_one(doc: Document, repo: Repository, settings: Settings) -> None:
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
         repo.add_event(doc.id, EventType.FAILED, message)
         return
-    # OriginalLocation.WATCH_DIR
-    if doc.output_path:
-        _finish(doc, repo, settings)
-        return
+    # OriginalLocation.WATCH_DIR, kein output_path -> Grenzfall D2
     _resolve_ambiguous(doc, repo, settings)
 
 
@@ -153,6 +162,15 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
     gesetzt wird — sonst bliebe es im Eingang liegen und der Watcher würde daraus beim
     nächsten Scan ein zweites, neues Dokument machen (siehe `_find_recent_in_consume`
     für die Kette).
+
+    Ruling R14 (Befund 3, Abschluss-Review): Die erneute Einreihung (kein Treffer in der
+    Stichprobe) folgt derselben Politik wie `_handle_failure` (`app/pipeline.py`) —
+    `increment_attempt`, dann bei `attempt < settings.retry_max` erneutes Einreihen mit
+    Backoff (`schedule_retry`), sonst endgültiges Scheitern samt Original im
+    Fehlerordner. Ohne das griffe `RETRY_MAX` nie und ein Dokument, das den Prozess
+    reproduzierbar zum Absturz bringt (z.B. ein sehr großer Scan, der den Speicher
+    sprengt — dabei fliegt keine Exception, `_handle_failure` läuft nie), ergäbe eine
+    Endlosschleife aus Neustart und erneut bezahlter Texterkennung.
     """
     candidate = _find_recent_in_consume(doc, settings) if doc.doc_type is not None else None
     if candidate is not None:
@@ -175,13 +193,32 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
         repo.add_event(doc.id, EventType.FAILED, message)
         return
-    repo.set_status(doc.id, DocStatus.PENDING)
-    repo.add_event(
-        doc.id,
-        EventType.RETRY_SCHEDULED,
-        "Verarbeitung wurde durch einen Neustart unterbrochen, bevor eine Ablage "
-        "erkennbar war — Vorgang wird erneut eingereiht.",
+    # Ruling R14: Struktur wie `_handle_failure` (`app/pipeline.py`) — Zähler hochsetzen,
+    # dann je nach `retry_max` erneut einreihen (mit Backoff) oder endgültig scheitern.
+    repo.increment_attempt(doc.id)
+    refreshed = repo.get_document(doc.id)
+    attempt = refreshed.attempt_count if refreshed else doc.attempt_count + 1
+    if attempt < settings.retry_max:
+        retry_at = repo.schedule_retry(doc.id, settings.retry_delay_minutes)
+        repo.add_event(
+            doc.id,
+            EventType.RETRY_SCHEDULED,
+            "Verarbeitung wurde durch einen Neustart unterbrochen, bevor eine Ablage "
+            f"erkennbar war — Vorgang wird erneut eingereiht (Versuch "
+            f"{attempt}/{settings.retry_max}, erneut um {retry_at:%Y-%m-%d %H:%M} UTC).",
+        )
+        return
+    message = (
+        "Verarbeitung wurde wiederholt durch einen Neustart unterbrochen, bevor eine "
+        f"Ablage erkennbar war, und hat damit die maximale Anzahl Versuche "
+        f"({settings.retry_max}) erreicht — vermutlich bringt dieses Dokument den "
+        "Prozess reproduzierbar zum Absturz."
     )
+    source = Path(doc.source_path)
+    if source.exists():
+        move_into(source, settings.error_dir)
+    repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
+    repo.add_event(doc.id, EventType.FAILED, message)
 
 
 def _find_recent_in_consume(doc: Document, settings: Settings) -> Path | None:
@@ -205,6 +242,19 @@ def _find_recent_in_consume(doc: Document, settings: Settings) -> Path | None:
     `datetime('now')`, siehe `app/repository.py`). `Path.stat().st_mtime` ist ein
     Epoch-Wert. Um beide vergleichbar zu machen, wird `started_at` hier **explizit** als
     UTC in Epoch umgerechnet — nie über eine implizite (System-)Zeitzone.
+
+    Ruling R12 (Befund 1, Abschluss-Review): Verglichen wird das **spätere** von
+    `st_mtime` und `st_ctime`, nicht `st_mtime` allein. Der E-Rechnungs-Weg
+    (`_handle_erechnung`, `app/pipeline.py`) legt per `copy_into` ab, das intern
+    `shutil.copy2` nutzt — und `copy2` überträgt die mtime der **Quelle** auf die Kopie.
+    Die Ablage im Ausgabeordner trägt für E-Rechnungen also die (typischerweise frühere)
+    mtime des Originals aus dem Eingang, nicht den tatsächlichen Ablagezeitpunkt; ein
+    reiner `st_mtime`-Vergleich gegen `started_at` schlüge deshalb strukturell **immer**
+    fehl. `st_ctime` spiegelt dagegen das Ablegen selbst wider (Erzeugen, Verschieben,
+    und das `chown` aus `set_ownership`) und liegt zuverlässig nach `started_at` — auf
+    beiden Wegen (OCR wie E-Rechnung). `copy_into`/`_handle_erechnung` selbst bleiben
+    unverändert: Das unveränderte Durchreichen der E-Rechnung ist eine zugesicherte
+    Eigenschaft.
     """
     if doc.started_at is None or not settings.consume_dir.exists():
         return None
@@ -217,11 +267,10 @@ def _find_recent_in_consume(doc: Document, settings: Settings) -> Path | None:
     suffix = Path(expected_name).suffix
     pattern = re.compile(rf"^{re.escape(stem)}(_\d+)?{re.escape(suffix)}$")
     for entry in settings.consume_dir.iterdir():
-        if (
-            entry.is_file()
-            and pattern.match(entry.name)
-            and entry.stat().st_mtime > started_epoch
-        ):
+        if not (entry.is_file() and pattern.match(entry.name)):
+            continue
+        st = entry.stat()
+        if max(st.st_mtime, st.st_ctime) > started_epoch:
             return entry
     return None
 

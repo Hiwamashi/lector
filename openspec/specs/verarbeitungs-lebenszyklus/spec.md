@@ -179,7 +179,9 @@ Konfigurationsdatei geben, die das Laufzeitverhalten bestimmt.
 Der Dienst MUSS beim Start jeden Vorgang im Zustand `processing` auflösen, bevor er neue
 Arbeit annimmt. Ein solcher Vorgang gehört zu keinem laufenden Prozess mehr, weil die
 Verarbeitung streng seriell in genau einem Prozess stattfindet. Nach dem Start DARF kein
-Vorgang mehr im Zustand `processing` stehen, der nicht gerade bearbeitet wird.
+Vorgang mehr im Zustand `processing` stehen, der nicht gerade bearbeitet wird. Ausgenommen
+ist der Vorgang, dessen eigene Auflösung selbst fehlschlägt: Er DARF bewusst auf
+`processing` stehen bleiben, damit der nächste Start ihn erneut versucht.
 
 Die Auflösung MUSS sich nach dem erreichten Fortschritt richten und in einem der bestehenden
 Zustände enden. Ein neuer Zustand wird nicht eingeführt.
@@ -222,6 +224,13 @@ Zustände enden. Ein neuer Zustand wird nicht eingeführt.
 
 - **WHEN** der Dienst ein zweites Mal startet, nachdem die Auflösung bereits gelaufen ist
 - **THEN** verändert die Auflösung nichts
+
+#### Scenario: Auflösung eines einzelnen Vorgangs schlägt fehl
+
+- **WHEN** der Dienst startet und die Auflösung für einen von mehreren unterbrochenen
+  Vorgängen selbst mit einem Fehler abbricht
+- **THEN** bleibt dieser Vorgang auf `processing` stehen, der Fehler wird protokolliert, die
+  übrigen unterbrochenen Vorgänge werden dennoch aufgelöst, und der Start gelingt
 
 ### Requirement: Eine Wiederaufnahme erzeugt keine zweite Ablage
 
