@@ -1,7 +1,11 @@
 import importlib
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
+
+import app.config
+import app.main
 
 
 @pytest.fixture
@@ -658,3 +662,138 @@ def test_pages_carry_live_status_hint(client):
     assert 'id="live-status"' in resp.text
     assert "hidden" in resp.text
     assert "veraltet" in resp.text
+
+
+# ---- Aufgabe 3: Einbindung der Recovery in den Start ----------------------------------
+#
+# Das `client`-Fixture betritt den Lifespan bereits beim Erzeugen des `TestClient`
+# (`with TestClient(app.main.app) as c`). Ein Vorgang auf `processing` muss deshalb VOR
+# diesem Zeitpunkt in der Datenbank liegen — über ein eigenes `Repository` auf demselben
+# `DB_PATH`, nicht über `application.state.repo`, den es zu diesem Zeitpunkt noch nicht
+# gibt. Die folgenden Tests bauen den Lifespan deshalb selbst auf, statt das Fixture zu
+# verwenden.
+
+
+def _set_env_dirs(monkeypatch, tmp_path):
+    monkeypatch.setenv("WATCH_DIR", str(tmp_path / "scan-in"))
+    monkeypatch.setenv("CONSUME_DIR", str(tmp_path / "consume"))
+    monkeypatch.setenv("PROCESSED_DIR", str(tmp_path / "processed"))
+    monkeypatch.setenv("ERROR_DIR", str(tmp_path / "error"))
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "lector.db"))
+
+
+def _reload_app_main():
+    app.config.get_settings.cache_clear()
+    importlib.reload(app.main)
+    return app.main
+
+
+def test_stale_processing_document_is_resolved_on_startup(tmp_path, monkeypatch):
+    """3.1: Ein beim Absturz auf `processing` hängengebliebener Vorgang darf nach dem
+    Start nicht mehr in diesem Zustand stehen."""
+    _set_env_dirs(monkeypatch, tmp_path)
+
+    from app.config import Settings
+    from app.models import DocStatus
+    from app.repository import Repository
+
+    settings = Settings()
+    settings.ensure_dirs()
+    repo = Repository(settings.db_path)
+    doc_id = repo.create_document(
+        original_filename="haengt.pdf", source_path=str(settings.watch_dir / "haengt.pdf")
+    )
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+    repo.close()
+
+    main = _reload_app_main()
+    with TestClient(main.app):
+        doc = main.app.state.repo.get_document(doc_id)
+        assert doc is not None
+        assert doc.status != DocStatus.PROCESSING
+
+
+def test_resolved_count_is_logged_only_when_positive(tmp_path, monkeypatch, caplog):
+    """3.2: Die Startzeile nennt die Anzahl aufgelöster Vorgänge — aber nur, wenn es
+    überhaupt welche gab (analog zu `reset_stale_exports`)."""
+    _set_env_dirs(monkeypatch, tmp_path)
+
+    from app.config import Settings
+    from app.models import DocStatus
+    from app.repository import Repository
+
+    settings = Settings()
+    settings.ensure_dirs()
+    repo = Repository(settings.db_path)
+    doc_id = repo.create_document(
+        original_filename="haengt.pdf", source_path=str(settings.watch_dir / "haengt.pdf")
+    )
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+    repo.close()
+
+    main = _reload_app_main()
+    with caplog.at_level(logging.WARNING, logger="lector.main"):
+        with TestClient(main.app):
+            pass
+    assert "1 unterbrochene Vorgänge nach Neustart aufgelöst" in caplog.text
+
+    # Zweiter Start: Der Vorgang von eben wurde bereits aufgelöst und steht nicht mehr
+    # auf `processing` — jetzt darf die Zeile nicht mehr erscheinen.
+    caplog.clear()
+    main = _reload_app_main()
+    with caplog.at_level(logging.WARNING, logger="lector.main"):
+        with TestClient(main.app):
+            pass
+    assert "unterbrochene Vorgänge nach Neustart aufgelöst" not in caplog.text
+
+
+def test_recovery_runs_before_worker_starts_processing_new_files(tmp_path, monkeypatch):
+    """3.3: Kein neu aufgenommenes Dokument darf einem unaufgelösten Vorgang zuvorkommen.
+
+    Stellt gleichzeitig einen unterbrochenen Vorgang und eine neue Eingangsdatei bereit
+    und beobachtet per Monkeypatch die tatsächliche Aufrufreihenfolge im Lifespan — eine
+    strukturelle Garantie, keine Nebenläufigkeitsprobe. Stünde `resolve_stale_processing`
+    im Produktionscode NACH `await worker.start()`, würde `order` mit `"worker_start"`
+    beginnen und die letzte Zusicherung dieses Tests schlüge fehl.
+    """
+    _set_env_dirs(monkeypatch, tmp_path)
+
+    from app.config import Settings
+    from app.models import DocStatus
+    from app.repository import Repository
+
+    settings = Settings()
+    settings.ensure_dirs()
+
+    # Unterbrochener Vorgang, bereits vor dem Start in der DB.
+    repo = Repository(settings.db_path)
+    doc_id = repo.create_document(
+        original_filename="haengt.pdf", source_path=str(settings.watch_dir / "haengt.pdf")
+    )
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+    repo.close()
+
+    # Neue Eingangsdatei, die der Worker beim Start vorfindet.
+    (settings.watch_dir / "neu.pdf").write_bytes(b"neu")
+
+    main = _reload_app_main()
+
+    order: list[str] = []
+    original_resolve = main.resolve_stale_processing
+    original_start = main.Worker.start
+
+    def spy_resolve(repo_arg, settings_arg):
+        order.append("resolve")
+        return original_resolve(repo_arg, settings_arg)
+
+    async def spy_start(self):
+        order.append("worker_start")
+        return await original_start(self)
+
+    monkeypatch.setattr(main, "resolve_stale_processing", spy_resolve)
+    monkeypatch.setattr(main.Worker, "start", spy_start)
+
+    with TestClient(main.app):
+        pass
+
+    assert order == ["resolve", "worker_start"]

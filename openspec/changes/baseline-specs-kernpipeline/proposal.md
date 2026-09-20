@@ -84,13 +84,13 @@ Diese Abweichungen sind belegt und beim Schreiben der Specs bewusst **nicht**
 in die Requirements aufgenommen worden — die Basis beschreibt das Ist. Jede
 wird eine eigene Change, die das betroffene Requirement modifiziert:
 
-| Lücke | Betroffene Capability | Fundstelle |
-|---|---|---|
-| Nach Prozessneustart bleibt ein Dokument in `processing` dauerhaft liegen — kein Retry, kein `failed` | `verarbeitungs-lebenszyklus` | `app/pipeline.py:101` vs. `app/repository.py:289` |
-| Keine Obergrenze für Seiten pro Dokument und kein Kostenbudget vor dem OCR-Aufruf | `ocr-veredelung` | `app/pipeline.py:42` |
-| Teilergebnisse bereits verarbeiteter Chunks werden bei einem Fehler verworfen; der Retry bezahlt sie erneut | `ocr-veredelung` | `app/ocr/documentai.py:116` |
-| Fehler werden nicht nach transient/permanent unterschieden; ein dauerhaft defektes Dokument verbraucht alle Versuche | `verarbeitungs-lebenszyklus` | `app/pipeline.py:71-90,116` |
-| Fehlende bzw. falsche Pflicht-ENV wird nicht beim Start abgewiesen, sondern erst beim ersten Dokument | `verarbeitungs-lebenszyklus` | `app/config.py:12-116` |
-| `/healthz` meldet unbedingt `ok`; kein `HEALTHCHECK` in Dockerfile oder Compose | `verarbeitungs-historie` | `app/main.py:231` |
-| Eingebettete E-Rechnungen mit Dateinamen außerhalb der festen Liste werden nicht erkannt | `format-routing` | `app/detection.py:28-33` |
-| Confidence-Werte werden von der Engine geliefert, aber nach dem PDF-Bau verworfen | `ocr-veredelung` | `app/ocr/documentai.py:71`, `app/models.py:173` |
+| Lücke | Betroffene Capability | Fundstelle | Status |
+|---|---|---|---|
+| Nach Prozessneustart bleibt ein Dokument in `processing` dauerhaft liegen — kein Retry, kein `failed` | `verarbeitungs-lebenszyklus` | `app/pipeline.py:101` vs. `app/repository.py:289` | ✅ geschlossen durch `recovery-unterbrochener-verarbeitung` |
+| Keine Obergrenze für Seiten pro Dokument und kein Kostenbudget vor dem OCR-Aufruf | `ocr-veredelung` | `app/pipeline.py:42` | offen |
+| Teilergebnisse bereits verarbeiteter Chunks werden bei einem Fehler verworfen; der Retry bezahlt sie erneut | `ocr-veredelung` | `app/ocr/documentai.py:116` | offen |
+| Fehler werden nicht nach transient/permanent unterschieden; ein dauerhaft defektes Dokument verbraucht alle Versuche | `verarbeitungs-lebenszyklus` | `app/pipeline.py:71-90,116` | offen |
+| Fehlende bzw. falsche Pflicht-ENV wird nicht beim Start abgewiesen, sondern erst beim ersten Dokument | `verarbeitungs-lebenszyklus` | `app/config.py:12-116` | offen |
+| `/healthz` meldet unbedingt `ok`; kein `HEALTHCHECK` in Dockerfile oder Compose | `verarbeitungs-historie` | `app/main.py:231` | offen |
+| Eingebettete E-Rechnungen mit Dateinamen außerhalb der festen Liste werden nicht erkannt | `format-routing` | `app/detection.py:28-33` | offen |
+| Confidence-Werte werden von der Engine geliefert, aber nach dem PDF-Bau verworfen | `ocr-veredelung` | `app/ocr/documentai.py:71`, `app/models.py:173` | offen |

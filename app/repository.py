@@ -298,6 +298,20 @@ class Repository:
             ).fetchall()
         return [_row_to_document(r) for r in rows]
 
+    def list_processing(self) -> list[Document]:
+        """Liefert alle Vorgänge im Zustand `processing`, nach `id` geordnet.
+
+        Grundlage für die Recovery beim Start: Da die Verarbeitung streng seriell in
+        genau einem Prozess läuft, gehört ein Vorgang auf `processing` beim Neustart
+        garantiert zu keinem lebenden Bearbeiter mehr.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_DOC_COLUMNS} FROM documents WHERE status = ? ORDER BY id ASC",
+                (DocStatus.PROCESSING.value,),
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
     # ---- events ----------------------------------------------------------
 
     def add_event(

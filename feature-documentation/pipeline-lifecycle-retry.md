@@ -25,6 +25,91 @@ Events entlang des Wegs: `preprocessing`, `ocr_chunk`, `built_pdf`, `moved_to_co
 - Mit Defaults `RETRY_MAX=3` ⇒ Versuche 1+2 planen Retry, Versuch 3 schlägt endgültig fehl.
 - **Kein** manueller Retry-Button (PRD §3.1).
 
+## Auflösung beim Start (`resolve_stale_processing`, `app/recovery.py`)
+
+**Problemstellung:** Ein Prozessabbruch mitten in der Verarbeitung hinterlässt Vorgänge mit
+`status=processing`. Die Verarbeitung läuft streng seriell in genau einem Prozess — ein solcher
+Vorgang gehört beim Neustart zu keinem lebenden Bearbeiter mehr. Wenn der Dienst neugestartet
+wird, muss jeder dieser Vorgänge aufgelöst werden, bevor neue Arbeit angenommen wird
+(siehe `lifespan`, `app/main.py`).
+
+**Auflösungsprinzip:** Die Entscheidung richtet sich nach zwei Tatsachen, die bereits in der
+Datenbank stehen:
+- **Wo das Original liegt:** im Eingangsordner (`watch_dir`) oder bereits im
+  Verarbeitet-Ordner (`processed_dir`)
+- **Ob ein Ablageort vermerkt ist:** `document.output_path` ist gesetzt oder `None`
+
+Der Ausgabeordner (`consume_dir`) taugt **nicht** als Zeuge: Paperless überwacht ihn und
+entfernt jede eingelesene Datei. Ein Fehlen beweist also nicht, dass die Ablage nie stattfand
+— es ist der Normalfall nach erfolgreicher Übergabe.
+
+### Entscheidungstabelle (Decision D1)
+
+| Ort des Originals | Ablageort vermerkt | Auflösung |
+|---|---|---|
+| `processed_dir` | egal | **Abgeschlossen:** Ablage lag vor dem Verschieben, ist also passiert |
+| `watch_dir` | ja | **Abgeschlossen:** Ablage war erfolgt, Original jetzt nachziehen |
+| `watch_dir` | nein | siehe Grenzfall D2 |
+| nirgends auffindbar | egal | **Gescheitert:** Erklärende Meldung, kein Verschieben (nichts vorhanden) |
+
+Abgeschlossene Vorgänge durchlaufen die gleiche Finalisierung (`_finish`, `app/recovery.py`)
+wie im Normalablauf: Original nachziehen (falls noch im `watch_dir`), dokumenttypgerechten
+Endzustand setzen, Verlaufseintrag schreiben.
+
+### Grenzfall (Decision D2): Ungeklärter Fortschritt
+
+Bleibt ein Vorgang mit Original im Eingangsordner und ohne vermerkten Ablageort, ist unklar,
+ob er vor der Ablage starb (Neuversuch ist richtig) oder exakt zwischen dem Verschieben der
+Ergebnisdatei und dem Datenbank-Vermerk (Neuversuch wäre eine Doppelablage).
+
+Die Auflösung führt eine Stichprobe im Ausgabeordner durch: Liegt dort eine Datei mit dem
+**erwarteten Namen**, die **nach dem Beginn dieses Vorgangs** (`document.started_at`) verändert
+wurde?
+
+**Treffer im Ausgabeordner gefunden:** Der Vorgang wird **als gescheitert** aufgelöst
+(`DocStatus.FAILED`) **und das Original wird in den Fehlerordner verschoben**
+(`move_into(settings.error_dir)`, siehe Ruling R10 in `_resolve_ambiguous`, `app/recovery.py`).
+Das Original bleibt **nicht** im Eingangsordner liegen, sonst würde der Watcher beim nächsten Scan ein
+zweites, neues Dokument erkennen (da `find_by_hash_active` diesen Vorgang nun mit `status=failed`
+ausschließt) — genau die Doppelablage, die dieser Grenzfall verhindern soll.
+
+**Kein Treffer (Ruling R14, Befund 3 des Abschluss-Reviews):** Die erneute Einreihung folgt seit
+diesem Ruling derselben Politik wie der reguläre Fehlerfall (`_handle_failure`, `app/pipeline.py`)
+— nicht mehr pauschal `DocStatus.PENDING` ohne Zähler. `_resolve_ambiguous` (`app/recovery.py`)
+ruft `increment_attempt` auf; ist `attempt_count` danach kleiner als `settings.retry_max`, wird
+per `schedule_retry` erneut eingereiht (`pending` **mit** `next_retry_at`, Event
+`retry_scheduled`), das Original bleibt im Eingangsordner. Ist die Versuchsgrenze dagegen bereits
+erreicht, endet der Vorgang wie im regulären Fehlerfall: Status `failed`, Original nach
+`ERROR_DIR` verschoben, Event `failed`. Ohne dieses Ruling griffe `RETRY_MAX` in diesem Zweig nie
+— ein Dokument, das den Prozess reproduzierbar zum Absturz bringt, ergäbe eine Endlosschleife aus
+Neustart und erneut bezahlter Texterkennung.
+
+**Warum im Zweifel gescheitert statt Neuversuch?** Die Fehlerkosten sind asymmetrisch:
+- Ein zu Unrecht als gescheitert markierter Vorgang ist **sichtbar und reversibel:** ein Blick
+  in den Fehlerordner, erneute manuelle Ablage.
+- Eine verursachte Doppelablage erzeugt **zwei Dokumente in Paperless** und ist erst dort
+  aufgefallen — von Hand aufzuräumen und schwerer zu erkennen.
+
+Bei Unklarheit gewinnt die sichtbare Variante.
+
+### Erwarteter Ergebnis-Name je Dokumenttyp
+
+Der Name, nach dem in der Stichprobe (D2) gesucht wird, **hängt vom erkannten Dokumenttyp ab**:
+
+- **E-Rechnung** (`DocType.ERECHNUNG_XML`, `DocType.ERECHNUNG_PDF`): Der Weg
+  `_handle_erechnung` (`app/pipeline.py`) legt per `copy_into()` unverändert ab
+  (`unique_target` verwendet den **Originalnamen**, z.B. `invoice.xml`).
+- **OCR-Weg** (alle anderen Typen): Erzeugt einen Sandwich-PDF unter dem Stammnamen
+  plus `.pdf`-Endung (z.B. `scan_2026_09_20.pdf`).
+
+Bei Namenskollisionen hängt `unique_target` (`app/fileops.py`) in beiden Fällen
+`_1`, `_2`, … vor die Endung an.
+
+Ruling R2 (in `_find_recent_in_consume`, `app/recovery.py`): Beim Zeitvergleich wird
+`document.started_at` **explizit** als UTC in einen Epoch-Wert umgerechnet — nie über eine
+implizite (System-)Zeitzone. Dies garantiert, dass die Vergleichbarkeit mit `Path.stat().st_mtime`
+unabhängig von der TZ-Einstellung des Containers ist.
+
 ## fileops
 
 - `file_hash` (SHA-256, Dedup).

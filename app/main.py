@@ -26,6 +26,7 @@ from .girocode import PaymentData, qr_svg
 from .models import DocStatus, GiroStatus, RecipientStatus, SevdeskStatus
 from .ocr import get_adapter
 from .paperless_sync import PaperlessSync
+from .recovery import resolve_stale_processing
 from .repository import Repository
 from .worker import Worker
 
@@ -162,6 +163,9 @@ async def lifespan(app: FastAPI):
     stale = repo.reset_stale_exports()
     if stale:
         log.warning("%s verwaiste SevDesk-Exporte auf 'uncertain' zurückgesetzt", stale)
+    resolved = resolve_stale_processing(repo, settings)
+    if resolved:
+        log.warning("%s unterbrochene Vorgänge nach Neustart aufgelöst", resolved)
     adapter = get_adapter(settings)
     sync = PaperlessSync(settings, repo)
     worker = Worker(settings, repo, adapter, bus, paperless_sync=sync)
