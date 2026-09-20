@@ -188,9 +188,20 @@ Zustände enden. Ein neuer Zustand wird nicht eingeführt.
 
 #### Scenario: Unterbrechung vor der Ablage des Ergebnisses
 
-- **WHEN** der Dienst startet und ein Vorgang auf `processing` steht, für den weder ein
-  Ergebnis im Ausgabeordner liegt noch das Original den Eingangsordner verlassen hat
-- **THEN** wird der Vorgang erneut zur Verarbeitung eingereiht
+- **WHEN** der Dienst startet, ein Vorgang auf `processing` steht, für den weder ein Ergebnis im
+  Ausgabeordner liegt noch das Original den Eingangsordner verlassen hat, und die
+  Versuchsgrenze (`RETRY_MAX`) noch nicht erreicht ist
+- **THEN** wird der Vorgang erneut zur Verarbeitung eingereiht: der Versuchszähler steigt, der
+  Vorgang steht wieder auf `pending` mit einem Zeitpunkt für den nächsten Versuch, und das
+  Original bleibt im Eingangsordner
+
+#### Scenario: Unterbrechung vor der Ablage des Ergebnisses, Versuchsgrenze erreicht
+
+- **WHEN** der Dienst startet, ein Vorgang auf `processing` steht, für den weder ein Ergebnis im
+  Ausgabeordner liegt noch das Original den Eingangsordner verlassen hat, und dies bereits der
+  letzte zulässige Versuch war
+- **THEN** wird das Original in den Fehlerordner verschoben und der Vorgang steht auf `failed`
+  mit hinterlegter Fehlermeldung
 
 #### Scenario: Unterbrechung nach der Ablage des Ergebnisses
 

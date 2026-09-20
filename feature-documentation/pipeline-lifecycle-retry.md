@@ -31,7 +31,7 @@ Events entlang des Wegs: `preprocessing`, `ocr_chunk`, `built_pdf`, `moved_to_co
 `status=processing`. Die Verarbeitung läuft streng seriell in genau einem Prozess — ein solcher
 Vorgang gehört beim Neustart zu keinem lebenden Bearbeiter mehr. Wenn der Dienst neugestartet
 wird, muss jeder dieser Vorgänge aufgelöst werden, bevor neue Arbeit angenommen wird
-(siehe `lifespan`, `app/main.py:166`).
+(siehe `lifespan`, `app/main.py`).
 
 **Auflösungsprinzip:** Die Entscheidung richtet sich nach zwei Tatsachen, die bereits in der
 Datenbank stehen:
@@ -52,7 +52,7 @@ entfernt jede eingelesene Datei. Ein Fehlen beweist also nicht, dass die Ablage 
 | `watch_dir` | nein | siehe Grenzfall D2 |
 | nirgends auffindbar | egal | **Gescheitert:** Erklärende Meldung, kein Verschieben (nichts vorhanden) |
 
-Abgeschlossene Vorgänge durchlaufen die gleiche Finalisierung (`_finish`, `app/recovery.py:213`)
+Abgeschlossene Vorgänge durchlaufen die gleiche Finalisierung (`_finish`, `app/recovery.py`)
 wie im Normalablauf: Original nachziehen (falls noch im `watch_dir`), dokumenttypgerechten
 Endzustand setzen, Verlaufseintrag schreiben.
 
@@ -68,13 +68,21 @@ wurde?
 
 **Treffer im Ausgabeordner gefunden:** Der Vorgang wird **als gescheitert** aufgelöst
 (`DocStatus.FAILED`) **und das Original wird in den Fehlerordner verschoben**
-(`move_into(settings.error_dir)`, siehe Ruling R10 `app/recovery.py:151–171`). Das Original
-bleibt **nicht** im Eingangsordner liegen, sonst würde der Watcher beim nächsten Scan ein
+(`move_into(settings.error_dir)`, siehe Ruling R10 in `_resolve_ambiguous`, `app/recovery.py`).
+Das Original bleibt **nicht** im Eingangsordner liegen, sonst würde der Watcher beim nächsten Scan ein
 zweites, neues Dokument erkennen (da `find_by_hash_active` diesen Vorgang nun mit `status=failed`
 ausschließt) — genau die Doppelablage, die dieser Grenzfall verhindern soll.
 
-**Kein Treffer:** Der Vorgang wird neu eingereiht (`DocStatus.PENDING`), das Original bleibt
-im Eingangsordner. Der nächste Verarbeitungslauf versucht es erneut.
+**Kein Treffer (Ruling R14, Befund 3 des Abschluss-Reviews):** Die erneute Einreihung folgt seit
+diesem Ruling derselben Politik wie der reguläre Fehlerfall (`_handle_failure`, `app/pipeline.py`)
+— nicht mehr pauschal `DocStatus.PENDING` ohne Zähler. `_resolve_ambiguous` (`app/recovery.py`)
+ruft `increment_attempt` auf; ist `attempt_count` danach kleiner als `settings.retry_max`, wird
+per `schedule_retry` erneut eingereiht (`pending` **mit** `next_retry_at`, Event
+`retry_scheduled`), das Original bleibt im Eingangsordner. Ist die Versuchsgrenze dagegen bereits
+erreicht, endet der Vorgang wie im regulären Fehlerfall: Status `failed`, Original nach
+`ERROR_DIR` verschoben, Event `failed`. Ohne dieses Ruling griffe `RETRY_MAX` in diesem Zweig nie
+— ein Dokument, das den Prozess reproduzierbar zum Absturz bringt, ergäbe eine Endlosschleife aus
+Neustart und erneut bezahlter Texterkennung.
 
 **Warum im Zweifel gescheitert statt Neuversuch?** Die Fehlerkosten sind asymmetrisch:
 - Ein zu Unrecht als gescheitert markierter Vorgang ist **sichtbar und reversibel:** ein Blick
@@ -97,10 +105,10 @@ Der Name, nach dem in der Stichprobe (D2) gesucht wird, **hängt vom erkannten D
 Bei Namenskollisionen hängt `unique_target` (`app/fileops.py`) in beiden Fällen
 `_1`, `_2`, … vor die Endung an.
 
-Ruling R2 (`app/recovery.py:188`): Beim Zeitvergleich wird `document.started_at` **explizit**
-als UTC in einen Epoch-Wert umgerechnet — nie über eine implizite (System-)Zeitzone. Dies
-garantiert, dass die Vergleichbarkeit mit `Path.stat().st_mtime` unabhängig von der TZ-Einstellung
-des Containers ist.
+Ruling R2 (in `_find_recent_in_consume`, `app/recovery.py`): Beim Zeitvergleich wird
+`document.started_at` **explizit** als UTC in einen Epoch-Wert umgerechnet — nie über eine
+implizite (System-)Zeitzone. Dies garantiert, dass die Vergleichbarkeit mit `Path.stat().st_mtime`
+unabhängig von der TZ-Einstellung des Containers ist.
 
 ## fileops
 
