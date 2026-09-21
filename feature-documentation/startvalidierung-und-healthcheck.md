@@ -64,6 +64,14 @@ die Angabe gesetzt wird — nicht den Feldnamen der Klasse.
 `validate_settings()` wirft selbst nicht und bricht nicht bei der ersten Beanstandung ab:
 Sie sammelt alle in einer Liste, damit der Aufrufer sie in einem Durchgang meldet.
 
+**Typfehler sind eine eigene, vorgelagerte Klasse.** Ein Wert, der nicht dem verlangten Typ
+entspricht (z. B. `RETRY_MAX=abc`), lässt bereits `get_settings()` mit einer
+pydantic-`ValidationError` scheitern — **bevor** `validate_settings()` überhaupt läuft.
+Pydantic nennt dabei den Alias (`RETRY_MAX`), nicht den Feldnamen, sammelt aber nur die
+eigenen Typfehler in einem Durchgang, nicht gemeinsam mit den Beanstandungen aus
+`validate_settings()`: Ein gleichzeitiger Typfehler und eine fehlende Pflichtangabe werden
+so über zwei Neustarts sichtbar, nicht über einen.
+
 ### Die Ablehnung wird zweimal sichtbar
 
 `_reject_startup()` protokolliert zuerst alle Beanstandungen als zusammenhängenden Block

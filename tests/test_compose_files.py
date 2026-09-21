@@ -36,3 +36,12 @@ def test_lector_deklariert_healthcheck():
     """Ohne diesen Block zeigt `docker ps` nie mehr als "Up", obwohl das Abbild
     laut Dockerfile einen HEALTHCHECK mitbringt."""
     assert "healthcheck" in _lector_service()
+
+
+def test_lector_healthcheck_prueft_healthz_endpunkt():
+    """Der Compose-Block ueberschreibt den HEALTHCHECK aus dem Dockerfile komplett und
+    ist damit die driftanfaelligere der beiden Stellen: ein auf einen falschen Pfad
+    verdrehtes test-Kommando wuerde `docker compose ps` nie mehr "healthy" erreichen
+    lassen, ohne dass die blosse Anwesenheitspruefung oben das bemerkt."""
+    test_cmd = _lector_service()["healthcheck"]["test"]
+    assert "/healthz" in " ".join(test_cmd)

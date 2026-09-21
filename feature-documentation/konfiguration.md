@@ -47,10 +47,10 @@ Tabelle, welche Angabe unter welcher Bedingung Pflicht ist.
 | `OCR_PROVIDER` ist ein bekannter Wert | immer |
 | `GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, `DOCAI_LOCATION` nicht leer | wenn die gewählte Engine sie braucht (deklariert in `_ENGINE_REQUIRED_FIELDS`) |
 | `GOOGLE_APPLICATION_CREDENTIALS` gesetzt **und** lesbare Datei | wenn die gewählte Engine sie braucht |
-| `RETRY_DELAY_MINUTES` mindestens 1 | immer |
+| `RETRY_DELAY_MINUTES` mindestens 1 | wenn `RETRY_MAX` > 0 (sonst wird nie wiederholt, der Wert bliebe folgenlos) |
 | `PAPERLESS_URL`, `PAPERLESS_TOKEN` nicht leer | wenn `FEATURE_PAPERLESS_SYNC` gesetzt |
-| `SEVDESK_API_TOKEN` nicht leer | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
-| `ANTHROPIC_API_KEY` nicht leer | wenn `FEATURE_RECIPIENT_LLM` gesetzt |
+| `SEVDESK_API_TOKEN` nicht leer, `FEATURE_PAPERLESS_SYNC` aktiv | wenn `FEATURE_SEVDESK_EXPORT` gesetzt (exportierbare Rechnungen entstehen ausschließlich im Paperless-Sync) |
+| `ANTHROPIC_API_KEY`, `PAPERLESS_URL`, `PAPERLESS_TOKEN` nicht leer | wenn `FEATURE_RECIPIENT_LLM` gesetzt (die Empfänger-Verwaltung braucht die Paperless-Anbindung unabhängig von `FEATURE_PAPERLESS_SYNC`) |
 | Arbeitsordner (`WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`) und Verzeichnis von `DB_PATH` beschreibbar | immer (eigene Schreibprobe, siehe unten) |
 
 Der Provider-Vergleich ist **case-insensitiv**, konsistent zu `get_adapter()`
@@ -67,10 +67,13 @@ Der Provider-Vergleich ist **case-insensitiv**, konsistent zu `get_adapter()`
   `DOCAI_MAX_PAGES_PER_MINUTE`:** Für alle vier bedeutet **≤ 0** vereinbart „abgeschaltet",
   kein Fehler.
 - **`RETRY_MAX` ≤ 0** heißt faktisch „kein Wiederholversuch" — eine zulässige Einstellung.
+  Genau deshalb ist `RETRY_DELAY_MINUTES` dann auch selbst nicht mehr Pflicht (siehe oben).
 - **Keine Gültigkeitsprüfung.** Kein Netzwerkzugriff, kein Parsen der Credentials-Datei.
   Geprüft wird Vorhandensein, Typ, Wertebereich, Lesbarkeit — nicht, ob ein Token gilt.
 
-`RETRY_DELAY_MINUTES` ist der einzige geprüfte Zähler: Bei ≤ 0 liegt `retry_at`
-(`app/repository.py`) im Jetzt oder in der Vergangenheit, die Pause zwischen den Versuchen
-entfällt vollständig, und ein dauerhaft scheiterndes Dokument verbraucht alle Versuche in
-Sekunden — jeden mit einem vollen, bezahlten OCR-Aufruf.
+`RETRY_DELAY_MINUTES` ist der einzige geprüfte Zähler — und auch nur, solange `RETRY_MAX`
+> 0 ist: Bei ≤ 0 liegt `retry_at` (`app/repository.py`) im Jetzt oder in der Vergangenheit,
+die Pause zwischen den Versuchen entfällt vollständig, und ein dauerhaft scheiterndes
+Dokument verbraucht alle Versuche in Sekunden — jeden mit einem vollen, bezahlten
+OCR-Aufruf. Findet mangels `RETRY_MAX` > 0 ohnehin kein Wiederholversuch statt, kostet ein
+zu kurzes `RETRY_DELAY_MINUTES` nichts, und die Prüfung entfällt.

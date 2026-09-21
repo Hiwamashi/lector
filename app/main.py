@@ -168,10 +168,13 @@ def _reject_startup(problems: list[str]) -> None:
     Block über `log.error`, wirft danach die Ausnahme. Trüge nur die Ausnahme die Meldung,
     erschiene sie lediglich als Teil eines Tracebacks zwischen Starlette- und
     uvicorn-Rahmen — die eigene Protokollzeile steht davor und ist die erste Zeile, die man
-    beim Lesen von `docker logs` findet (design.md D3)."""
-    block = "\n".join(f"  {p}" for p in problems)
-    log.error("Konfiguration unvollständig — der Dienst startet nicht:\n%s", block)
-    raise ConfigurationRejectedError(problems)
+    beim Lesen von `docker logs` findet (design.md D3).
+
+    Formatiert den Block nicht selbst — `ConfigurationRejectedError` trägt Kopfzeile und
+    Block bereits in ihrer Nachricht, `log.error("%s", err)` gibt sie byte-identisch aus."""
+    err = ConfigurationRejectedError(problems)
+    log.error("%s", err)
+    raise err
 
 
 def _check_writable_paths(settings: Settings) -> list[str]:
@@ -193,7 +196,13 @@ def _check_writable_paths(settings: Settings) -> list[str]:
     problems: list[str] = []
     for env_name, directory in directories.items():
         try:
-            with tempfile.NamedTemporaryFile(dir=directory, prefix=".lector-schreibprobe-"):
+            # Präfix bewusst "._" statt nur ".": CONSUME_DIR ist der Ordner, den
+            # Paperless überwacht, und dessen Standard-CONSUMER_IGNORE_PATTERNS enthält
+            # "._*", aber nicht ".lector-*". Die Probedatei ist zwar nach Mikrosekunden
+            # wieder weg, aber dieses Präfix hält sie auch dann aus Paperless' Wahr-
+            # nehmung heraus, falls ihr Verschwinden je verzögert wird — nicht
+            # zurückkürzen.
+            with tempfile.NamedTemporaryFile(dir=directory, prefix="._lector-schreibprobe-"):
                 pass
         except OSError as exc:
             problems.append(f"{env_name} ({directory}) ist nicht beschreibbar: {exc}")

@@ -221,7 +221,9 @@ def validate_settings(settings: Settings) -> list[str]:
                     f"{_env_name(field_name)} ist leer (Pflicht bei OCR_PROVIDER={provider})"
                 )
 
-    if settings.retry_delay_minutes < 1:
+    # Nur relevant, wenn überhaupt wiederholt wird — bei RETRY_MAX<=0 wird
+    # schedule_retry() (app/pipeline.py:188) nie erreicht, und der Wert bliebe folgenlos.
+    if settings.retry_max > 0 and settings.retry_delay_minutes < 1:
         problems.append(
             f"{_env_name('retry_delay_minutes')} muss mindestens 1 sein, "
             f"ist {settings.retry_delay_minutes}"
@@ -242,12 +244,31 @@ def validate_settings(settings: Settings) -> list[str]:
             problems.append(
                 f"{_env_name('sevdesk_api_token')} ist leer (Pflicht bei {schalter}=true)"
             )
+        # Exportierbare Rechnungen entstehen ausschließlich im Paperless-Sync
+        # (PaperlessSync._sync_invoices/_sync_sevdesk_tag, nur erreichbar über
+        # sync_once() bei PaperlessSync.enabled) — ohne FEATURE_PAPERLESS_SYNC bleibt der
+        # Export dauerhaft ohne Rechnung, also lautlos wirkungslos.
+        if not settings.feature_paperless_sync:
+            problems.append(
+                f"{_env_name('feature_paperless_sync')} ist nicht aktiv (Pflicht bei "
+                f"{schalter}=true — exportierbare Rechnungen entstehen ausschließlich im "
+                "Paperless-Sync)"
+            )
 
     if settings.feature_recipient_llm:
         schalter = _env_name("feature_recipient_llm")
         if not settings.anthropic_api_key:
             problems.append(
                 f"{_env_name('anthropic_api_key')} ist leer (Pflicht bei {schalter}=true)"
+            )
+        # PaperlessSync.recipient_llm_enabled (app/paperless_sync.py:130-133) verlangt
+        # zusätzlich recipient_enabled, also PAPERLESS_URL und PAPERLESS_TOKEN —
+        # ausdrücklich unabhängig von FEATURE_PAPERLESS_SYNC.
+        if not settings.paperless_url:
+            problems.append(f"{_env_name('paperless_url')} ist leer (Pflicht bei {schalter}=true)")
+        if not settings.paperless_token:
+            problems.append(
+                f"{_env_name('paperless_token')} ist leer (Pflicht bei {schalter}=true)"
             )
 
     return problems

@@ -163,6 +163,14 @@ def test_validate_settings_retry_delay_gueltiger_wert_bleibt_folgenlos(tmp_path)
     assert validate_settings(s) == []
 
 
+def test_validate_settings_retry_delay_null_ohne_wiederholversuch_bleibt_folgenlos(tmp_path):
+    """RETRY_MAX<=0 heisst 'kein Wiederholversuch' — schedule_retry() (app/pipeline.py:188)
+    wird dann nie erreicht, RETRY_DELAY_MINUTES bleibt ohne Wirkung und darf den Start
+    nicht grundlos anhalten."""
+    s = _vollstaendige_documentai_settings(tmp_path, RETRY_MAX=0, RETRY_DELAY_MINUTES=0)
+    assert validate_settings(s) == []
+
+
 def test_validate_settings_chunk_size_null_verhindert_start_nicht(tmp_path):
     s = _vollstaendige_documentai_settings(tmp_path, CHUNK_SIZE_PAGES=0)
     assert validate_settings(s) == []
@@ -197,32 +205,81 @@ def test_validate_settings_paperless_sync_abgeschaltet_bleibt_folgenlos(tmp_path
 
 def test_validate_settings_sevdesk_export_ohne_token_wird_beanstandet(tmp_path):
     s = _vollstaendige_documentai_settings(
-        tmp_path, FEATURE_SEVDESK_EXPORT=True, SEVDESK_API_TOKEN=""
+        tmp_path,
+        FEATURE_SEVDESK_EXPORT=True,
+        SEVDESK_API_TOKEN="",
+        FEATURE_PAPERLESS_SYNC=True,
+        PAPERLESS_URL="http://paperless.local",
+        PAPERLESS_TOKEN="tok-123",
     )
     problems = validate_settings(s)
     assert len(problems) == 1
     assert "SEVDESK_API_TOKEN" in problems[0]
 
 
+def test_validate_settings_sevdesk_export_ohne_paperless_sync_wird_beanstandet(tmp_path):
+    """SevDesk-Token allein genügt nicht: exportierbare Rechnungen entstehen
+    ausschließlich im Paperless-Sync (PaperlessSync._sync_invoices/_sync_sevdesk_tag,
+    nur erreichbar über sync_once() bei PaperlessSync.enabled). Ohne
+    FEATURE_PAPERLESS_SYNC bliebe FEATURE_SEVDESK_EXPORT lautlos wirkungslos, obwohl
+    Token und Schalter gesetzt sind."""
+    s = _vollstaendige_documentai_settings(
+        tmp_path,
+        FEATURE_SEVDESK_EXPORT=True,
+        SEVDESK_API_TOKEN="tok-123",
+        FEATURE_PAPERLESS_SYNC=False,
+    )
+    problems = validate_settings(s)
+    assert len(problems) == 1
+    assert "FEATURE_PAPERLESS_SYNC" in problems[0]
+
+
 def test_validate_settings_sevdesk_export_abgeschaltet_bleibt_folgenlos(tmp_path):
     s = _vollstaendige_documentai_settings(
-        tmp_path, FEATURE_SEVDESK_EXPORT=False, SEVDESK_API_TOKEN=""
+        tmp_path, FEATURE_SEVDESK_EXPORT=False, SEVDESK_API_TOKEN="", FEATURE_PAPERLESS_SYNC=False
     )
     assert validate_settings(s) == []
 
 
 def test_validate_settings_empfaenger_llm_ohne_schluessel_wird_beanstandet(tmp_path):
     s = _vollstaendige_documentai_settings(
-        tmp_path, FEATURE_RECIPIENT_LLM=True, ANTHROPIC_API_KEY=""
+        tmp_path,
+        FEATURE_RECIPIENT_LLM=True,
+        ANTHROPIC_API_KEY="",
+        PAPERLESS_URL="http://paperless.local",
+        PAPERLESS_TOKEN="tok-123",
     )
     problems = validate_settings(s)
     assert len(problems) == 1
     assert "ANTHROPIC_API_KEY" in problems[0]
 
 
+def test_validate_settings_empfaenger_llm_ohne_paperless_wird_beanstandet(tmp_path):
+    """PaperlessSync.recipient_llm_enabled (app/paperless_sync.py:130-133) verlangt
+    zusätzlich recipient_enabled, also PAPERLESS_URL und PAPERLESS_TOKEN — ausdrücklich
+    unabhängig von FEATURE_PAPERLESS_SYNC (app/paperless_sync.py:124-127). Ohne beide
+    Angaben wäre FEATURE_RECIPIENT_LLM=true lautlos wirkungslos, obwohl der
+    Anthropic-Schlüssel gesetzt ist."""
+    s = _vollstaendige_documentai_settings(
+        tmp_path,
+        FEATURE_RECIPIENT_LLM=True,
+        ANTHROPIC_API_KEY="sk-ant-x",
+        PAPERLESS_URL="",
+        PAPERLESS_TOKEN="",
+    )
+    problems = validate_settings(s)
+    meldung = "\n".join(problems)
+    assert "PAPERLESS_URL" in meldung
+    assert "PAPERLESS_TOKEN" in meldung
+
+
 def test_validate_settings_empfaenger_llm_abgeschaltet_bleibt_folgenlos(tmp_path):
     s = _vollstaendige_documentai_settings(
-        tmp_path, FEATURE_RECIPIENT_LLM=False, ANTHROPIC_API_KEY=""
+        tmp_path,
+        FEATURE_RECIPIENT_LLM=False,
+        ANTHROPIC_API_KEY="",
+        PAPERLESS_URL="",
+        PAPERLESS_TOKEN="",
     )
     assert validate_settings(s) == []
 
@@ -234,13 +291,15 @@ def test_validate_settings_sammelt_alle_beanstandungen_statt_abzubrechen(tmp_pat
         RETRY_DELAY_MINUTES=0,
         FEATURE_SEVDESK_EXPORT=True,
         SEVDESK_API_TOKEN="",
+        FEATURE_PAPERLESS_SYNC=False,
     )
     problems = validate_settings(s)
-    assert len(problems) == 3
+    assert len(problems) == 4
     meldung = "\n".join(problems)
     assert "GCP_PROJECT_ID" in meldung
     assert "RETRY_DELAY_MINUTES" in meldung
     assert "SEVDESK_API_TOKEN" in meldung
+    assert "FEATURE_PAPERLESS_SYNC" in meldung
 
 
 # ---- Aufgabe 3.1: Ausnahmeklasse für einen abgelehnten Start -------------------------

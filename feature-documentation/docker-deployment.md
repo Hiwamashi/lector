@@ -9,6 +9,11 @@
 - `uv` installiert Abhängigkeiten aus `pyproject.toml`/`uv.lock` (Layer-Caching: erst Deps ohne
   Projekt, dann Projektcode). `README.md` wird benötigt, weil sie Paket-Metadatum ist.
 - Start: `uvicorn app.main:app --host 0.0.0.0 --port 8001` (ein Prozess für UI/API + Worker).
+  **`PORT` (ENV, siehe [konfiguration.md](konfiguration.md)) wirkt im Container nicht:**
+  `Dockerfile` verdrahtet Port `8001` fest in `EXPOSE`, `CMD` und dem `HEALTHCHECK`. Wer
+  `command:` im Compose überschreibt, um `PORT` zu honorieren, bekommt einen Container, der
+  auf dem neuen Port lauscht, aber dessen `HEALTHCHECK` weiter gegen `8001` prüft — und
+  damit dauerhaft `unhealthy` bleibt.
 
 Für den Betrieb auf dem NAS wird das Image nicht lokal gebaut, sondern als
 Multi-Arch-Image aus der Scaleway Container Registry gezogen — siehe

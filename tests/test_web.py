@@ -883,6 +883,17 @@ def _setup_test_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("GCP_PROJECT_ID", "test-project")
     monkeypatch.setenv("DOCAI_PROCESSOR_ID", "test-processor")
 
+    # Feature-Schalter explizit auf "aus" — nicht nur delenv(): Settings liest neben der
+    # Prozess-ENV auch die .env aus dem Arbeitsverzeichnis (model_config env_file=".env"),
+    # und die hat gegenüber os.environ NIEDRIGERE Priorität. Ein fehlender Prozess-Eintrag
+    # legt eine dortige Angabe also nicht still, nur eine gesetzte überschreibt sie. Eine
+    # lokale .env mit z.B. FEATURE_SEVDESK_EXPORT=true ohne Token würde sonst ab dieser
+    # Change die halbe Suite mit einer Meldung rot machen, die auf die Change zeigt statt
+    # auf die Umgebung.
+    monkeypatch.setenv("FEATURE_PAPERLESS_SYNC", "false")
+    monkeypatch.setenv("FEATURE_SEVDESK_EXPORT", "false")
+    monkeypatch.setenv("FEATURE_RECIPIENT_LLM", "false")
+
 
 def _reload_app_main():
     app.config.get_settings.cache_clear()
@@ -1267,12 +1278,34 @@ def test_abgelehnter_start_protokolliert_beanstandungen_als_block_vor_der_ausnah
     main = _reload_app_main()
 
     with caplog.at_level(logging.ERROR, logger="lector.main"):
-        with pytest.raises(ConfigurationRejectedError):
+        with pytest.raises(ConfigurationRejectedError) as exc_info:
             with TestClient(main.app):
                 pass
 
     assert "Konfiguration unvollständig" in caplog.text
     assert "GCP_PROJECT_ID" in caplog.text
+    # _reject_startup() formatiert den Block nicht mehr selbst, sondern protokolliert die
+    # Ausnahme direkt (log.error("%s", err)) — Protokoll und Ausnahme müssen deshalb
+    # byte-identisch sein, nicht nur beide dieselben Stichworte enthalten.
+    assert str(exc_info.value) in caplog.text
+
+
+def test_startup_wird_bei_falschem_typ_abgelehnt(tmp_path, monkeypatch):
+    """Spec-Szenario 'Eine Angabe ist gesetzt, aber unbrauchbar', Typfehler-Hälfte:
+    RETRY_MAX=abc lässt bereits get_settings() mit einer pydantic-ValidationError
+    scheitern, VOR validate_settings() — der Start scheitert trotzdem, und die Meldung
+    nennt den ENV-Alias RETRY_MAX (nicht den Feldnamen retry_max), wie von pydantic
+    aufgelöst. Siehe feature-documentation/startvalidierung-und-healthcheck.md."""
+    import pydantic
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("RETRY_MAX", "abc")
+
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    assert "RETRY_MAX" in str(exc_info.value)
 
 
 def test_abgelehnter_start_wegen_schreibprobe_hinterlaesst_keine_wirkung(tmp_path, monkeypatch):

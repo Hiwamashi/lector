@@ -390,11 +390,14 @@ Weiteres:
   der 120-Sekunden-Anlaufzeit — korrektes Docker-Verhalten (`start_period` schont nur die
   Zählung der Fehlversuche, verzögert aber keinen Erfolg), belegt am echten Container.
 
-Für den Rollout festgehalten: **Vor dem `pull` ist die laufende `.env` gegen die neue
-Tabelle in `feature-documentation/konfiguration.md` abzugleichen.** Besonders die
-Feature-Schalter — ein gesetzter Schalter ohne die zugehörigen Angaben war bisher lautlos
-wirkungslos und ist nach dieser Change ein **Startfehler**. Das ist die einzige Stelle, an
-der diese Change eine bestehende Installation anhalten kann.
+Für den Rollout festgehalten: **Vor dem `pull` ist die laufende `.env` vollständig gegen
+die Tabelle in
+[`feature-documentation/konfiguration.md`](../feature-documentation/konfiguration.md#startvalidierung-was-beim-start-pflicht-ist)
+abzugleichen** — nicht nur die Feature-Schalter. Ein gesetzter Schalter ohne die
+zugehörigen Angaben war bisher lautlos wirkungslos und ist nach dieser Change ein
+**Startfehler**, ebenso ein als `:ro` eingehängter Arbeitsordner (bisher folgenlos, weil
+nur beim endgültigen Scheitern beschrieben) oder ein zu kurzes `RETRY_DELAY_MINUTES` bei
+aktivem Retry.
 
 **Ein Rollback ist folgenlos:** keine neue Spalte, kein neuer Zustandswert, keine
 Datenmigration.
