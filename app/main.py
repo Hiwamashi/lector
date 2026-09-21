@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .config import get_settings
+from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .girocode import PaymentData, qr_svg
 from .models import DocStatus, GiroStatus, RecipientStatus, SevdeskStatus
@@ -40,6 +41,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 STATUS_LABELS = {
     DocStatus.PENDING: "Wartet",
     DocStatus.PROCESSING: "In Arbeit",
+    DocStatus.BLOCKED: "Angehalten",
     DocStatus.DONE: "Fertig",
     DocStatus.SKIPPED_ERECHNUNG: "E-Rechnung",
     DocStatus.FAILED: "Fehler",
@@ -274,6 +276,36 @@ async def history_fragment(
     )
 
 
+def _page_limit(request: Request) -> int:
+    return request.app.state.settings.max_pages_per_document
+
+
+def _decision_response(result: DecisionResult, document_id: int) -> Response:
+    """Übersetzt den Ausgang einer Entscheidung in eine Antwort.
+
+    Eine wirkungslose Entscheidung (der Vorgang steht nicht mehr auf `blocked`) wird als
+    Konflikt beantwortet statt still weiterzuleiten — sonst sähe ein Doppelklick aus wie
+    ein zweiter Erfolg. Ein unbekannter Vorgang ist davon zu unterscheiden: Das ist kein
+    Konflikt, sondern schlicht nicht vorhanden.
+    """
+    if result == DecisionResult.NOT_FOUND:
+        return HTMLResponse("Dokument nicht gefunden", status_code=404)
+    if result == DecisionResult.NOT_BLOCKED:
+        return HTMLResponse(
+            "Der Vorgang ist nicht (mehr) angehalten — die Entscheidung wurde nicht "
+            "ausgeführt.",
+            status_code=409,
+        )
+    if result == DecisionResult.DISCARD_FAILED:
+        return HTMLResponse(
+            "Das Original ließ sich nicht in den Fehlerordner verschieben. Der Vorgang "
+            "bleibt angehalten und kann erneut entschieden werden; die Meldung steht im "
+            "Verlauf.",
+            status_code=500,
+        )
+    return RedirectResponse(f"/documents/{document_id}", status_code=303)
+
+
 @app.get("/documents/{document_id}", response_class=HTMLResponse)
 async def document_detail(request: Request, document_id: int):
     repo: Repository = request.app.state.repo
@@ -282,7 +314,9 @@ async def document_detail(request: Request, document_id: int):
         return HTMLResponse("Dokument nicht gefunden", status_code=404)
     events = repo.list_events(document_id)
     return templates.TemplateResponse(
-        request, "detail.html", {"doc": doc, "events": events}
+        request,
+        "detail.html",
+        {"doc": doc, "events": events, "page_limit": _page_limit(request)},
     )
 
 
@@ -294,8 +328,33 @@ async def document_fragment(request: Request, document_id: int):
         return HTMLResponse("", status_code=404)
     events = repo.list_events(document_id)
     return templates.TemplateResponse(
-        request, "partials/detail_body.html", {"doc": doc, "events": events}
+        request,
+        "partials/detail_body.html",
+        {"doc": doc, "events": events, "page_limit": _page_limit(request)},
     )
+
+
+# Beide Entscheidungen fassen das Dateisystem an (Existenzprüfung bzw. Verschieben in den
+# Fehlerordner). Im Eventloop ausgeführt, würde ein geräteübergreifendes Verschieben eines
+# grossen Scans — auf dem NAS liegen Eingang und Fehlerordner auf verschiedenen Volumes —
+# den gesamten Dienst anhalten: Watcher, Retry-Schleife, SSE-Streams und jede weitere
+# Anfrage. Deshalb in einen Thread ausgelagert.
+@app.post("/documents/{document_id}/release")
+async def document_release(request: Request, document_id: int):
+    """Gibt einen angehaltenen Vorgang frei — er läuft trotz überschrittener Grenze."""
+    result = await asyncio.to_thread(
+        release_document, document_id, request.app.state.repo, request.app.state.settings
+    )
+    return _decision_response(result, document_id)
+
+
+@app.post("/documents/{document_id}/discard")
+async def document_discard(request: Request, document_id: int):
+    """Verwirft einen angehaltenen Vorgang — Original in den Fehlerordner."""
+    result = await asyncio.to_thread(
+        discard_document, document_id, request.app.state.repo, request.app.state.settings
+    )
+    return _decision_response(result, document_id)
 
 
 def _invoice_filters(sevdesk: str | None, q: str | None):

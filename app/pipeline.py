@@ -15,7 +15,7 @@ from .detection import detect
 from .fileops import copy_into, move_into
 from .models import DocStatus, EventType
 from .ocr.base import OcrAdapter
-from .pages import extract_pages
+from .pages import count_pages, extract_pages
 from .pdfbuilder import build_sandwich_pdf
 from .preprocessing import preprocess_page
 from .repository import Repository
@@ -37,8 +37,38 @@ def _handle_erechnung(doc, repo: Repository, settings: Settings) -> None:
     repo.add_event(doc.id, EventType.SKIPPED_ERECHNUNG, "E-Rechnung unverändert durchgereicht")
 
 
+def _block_oversized(doc, repo: Repository, pages: int, limit: int) -> None:
+    """Hält einen Vorgang an, statt ihn zu verarbeiten — ohne Fehlversuch zu zählen.
+
+    Das Original bleibt im Eingangsordner: Es ist nicht verarbeitet und nicht gescheitert,
+    und der Dublettenschutz (`find_by_hash_active`) hält `blocked` für aktiv, sodass der
+    Watcher es nicht erneut aufnimmt.
+    """
+    repo.set_status(doc.id, DocStatus.BLOCKED)
+    repo.add_event(
+        doc.id,
+        EventType.BLOCKED,
+        f"{pages} Seiten überschreiten die Grenze von {limit} Seiten "
+        "(MAX_PAGES_PER_DOCUMENT). Keine Texterkennung ausgeführt — "
+        "im Web-UI freigeben oder verwerfen.",
+    )
+    log.info(
+        "Dokument %s angehalten: %s Seiten über der Grenze von %s", doc.id, pages, limit
+    )
+
+
 def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) -> None:
     source = Path(doc.source_path)
+
+    # Zählen, bevor gerastert wird: `extract_pages` rendert jede Seite bei 200 DPI, die
+    # Entscheidung muss davor fallen — sonst spart die Grenze Geld und kostet Speicher.
+    limit = settings.max_pages_per_document
+    page_count = count_pages(source, doc.doc_type)
+    repo.update_document(doc.id, total_pages=page_count)
+    if limit > 0 and page_count > limit and not doc.page_limit_approved:
+        _block_oversized(doc, repo, page_count, limit)
+        return
+
     images = extract_pages(source, doc.doc_type)
     total = len(images)
     repo.update_document(doc.id, total_pages=total, ocr_engine=adapter.name, processed_pages=0)

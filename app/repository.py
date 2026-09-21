@@ -36,7 +36,7 @@ _INVOICE_COLUMNS = (
 _DOC_COLUMNS = (
     "id, original_filename, source_path, file_hash, status, doc_type, ocr_engine, "
     "total_pages, processed_pages, attempt_count, next_retry_at, error_message, "
-    "output_path, created_at, started_at, finished_at"
+    "output_path, page_limit_approved, created_at, started_at, finished_at"
 )
 
 
@@ -82,6 +82,7 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         next_retry_at=_parse_dt(row["next_retry_at"]),
         error_message=row["error_message"],
         output_path=row["output_path"],
+        page_limit_approved=bool(row["page_limit_approved"]),
         created_at=_parse_dt(row["created_at"]),
         started_at=_parse_dt(row["started_at"]),
         finished_at=_parse_dt(row["finished_at"]),
@@ -258,6 +259,48 @@ class Repository:
             self._notify(document_id)
             return
         self.update_document(document_id, **fields)
+
+    def transition_from_blocked(
+        self,
+        document_id: int,
+        status: DocStatus,
+        *,
+        error_message: str | None = None,
+        approve_page_limit: bool = False,
+    ) -> bool:
+        """Führt einen angehaltenen Vorgang in einen anderen Zustand — bedingt und atomar.
+
+        Prüfen und Schreiben in einem Schritt, weil sonst ein Doppelklick auf „Freigeben"
+        oder ein Freigeben in der einen und ein Verwerfen in einer zweiten Ansicht beide
+        Zweige ausführen würde: Das Original wanderte in den Fehlerordner, während der
+        Vorgang bereits in der Verarbeitungsreihe steht.
+
+        Gibt zurück, ob der Übergang stattgefunden hat. `False` heißt: Der Vorgang stand
+        nicht (mehr) auf `blocked` — die Entscheidung war wirkungslos.
+        """
+        assignments = ["status = ?"]
+        params: list[object] = [status.value]
+        if approve_page_limit:
+            assignments.append("page_limit_approved = 1")
+        if status in (DocStatus.DONE, DocStatus.SKIPPED_ERECHNUNG, DocStatus.FAILED):
+            assignments.append("finished_at = datetime('now')")
+            assignments.append("error_message = ?")
+            params.append(error_message)
+        else:
+            # Zurück in die Reihe: sofort fällig, und der Versuchszähler bleibt unberührt —
+            # die Blockade war kein Fehlversuch.
+            assignments.append("next_retry_at = NULL")
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE documents SET {', '.join(assignments)} "
+                "WHERE id = ? AND status = ?",
+                [*params, document_id, DocStatus.BLOCKED.value],
+            )
+            self._conn.commit()
+            changed = cur.rowcount > 0
+        if changed:
+            self._notify(document_id)
+        return changed
 
     def set_progress(self, document_id: int, processed_pages: int) -> None:
         self.update_document(document_id, processed_pages=processed_pages)

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS documents (
     next_retry_at     TEXT,
     error_message     TEXT,
     output_path       TEXT,
+    page_limit_approved INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
     started_at        TEXT,
     finished_at       TEXT
@@ -110,6 +111,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 # per ALTER TABLE nachgezogen werden müssen (CREATE TABLE IF NOT EXISTS greift dort nicht).
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("paperless_invoices", "document_date", "TEXT"),
+    ("documents", "page_limit_approved", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 

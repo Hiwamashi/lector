@@ -178,6 +178,78 @@ in der Change `recovery-unterbrochener-verarbeitung` enthalten.
 
 181 Tests gruen.
 
+## Zusatz-Feature: Seitenobergrenze mit Freigabe (2026-09-20)
+
+Die zweite der acht benannten Lücken in `baseline-specs-kernpipeline` ist geschlossen:
+**Vor dem ersten OCR-Aufruf wird die Seitenzahl gegen `MAX_PAGES_PER_DOCUMENT` geprüft**
+(Standard 100, 0 schaltet ab). Darüber wird der Vorgang angehalten statt verarbeitet — es
+entstehen keine Kosten.
+
+Zwei Befunde haben das Design gegenüber der ursprünglichen Absicht verschoben:
+
+**Gezählt wird ohne zu rastern.** Die naheliegende Stelle für die Prüfung wäre nach
+`extract_pages` gewesen — dort steht die Seitenzahl heute zum ersten Mal fest. Nur rendert
+`extract_pages` jede Seite bei 200 DPI, bevor sie feststeht: Ein 800-Seiten-Scan wäre
+vollständig in den Arbeitsspeicher gelaufen und dann angehalten worden. Die Grenze hätte
+den Schaden von Geld auf Speicher verschoben, statt ihn abzuwenden. Neu ist deshalb
+`count_pages` in `app/pages.py` — PDF über dieselbe Bibliothek wie beim Rendern
+(`pypdfium2`), damit die gezählte Zahl mit der später extrahierten übereinstimmt; ein Test
+belegt die Deckung für PDF und TIFF, ein weiterer, dass beim Zählen nichts gerendert wird.
+
+**Freigabe allein wäre eine Sackgasse gewesen.** Das Original eines angehaltenen Vorgangs
+bleibt im Eingangsordner liegen (sonst nähme der Watcher es erneut auf). Ohne zweiten
+Ausgang stünde ein Vorgang, den man nicht freigeben will, auf Dauer im Wartezustand.
+Ergänzt wurde deshalb **Verwerfen**: Original nach `error`, Vorgang auf `failed`. Kein
+sechster Endzustand — `failed` trägt die gewünschte Semantik bereits, der Verlaufseintrag
+`discarded` sagt, wie es dazu kam.
+
+Weiteres:
+
+- Neuer Zustand `blocked` als **Wartezustand**: kein `finished_at`, kein Wiederholversuch,
+  kein erhöhter Versuchszähler. Die `status`-Spalte ist freier Text ohne CHECK-Constraint,
+  ein Schema-Eingriff war dafür nicht nötig; die Freigabe liegt als neue Spalte
+  `page_limit_approved` am Vorgang (über den vorhandenen `_MIGRATIONS`-Pfad, mit Test
+  gegen eine Bestandsdatenbank ohne die Spalte).
+- Beide Entscheidungen laufen als **bedingter** Übergang (`WHERE id = ? AND status =
+  'blocked'`). Ohne das hätte ein Doppelklick — oder Freigeben hier und Verwerfen in einer
+  zweiten Ansicht — beide Zweige ausgeführt: Das Original wäre in den Fehlerordner
+  gewandert, während der Vorgang schon in der Reihe steht. Eine wirkungslose Entscheidung
+  antwortet mit `409`, nicht mit einer stillen Weiterleitung.
+- Die Wiederaufnahme nach der Freigabe läuft über `claim_due_retries` (bis zu 30 s), nicht
+  über einen direkten Zugriff der HTTP-Schicht auf die Worker-Queue. Die Freigabe übersteht
+  dadurch einen Neustart zwischen Klick und Verarbeitungsbeginn.
+- Die Zustandsmenge war an vier Stellen redundant gepflegt (`DocStatus`, `STATUS_LABELS`,
+  `tile_order`, CSS) — ohne Test, der sie zusammenhält. Ein vergessener Eintrag wäre nicht
+  aufgefallen, sondern still danebengegangen. Der Test ist jetzt da, gegengeprobt gegen
+  alle vier Mutationen. Die Kachelreihe verteilt sich seither über `auto-fit` statt über
+  eine fest verdrahtete 5.
+
+**Review-Runde (zwei Reviewer parallel, Kernlogik auf Opus):** Vier Befunde, alle behoben.
+Der gewichtigste war ein Wiedergaenger von Ruling R10 aus der Recovery-Change: `discard`
+setzte `failed`, **bevor** es die Datei bewegte. Scheitert `move_into` (Rechte auf dem
+Fehlerordner, volles Volume), bliebe ein Vorgang auf `failed` zurueck, dessen Original noch
+im Eingang liegt — und `find_by_hash_active` schliesst genau `failed` aus, der Watcher legte
+die Datei als zweiten Vorgang an. Die Reihenfolge liess sich hier nicht wie in
+`_handle_failure` umdrehen (der Anspruch muss gegen eine zeitgleiche Freigabe stehen),
+deshalb wird der Uebergang jetzt **zurueckgenommen**. Ausserdem: beide Routen liefen
+synchron im Eventloop und haetten beim geraeteuebergreifenden Verschieben eines grossen
+Scans den ganzen Dienst angehalten (jetzt `asyncio.to_thread`); eine unbekannte
+Dokument-Kennung antwortete mit `409` „nicht mehr angehalten" statt mit `404`; und der
+SSE-Fragment-Pfad war nur auf Statuscode geprueft, obwohl ein dort fehlendes `page_limit`
+in Jinja still zu einem Leerstring wird. Beim Nachziehen der Tests fielen zwei eigene
+Schwaechen auf: eine Tautologie-Assertion (`== 0 or True`) und ein Regex im
+Konsistenztest, der ueber einen auskommentierten Selektor hinweg auf die naechste Regel
+durchgriff — beide korrigiert und gegengeprobt. Der Test prueft jetzt zusaetzlich, dass
+jedes Statusfarb-Token in **beiden** Schema-Bloecken steht.
+
+263 Tests gruen (vorher 181), `ruff` sauber. Alle Artefakte in der Change
+`seitenobergrenze-mit-freigabe`; Feature-Doku unter
+`feature-documentation/seitenobergrenze.md`.
+
+**Vor einem Rollback** auf eine ältere Fassung: offene angehaltene Vorgänge entscheiden.
+Der Zustandswert `blocked` ist dort unbekannt und lässt `DocStatus(...)` beim Zurücklesen
+werfen; die zusätzliche Spalte dagegen stört nicht.
+
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
 - UI ohne HTMX/Tailwind-Laufzeit: serverseitiges Jinja2 + offline-CSS + Vanilla-JS-SSE
