@@ -211,3 +211,18 @@ def test_check_health_meldet_nicht_benutzbar_bei_geschlossener_verbindung(tmp_pa
 
     assert health.state == DatabaseHealthState.UNUSABLE
     assert health.error is not None
+    # Minor 5 (Fix-Runde 1): genau auf diesem Pfad (Lock erhalten, Abfrage schlägt fehl)
+    # könnte ein entferntes `finally` den Lock verwaist zurücklassen — ohne diese
+    # Zusicherung bliebe der Test grün, während im Betrieb nach einem einzigen
+    # fehlgeschlagenen Health-Check jeder weitere Datenbankzugriff dauerhaft blockiert.
+    assert repo._lock.acquire(timeout=1)
+    repo._lock.release()
+
+
+def test_database_health_state_healthy_unterscheidet_gesund_von_ungesund():
+    """Minor 3: 'beschäftigt' gilt als gesund — sonst würde ein naheliegendes
+    `db.state == USABLE` an der Verbrauchsstelle (Gruppe 5) jeden Container unter
+    Last als ungesund einstufen, genau dann, wenn man den Zustand liest."""
+    assert DatabaseHealthState.USABLE.healthy is True
+    assert DatabaseHealthState.BUSY.healthy is True
+    assert DatabaseHealthState.UNUSABLE.healthy is False

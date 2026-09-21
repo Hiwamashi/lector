@@ -36,6 +36,24 @@ def test_worker_liegt_in_app_state(client):
     assert isinstance(application.state.worker, Worker)
 
 
+def test_worker_hintergrundarbeiten_laufen_nach_dem_start(client):
+    """Minor 2 (Fix-Runde 1, Gruppe 4): pinnt den Vertrag zwischen `start()` und
+    `background_task_states()`/`observer_state()`. `start()` benutzte bislang eigene
+    Namens-Literale statt der Konstanten, mit denen die Auskunft abgleicht — ein
+    Tippfehler dort hätte lautlos jede Installation dauerhaft als ungesund gemeldet,
+    ohne dass ein Test das bemerkt (alle Worker-Tests bestückten `_tasks` bislang
+    selbst mit denselben Literalen). Hier läuft der echte `lifespan` durch die
+    `client`-Fixture, mit `FEATURE_PAPERLESS_SYNC` auf dem Standardwert (aus)."""
+    _, application = client
+    from app.worker import TaskState
+
+    worker = application.state.worker
+    states = worker.background_task_states()
+    running = {s.name for s in states if s.state == TaskState.RUNNING}
+    assert running == {"scan", "process", "retry", "retention"}
+    assert worker.observer_state().state == TaskState.RUNNING
+
+
 def test_dashboard_empty(client):
     c, _ = client
     resp = c.get("/")

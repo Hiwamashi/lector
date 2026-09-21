@@ -49,9 +49,19 @@ class DatabaseHealthState(StrEnum):
     """Ausgang der Zustandsprüfung der Datenbank (siehe `Repository.check_health`)."""
 
     USABLE = "usable"
-    # Lock in der Frist nicht erhalten — die Datenbank wird benutzt, nicht ist sie kaputt.
+    # Lock in der Frist nicht erhalten — die Datenbank wird benutzt, sie ist nicht kaputt.
     BUSY = "busy"
     UNUSABLE = "unusable"
+
+    @property
+    def healthy(self) -> bool:
+        """`USABLE` und `BUSY` gelten beide als gesund — nur `BUSY` unterlassen zu
+        werten würde jeden Container unter Last als ungesund melden, genau in dem
+        Moment, in dem man den Zustand liest (design.md D5). Als Eigenschaft am Enum
+        statt als Vergleich beim Aufrufer, damit diese Bewertung nicht an jeder
+        Verbrauchsstelle erneut abgeleitet werden muss.
+        """
+        return self in (DatabaseHealthState.USABLE, DatabaseHealthState.BUSY)
 
 
 @dataclass
@@ -188,7 +198,8 @@ class Repository:
     def check_health(
         self, timeout: float = _HEALTH_CHECK_LOCK_TIMEOUT_SECONDS
     ) -> DatabaseHealth:
-        """Prüft, ob die Datenbank benutzbar ist, ohne auf den geteilten Lock zu warten.
+        """Prüft, ob die Datenbank benutzbar ist — wartet dabei höchstens `timeout`
+        Sekunden auf den geteilten Lock, statt unbegrenzt zu blockieren.
 
         Nimmt `self._lock` nur mit kurzer Frist. Läuft sie ab, gilt die Datenbank als
         *beschäftigt* — nicht als kaputt, denn ein anderer Zugriff (Pipeline im
