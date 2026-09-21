@@ -1,6 +1,8 @@
+import asyncio
 import importlib
 import logging
 import os
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,8 +25,173 @@ def client(tmp_path, monkeypatch):
 
 
 def test_healthz(client):
+    """5.2: Bei gesundem Dienst liefert `/healthz` `200` und schlüsselt jede der sieben
+    Prüfungen (vier Kern-Tasks, Paperless-Schleife, Observer, Datenbank) einzeln auf —
+    das ist zugleich der Nachweis für 5.1."""
     c, _ = client
-    assert c.get("/healthz").json() == {"status": "ok"}
+    from app.repository import DatabaseHealthState
+    from app.worker import TaskState
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    laufend = {"state": TaskState.RUNNING.value, "error": None}
+    assert body["scan"] == laufend
+    assert body["process"] == laufend
+    assert body["retry"] == laufend
+    assert body["retention"] == laufend
+    assert body["watch-folder-observer"] == laufend
+    # FEATURE_PAPERLESS_SYNC steht in der Test-Umgebung auf dem Standardwert (aus).
+    assert body["paperless-sync"] == {"state": TaskState.NOT_STARTED.value, "error": None}
+    assert body["database"] == {"state": DatabaseHealthState.USABLE.value, "error": None}
+
+
+def _cancel_worker_task(application, name: str) -> None:
+    """Bricht eine laufende Hintergrund-Task des Workers wirklich ab und wartet, bis sie
+    beendet ist — threadsicher über den an `EventBus` gebundenen Loop, mit Zeitlimit statt
+    unbegrenztem Warten (der Test läuft synchron, die Task aber im Loop der Fixture)."""
+    worker = application.state.worker
+    loop = application.state.bus._loop
+    task = next(t for t in worker._tasks if t.get_name() == name)
+
+    async def _cancel_and_wait() -> None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    future = asyncio.run_coroutine_threadsafe(_cancel_and_wait(), loop)
+    future.result(timeout=5)
+
+
+def test_healthz_meldet_beendete_hintergrundarbeit(client):
+    """5.3: Eine wirklich beendete Hintergrundarbeit (nicht vorgetäuscht) lässt den
+    Endpunkt `503` liefern und benennt in der Antwort, welche Arbeit betroffen ist —
+    samt Ursache, statt eines pauschalen 'ungesund'."""
+    c, application = client
+    _cancel_worker_task(application, "retention")
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["retention"]["state"] == "stopped"
+    assert body["retention"]["error"] is not None
+
+
+def test_healthz_meldet_nicht_benutzbare_datenbank(client):
+    """5.4: Eine nicht benutzbare Datenbank lässt den Endpunkt `503` liefern und benennt
+    in der Antwort die Datenbank samt Ursache."""
+    c, application = client
+    application.state.repo.close()
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["database"]["state"] == "unusable"
+    assert body["database"]["error"] is not None
+
+
+def test_healthz_meldet_beendeten_observer(client):
+    """5.5: Ein wirklich beendeter Watchdog-Observer-Thread lässt `/healthz` `503`
+    liefern. `_observer = None` deckt diesen Pfad nicht ab — hier stirbt der echte
+    Thread, mit Zeitlimit statt `sleep`."""
+    c, application = client
+    worker = application.state.worker
+    worker._observer.stop()
+    worker._observer.join(timeout=5)
+    assert not worker._observer.is_alive()
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["watch-folder-observer"]["state"] == "stopped"
+    assert body["watch-folder-observer"]["error"] is not None
+
+
+def test_healthz_meldet_beschaeftigte_datenbank_als_gesund(client):
+    """5.6: Eine beschäftigte Datenbank (Lock von einem anderen Thread gehalten) bleibt
+    gesund und liefert weiter `200` — `BUSY` heißt benutzt, nicht kaputt. Synchronisiert
+    über `threading.Event` statt `sleep`, mit Zeitlimit und `finally` (Muster aus
+    `tests/test_repository.py::test_check_health_meldet_beschaeftigt_wenn_lock_von_anderem_thread_gehalten`),
+    damit ein fehlgeschlagener Test die Suite nicht aufhängt."""
+    c, application = client
+    repo = application.state.repo
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock() -> None:
+        with repo._lock:
+            lock_held.set()
+            release_lock.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert lock_held.wait(timeout=5)
+
+        resp = c.get("/healthz")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["database"]["state"] == "busy"
+        assert body["database"]["error"] is None
+    finally:
+        release_lock.set()
+        holder.join(timeout=5)
+
+
+def test_healthz_veraendert_nichts(client):
+    """5.7: Der Endpunkt beobachtet nur — mehrfache Abfrage bei beendeter Arbeit lässt
+    diese beendet (keine Selbstheilung), legt keinen Vorgang an und schreibt keinen
+    Verlaufseintrag."""
+    c, application = client
+    repo = application.state.repo
+    _cancel_worker_task(application, "retention")
+
+    doc_count_vorher = repo._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    event_count_vorher = repo._conn.execute("SELECT COUNT(*) FROM document_events").fetchone()[0]
+
+    for _ in range(3):
+        resp = c.get("/healthz")
+        assert resp.status_code == 503
+        assert resp.json()["retention"]["state"] == "stopped"
+
+    doc_count_nachher = repo._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    event_count_nachher = repo._conn.execute(
+        "SELECT COUNT(*) FROM document_events"
+    ).fetchone()[0]
+    assert doc_count_nachher == doc_count_vorher
+    assert event_count_nachher == event_count_vorher
+
+
+def test_healthz_ignoriert_nicht_erreichbares_paperless(tmp_path, monkeypatch):
+    """5.8: Ein nicht erreichbares Paperless darf `/healthz` nicht auf `503` bringen —
+    der Endpunkt prüft die Erreichbarkeit fremder Dienste nicht und macht dafür auch
+    keine eigenen HTTP-Aufrufe, die in den globalen `httpx.HTTPError`-Handler
+    (`paperless_unavailable`) laufen könnten."""
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FEATURE_PAPERLESS_SYNC", "true")
+    monkeypatch.setenv("PAPERLESS_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("PAPERLESS_TOKEN", "dummy-token")
+    application = _reload_app_main()
+
+    with TestClient(application.app) as c:
+        sync = application.app.state.sync
+        assert sync.enabled
+
+        # Erzwingt einen echten, fehlschlagenden Sync-Versuch, statt auf den nächsten
+        # Intervall-Tick der Hintergrundschleife zu warten — `sync_once` fängt den
+        # ConnectError selbst ab und wirft nicht weiter.
+        loop = application.app.state.bus._loop
+        future = asyncio.run_coroutine_threadsafe(sync.sync_once(), loop)
+        future.result(timeout=5)
+
+        resp = c.get("/healthz")
+
+        assert resp.status_code == 200
+        assert resp.json()["paperless-sync"]["state"] == "running"
 
 
 def test_worker_liegt_in_app_state(client):

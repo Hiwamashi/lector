@@ -17,7 +17,13 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -279,9 +285,43 @@ def _filters(status: str | None, q: str | None, period: str | None):
     return status_enum, (q or None), _parse_since(period)
 
 
+def _health_status(
+    worker: Worker, repo: Repository
+) -> tuple[bool, dict[str, dict[str, str | None]]]:
+    """Baut die Prüfungen des Health-Endpunkts aus den fertigen Zustandsauskünften von
+    `Worker` (fünf Hintergrundarbeiten + Watchdog-Observer) und `Repository` (Datenbank)
+    zusammen — rein lesend, keine der aufgerufenen Methoden verändert einen Zustand.
+
+    Bewertet jede Prüfung über deren `state.healthy`-Eigenschaft, nicht durch einen
+    eigenen Vergleich gegen einzelne Enum-Werte: `NOT_STARTED` (abgeschaltete
+    Paperless-Schleife, Standardfall) und `BUSY` (benutzte, nicht kaputte Datenbank)
+    gelten beide als gesund — die Bewertung liegt bewusst am Enum, nicht hier.
+    """
+    checks: dict[str, dict[str, str | None]] = {}
+    healthy = True
+    for status in (*worker.background_task_states(), worker.observer_state()):
+        checks[status.name] = {"state": status.state.value, "error": status.error}
+        healthy = healthy and status.state.healthy
+    db_health = repo.check_health()
+    checks["database"] = {"state": db_health.state.value, "error": db_health.error}
+    healthy = healthy and db_health.state.healthy
+    return healthy, checks
+
+
 @app.get("/healthz")
-async def healthz():
-    return {"status": "ok"}
+async def healthz(request: Request) -> JSONResponse:
+    """Meldet die tatsächliche Betriebsbereitschaft: je Hintergrundarbeit, Observer und
+    Datenbank ein Eintrag in der Antwort. `200` nur wenn alle Prüfungen gesund sind,
+    sonst `503` — nicht `500`, weil keine fehlerhafte Anfrage vorliegt, sondern eine
+    vorübergehend fehlende Bereitschaft, und weil ein Container-Zustandstest ohnehin nur
+    den Statuscode auswertet.
+
+    Rein lesend: startet keine beendete Arbeit neu, stößt keinen Vorgang an und schreibt
+    keinen Zustand. Prüft ausdrücklich nicht die Erreichbarkeit fremder Dienste
+    (Texterkennung, Paperless, SevDesk) — nur die eigene Betriebsbereitschaft.
+    """
+    healthy, checks = _health_status(request.app.state.worker, request.app.state.repo)
+    return JSONResponse(checks, status_code=200 if healthy else 503)
 
 
 @app.get("/", response_class=HTMLResponse)
