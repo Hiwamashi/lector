@@ -181,14 +181,18 @@ def validate_settings(settings: Settings) -> list[str]:
     problems: list[str] = []
 
     provider = settings.ocr_provider
-    if provider not in _ENGINE_REQUIRED_FIELDS:
+    # Case-insensitiv, konsistent zu get_adapter() (app/ocr/__init__.py:10), das den
+    # Provider ebenfalls über .lower() auflöst — sonst würde eine Schreibweise, die zur
+    # Laufzeit anstandslos die Engine auflöst, hier als unbekannt zurückgewiesen.
+    normalized_provider = provider.lower()
+    if normalized_provider not in _ENGINE_REQUIRED_FIELDS:
         zulaessig = ", ".join(sorted(_ENGINE_REQUIRED_FIELDS))
         problems.append(
             f"{_env_name('ocr_provider')} hat einen unbekannten Wert {provider!r} "
             f"(zulässig: {zulaessig})"
         )
     else:
-        for field_name in _ENGINE_REQUIRED_FIELDS[provider]:
+        for field_name in _ENGINE_REQUIRED_FIELDS[normalized_provider]:
             value = getattr(settings, field_name)
             if field_name == "google_application_credentials":
                 if not value:

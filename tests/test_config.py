@@ -79,6 +79,21 @@ def test_validate_settings_beanstandet_leere_engine_pflichtangaben(tmp_path):
     assert "DOCAI_LOCATION" in meldung
 
 
+def test_validate_settings_akzeptiert_provider_in_abweichender_schreibweise(tmp_path):
+    s = _vollstaendige_documentai_settings(tmp_path, OCR_PROVIDER="DocumentAI")
+    assert validate_settings(s) == []
+
+
+def test_validate_settings_meldet_luecke_bei_abweichender_schreibweise_statt_unbekannt(
+    tmp_path,
+):
+    s = _vollstaendige_documentai_settings(tmp_path, OCR_PROVIDER="DocumentAI", GCP_PROJECT_ID="")
+    problems = validate_settings(s)
+    assert len(problems) == 1
+    assert "GCP_PROJECT_ID" in problems[0]
+    assert "unbekannten Wert" not in problems[0]
+
+
 def test_validate_settings_ueberspringt_engine_pflichtangaben_ohne_bedarf(monkeypatch, tmp_path):
     monkeypatch.setitem(config._ENGINE_REQUIRED_FIELDS, "ohne-bedarf", ())
     s = _vollstaendige_documentai_settings(
