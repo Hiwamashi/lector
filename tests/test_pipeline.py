@@ -1,6 +1,7 @@
 import os
 import time
 
+import pytest
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas
 
@@ -29,7 +30,7 @@ class FakeAdapter(OcrAdapter):
     def page_limit(self):
         return 15
 
-    def process(self, pages, progress=None):
+    def process(self, pages, progress=None, store=None):
         if self.fail:
             raise RuntimeError("OCR kaputt")
         result = OcrResult()
@@ -152,9 +153,9 @@ class CountingAdapter(FakeAdapter):
         super().__init__()
         self.calls = 0
 
-    def process(self, pages, progress=None):
+    def process(self, pages, progress=None, store=None):
         self.calls += 1
-        return super().process(pages, progress)
+        return super().process(pages, progress, store)
 
 
 def test_oversized_document_is_blocked_without_calling_the_engine(tmp_path):
@@ -286,3 +287,194 @@ def test_retention_leaves_blocked_originals_in_the_watch_folder(tmp_path):
 
     assert purge_processed(s.processed_dir, 30) == 0
     assert src.exists()
+
+
+# ---------------------------------------------------------------------------
+# Bewahrte Teilergebnisse (openspec design.md D2/D7)
+# ---------------------------------------------------------------------------
+
+
+class PartialFailAdapter(FakeAdapter):
+    """Verarbeitet Blöcke einzeln und scheitert ab einem bestimmten Block."""
+
+    def __init__(self, *, chunk_size=1, fail_from=None):
+        super().__init__()
+        self.chunk_size = chunk_size
+        self.fail_from = fail_from
+        self.engine_chunks = 0
+
+    @property
+    def page_limit(self):
+        return self.chunk_size
+
+    def process(self, pages, progress=None, store=None):
+        from app.ocr.base import SafeChunkStore, chunked
+
+        safe = SafeChunkStore(store) if store is not None else None
+        result = OcrResult()
+        processed = 0
+        offset = 0
+        for index, chunk in enumerate(chunked(pages, self.chunk_size)):
+            cached = safe.get(index) if safe else None
+            aus_speicher = cached is not None
+            if cached is None:
+                if self.fail_from is not None and index >= self.fail_from:
+                    raise RuntimeError("Engine weg")
+                self.engine_chunks += 1
+                cached = [
+                    OcrPage(
+                        offset + i, 400, 560, tokens=[OcrToken("Wort", 0.1, 0.1, 0.4, 0.15)]
+                    )
+                    for i in range(len(chunk))
+                ]
+                if safe:
+                    safe.put(index, cached)
+            result.pages.extend(cached)
+            offset += len(chunk)
+            processed += len(chunk)
+            if progress:
+                progress(processed, aus_speicher)
+        return result
+
+
+def _hashed_doc(repo, settings, name="scan.pdf", pages=3):
+    import hashlib
+
+    src = settings.watch_dir / name
+    _make_pdf(src, pages=pages)
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()
+    return repo.create_document(
+        original_filename=name, source_path=str(src), file_hash=digest
+    ), src
+
+
+def test_fingerprint_is_stable_for_unchanged_conditions(tmp_path):
+    from app.pipeline import chunk_fingerprint
+
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s)
+    doc = repo.get_document(doc_id)
+    adapter = FakeAdapter()
+
+    assert chunk_fingerprint(doc, s, adapter) == chunk_fingerprint(doc, s, adapter)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"PREPROCESS_DESKEW": "true"},
+        {"PREPROCESS_CONTRAST": "true"},
+        {"CHUNK_SIZE_PAGES": "7"},
+        {"DOCAI_PROCESSOR_ID": "anderer-prozessor"},
+        {"DOCAI_LOCATION": "us"},
+    ],
+)
+def test_fingerprint_changes_with_every_relevant_condition(tmp_path, overrides):
+    from app.pipeline import chunk_fingerprint
+
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s)
+    doc = repo.get_document(doc_id)
+    adapter = FakeAdapter()
+    vorher = chunk_fingerprint(doc, s, adapter)
+
+    assert chunk_fingerprint(doc, _settings(tmp_path, **overrides), adapter) != vorher
+
+
+def test_fingerprint_changes_with_the_document_content(tmp_path):
+    from app.pipeline import chunk_fingerprint
+
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s)
+    doc = repo.get_document(doc_id)
+    andere = repo.get_document(
+        repo.create_document(
+            original_filename="scan.pdf", source_path="/x/scan.pdf", file_hash="andere-summe"
+        )
+    )
+    adapter = FakeAdapter()
+
+    assert chunk_fingerprint(doc, s, adapter) != chunk_fingerprint(andere, s, adapter)
+
+
+def test_fingerprint_changes_with_the_engine(tmp_path):
+    from app.pipeline import chunk_fingerprint
+
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s)
+    doc = repo.get_document(doc_id)
+
+    class AndereEngine(FakeAdapter):
+        name = "andere"
+
+    assert chunk_fingerprint(doc, s, FakeAdapter()) != chunk_fingerprint(doc, s, AndereEngine())
+
+
+def test_document_without_hash_uses_no_cache(tmp_path):
+    """Ohne Prüfsumme trüge der Schlüssel nicht — dann lieber gar kein Zwischenspeicher."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "ohne-hash.pdf"
+    _make_pdf(src, pages=2)
+    doc_id = repo.create_document(original_filename="ohne-hash.pdf", source_path=str(src))
+
+    run_pipeline(doc_id, repo, s, PartialFailAdapter())
+
+    assert repo.get_document(doc_id).status == DocStatus.DONE
+    assert repo.count_chunk_results(doc_id) == 0
+
+
+def test_retry_reuses_the_chunks_paid_for_in_the_first_run(tmp_path):
+    """Der Kern der Change: Der zweite Lauf bezahlt nur noch die fehlenden Blöcke."""
+    s = _settings(tmp_path, RETRY_MAX="3")
+    repo = Repository(s.db_path)
+    doc_id, src = _hashed_doc(repo, s, pages=3)
+
+    erster = PartialFailAdapter(chunk_size=1, fail_from=2)
+    run_pipeline(doc_id, repo, s, erster)
+
+    assert repo.get_document(doc_id).status == DocStatus.PENDING
+    assert erster.engine_chunks == 2
+    assert repo.count_chunk_results(doc_id) == 2
+
+    zweiter = PartialFailAdapter(chunk_size=1)
+    run_pipeline(doc_id, repo, s, zweiter)
+
+    assert repo.get_document(doc_id).status == DocStatus.DONE
+    assert zweiter.engine_chunks == 1  # nur der zuvor fehlende Block
+    out = list(s.consume_dir.glob("*.pdf"))
+    assert len(out) == 1
+    assert "Wort" in PdfReader(str(out[0])).pages[2].extract_text()
+
+
+def test_reused_chunks_are_marked_in_the_history(tmp_path):
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s, pages=3)
+    run_pipeline(doc_id, repo, s, PartialFailAdapter(chunk_size=1, fail_from=2))
+
+    run_pipeline(doc_id, repo, s, PartialFailAdapter(chunk_size=1))
+
+    meldungen = [
+        e["message"] for e in repo.list_events(doc_id) if e["event_type"] == EventType.OCR_CHUNK
+    ]
+    assert any("Zwischenspeicher" in m for m in meldungen)
+    assert any("Zwischenspeicher" not in m for m in meldungen)
+
+
+def test_changed_preprocessing_invalidates_the_cache(tmp_path):
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s, pages=3)
+    run_pipeline(doc_id, repo, s, PartialFailAdapter(chunk_size=1, fail_from=2))
+    assert repo.count_chunk_results(doc_id) == 2
+
+    geaendert = _settings(tmp_path, PREPROCESS_CONTRAST="true")
+    zweiter = PartialFailAdapter(chunk_size=1)
+    run_pipeline(doc_id, repo, geaendert, zweiter)
+
+    assert zweiter.engine_chunks == 3  # alles neu erkannt

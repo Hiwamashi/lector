@@ -250,6 +250,58 @@ jedes Statusfarb-Token in **beiden** Schema-Bloecken steht.
 Der Zustandswert `blocked` ist dort unbekannt und lässt `DocStatus(...)` beim Zurücklesen
 werfen; die zusätzliche Spalte dagegen stört nicht.
 
+## Zusatz-Feature: Bewahrte OCR-Teilergebnisse (2026-09-21)
+
+Die dritte der acht Luecken in `baseline-specs-kernpipeline` ist geschlossen: **Ein
+Wiederholversuch bezahlt bereits erkannte Bloecke nicht erneut.**
+
+Bisher sammelte `process()` die Blockergebnisse in einer lokalen Variable; eine Ausnahme im
+dritten Block riss die beiden bezahlten mit. Jetzt wird jeder erfolgreiche Block sofort in der
+Tabelle `ocr_chunk_cache` abgelegt, und vor jedem Block wird dort nachgesehen. Ruling R14 der
+Recovery-Change, das die "erneut bezahlte Texterkennung" als in Kauf genommen benannte, ist
+damit erledigt.
+
+**Der Zwischenspeicher wird dem Adapter gereicht, statt das Chunking hochzuziehen.** Die
+Blockhoheit liegt laut Spec bei der Engine. Das Chunking in die Pipeline zu ziehen haette den
+Zwischenspeicher trivial gemacht, aber dieses Requirement gebrochen und jede kuenftige Engine
+gezwungen, ihre Blockgroesse nach aussen zu tragen. Stattdessen nimmt `process()` einen
+optionalen Ablageort entgegen, der bereits an Vorgang und Fingerabdruck gebunden ist — der
+Adapter kennt nur Blockindizes und erbt die Ersparnis, ohne etwas ueber Pruefsummen zu wissen.
+
+**Gueltig ist ein Block ueber einen Fingerabdruck, nicht ueber die Bilder.** Er hasht
+Pruefsumme des Originals, Blockgrenzen, die Schalter der Bildaufbereitung, die
+Renderaufloesung sowie Engine, Prozessor und Region. Ein Schluessel ueber die aufbereiteten
+Seiten waere exakter, setzte aber bitgenaue Reproduzierbarkeit von Rasterung und Deskew
+voraus — im Projekt nirgends belegt. Waere sie auch nur um ein Pixel verletzt, griffe der
+Zwischenspeicher nie: Die Funktion liefe mit, ohne je zu wirken. Ohne `file_hash` am Vorgang
+wird gar kein Zwischenspeicher verwendet.
+
+Weiteres:
+
+- **Die Drosselung sitzt jetzt hinter dem Nachsehen.** `DOCAI_MAX_PAGES_PER_MINUTE` schuetzt
+  die Quota; ohne Anfrage gibt es nichts zu drosseln. Davor stehend waere ein
+  Wiederholversuch, der jede Seite aus dem Speicher bedient, genauso langsam wie der
+  urspruengliche Lauf — bei 120 Seiten/Minute eine halbe Minute fuer Anfragen, die nie
+  stattfinden.
+- **Wiederverwendung ist im Verlauf sichtbar.** Sonst saehe ein Lauf, der 60 Seiten in
+  Sekunden abschliesst, wie eine Fehlfunktion aus.
+- **Freigegeben wird an zwei Stellen, bewusst doppelt:** sofort beim Uebergang in einen
+  Endzustand (wobei `transition_from_blocked` `set_status` umgeht und den Aufruf eigens
+  braucht) und als Netz im Aufbewahrungsjob, der die Tatsache selbst prueft statt auf
+  Disziplin an jeder kuenftigen Aufrufstelle zu bauen. `CHUNK_CACHE_RETENTION_DAYS` (7)
+  schaltet bei 0 nur das Verfallen ab, nicht das Raeumen abgeschlossener Vorgaenge.
+- **Fehler des Zwischenspeichers brechen nichts ab** (`SafeChunkStore`): Ein nicht bewahrter
+  Block kostet einen erneuten Aufruf, ein abgebrochener Lauf kostet alle. Eine unlesbare
+  Zeile gilt als nicht vorhanden.
+- **Korrektur einer Annahme aus der Planung:** Task 3.2 ging davon aus, der `FakeAdapter` in
+  den Tests laufe unveraendert weiter. `process` ist aber eine abstrakte Methode — ein
+  Testdouble muss dem erweiterten Vertrag folgen (eine Zeile). Rueckwaerts kompatibel blieb
+  dagegen der Fortschritts-Callback, als Protokoll mit Vorgabewert.
+
+316 Tests gruen (vorher 263), `ruff` sauber. Feature-Doku unter
+`feature-documentation/chunk-teilergebnisse.md`; `ocr-adapter.md` beschreibt den erweiterten
+Vertrag fuer kuenftige Engines.
+
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
 - UI ohne HTMX/Tailwind-Laufzeit: serverseitiges Jinja2 + offline-CSS + Vanilla-JS-SSE

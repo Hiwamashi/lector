@@ -1,5 +1,6 @@
 """Retention-Job: löscht Dateien im processed-Ordner, die älter als N Tage sind
-(siehe PRD §3.1). DB-Einträge bleiben für die Historie erhalten."""
+(siehe PRD §3.1), und räumt bewahrte OCR-Teilergebnisse auf. DB-Einträge der Vorgänge
+bleiben für die Historie erhalten."""
 
 from __future__ import annotations
 
@@ -27,4 +28,21 @@ def purge_processed(processed_dir: Path, retention_days: int, *, now: float | No
             log.warning("Konnte Datei nicht löschen: %s", entry)
     if deleted:
         log.info("Retention: %d Datei(en) aus %s gelöscht", deleted, processed_dir)
+    return deleted
+
+
+def purge_chunk_cache(repo, retention_days: int) -> int:
+    """Räumt bewahrte OCR-Teilergebnisse auf, die niemand mehr braucht.
+
+    Zweites Netz neben der Freigabe beim Zustandsübergang: Der Job prüft die Tatsache
+    selbst (Vorgang in einem Endzustand, oder Frist abgelaufen) und ist damit unabhängig
+    davon, ob jede künftige Endzustandssetzung die Freigabe mitnimmt.
+    """
+    try:
+        deleted = repo.purge_chunk_results(retention_days)
+    except Exception:
+        log.exception("Aufräumen der bewahrten Teilergebnisse fehlgeschlagen")
+        return 0
+    if deleted:
+        log.info("Retention: %d bewahrte Teilergebnis(se) entfernt", deleted)
     return deleted

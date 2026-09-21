@@ -18,6 +18,7 @@ Entwicklung wird optional eine `.env` gelesen (`.env.example` als Vorlage).
 | `RETRY_DELAY_MINUTES` / `RETRY_MAX` | 15 / 3 | Auto-Retry |
 | `CHUNK_SIZE_PAGES` | 15 | Obergrenze Block-Seiten (deckelt das Engine-Limit) |
 | `MAX_PAGES_PER_DOCUMENT` | 100 | Obergrenze Seiten je Dokument vor dem OCR-Aufruf; darüber wird angehalten statt verarbeitet. 0 = aus. Siehe [seitenobergrenze.md](seitenobergrenze.md) |
+| `CHUNK_CACHE_RETENTION_DAYS` | 7 | Verfallsfrist bewahrter OCR-Teilergebnisse; 0 = kein Verfallen (abgeschlossene Vorgaenge werden trotzdem geraeumt). Siehe [chunk-teilergebnisse.md](chunk-teilergebnisse.md) |
 | `PREPROCESS_DESKEW`/`_CONTRAST` | true | Vorverarbeitungs-Flags (Orientierung übernimmt Document AI, kein Auto-Rotate) |
 | `POLL_INTERVAL_SECONDS` | 2.0 | Scan-Frequenz des Watch-Folders |
 | `STABILITY_WINDOW_SECONDS` | 6.0 | Größenstabilitäts-Fenster |

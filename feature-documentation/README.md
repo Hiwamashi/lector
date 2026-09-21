@@ -27,6 +27,7 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 | [sandwich-pdf.md](sandwich-pdf.md) | `app/pdfbuilder.py` | Durchsuchbares Sandwich-PDF |
 | [pipeline-lifecycle-retry.md](pipeline-lifecycle-retry.md) | `app/pipeline.py`, `app/fileops.py` | Pipeline, Lifecycle, Auto-Retry |
 | [seitenobergrenze.md](seitenobergrenze.md) | `app/pages.py`, `app/pipeline.py`, `app/decisions.py` | Seitenobergrenze, Wartezustand & Freigabe |
+| [chunk-teilergebnisse.md](chunk-teilergebnisse.md) | `app/ocr/base.py`, `app/ocr/documentai.py`, `app/repository.py` | Bewahrte OCR-Teilergebnisse |
 | [retention.md](retention.md) | `app/retention.py` | Retention-Job |
 | [web-ui-sse.md](web-ui-sse.md) | `app/main.py`, `app/events.py`, `app/templates/`, `app/static/` | Web-UI & Live-Updates |
 | [ui-erscheinungsbild.md](ui-erscheinungsbild.md) | `app/static/app.css`, `app/static/app.js` (Markierung) | Farbtokens, Dunkel-Modus, Zustände, Aufleuchten |

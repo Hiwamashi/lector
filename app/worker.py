@@ -26,7 +26,7 @@ from .ocr.base import OcrAdapter
 from .paperless_sync import PaperlessSync
 from .pipeline import run_pipeline
 from .repository import Repository
-from .retention import purge_processed
+from .retention import purge_chunk_cache, purge_processed
 from .watcher import StabilityTracker, scan_dir
 
 log = logging.getLogger("lector.worker")
@@ -197,6 +197,12 @@ class Worker:
                     purge_processed,
                     self.settings.processed_dir,
                     self.settings.processed_retention_days,
+                )
+                await loop.run_in_executor(
+                    None,
+                    purge_chunk_cache,
+                    self.repo,
+                    self.settings.chunk_cache_retention_days,
                 )
             except Exception:
                 log.exception("Fehler im Retention-Loop")

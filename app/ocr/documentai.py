@@ -12,7 +12,14 @@ from PIL import Image
 
 from ..config import Settings
 from ..models import OcrPage, OcrResult, OcrToken
-from .base import OcrAdapter, ProgressCallback, RateLimiter, chunked
+from .base import (
+    ChunkStore,
+    OcrAdapter,
+    ProgressCallback,
+    RateLimiter,
+    SafeChunkStore,
+    chunked,
+)
 
 # Online-Process-Limit der Document-AI-Engine (siehe PRD: ≤ 15 Seiten pro Block).
 DOCAI_ONLINE_PAGE_LIMIT = 15
@@ -114,17 +121,34 @@ class DocumentAiAdapter(OcrAdapter):
         return response.document
 
     def process(
-        self, pages: list[Image.Image], progress: ProgressCallback | None = None
+        self,
+        pages: list[Image.Image],
+        progress: ProgressCallback | None = None,
+        store: ChunkStore | None = None,
     ) -> OcrResult:
+        safe_store = SafeChunkStore(store) if store is not None else None
         result = OcrResult()
         processed = 0
         offset = 0
-        for chunk in chunked(pages, self.page_limit):
-            self._rate_limiter.acquire(len(chunk))
-            document = self._process_chunk(chunk)
-            result.pages.extend(document_to_pages(document, offset))
+        for chunk_index, chunk in enumerate(chunked(pages, self.page_limit)):
+            cached = safe_store.get(chunk_index) if safe_store else None
+            if cached is not None:
+                result.pages.extend(cached)
+            else:
+                # Die Drosselung sitzt bewusst HINTER dem Nachsehen: Sie schützt die Quota
+                # der Engine, und ohne Anfrage gibt es nichts zu drosseln. Andernfalls wäre
+                # ein Wiederholversuch, der jede Seite aus dem Zwischenspeicher bedient,
+                # genauso langsam wie der ursprüngliche Lauf.
+                self._rate_limiter.acquire(len(chunk))
+                document = self._process_chunk(chunk)
+                chunk_pages = document_to_pages(document, offset)
+                result.pages.extend(chunk_pages)
+                # Ablegen, bevor der nächste Block beginnt — scheitert der, ist dieser
+                # bereits in Sicherheit.
+                if safe_store:
+                    safe_store.put(chunk_index, chunk_pages)
             offset += len(chunk)
             processed += len(chunk)
             if progress:
-                progress(processed)
+                progress(processed, cached is not None)
         return result

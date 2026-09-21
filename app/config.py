@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Document AI Geld; ein irrtümlich eingelegter Massenscan soll anhalten statt
     # durchzulaufen. 0 oder kleiner schaltet die Prüfung ab.
     max_pages_per_document: int = Field(default=100, alias="MAX_PAGES_PER_DOCUMENT")
+    # Verfallsfrist bewahrter OCR-Teilergebnisse. Lang genug fuer jede Retry-Kette,
+    # kurz genug, dass Reste eines abgestuerzten Laufs nicht liegen bleiben.
+    # 0 oder kleiner schaltet nur das Verfallen ab, nicht das Aufraeumen abgeschlossener
+    # Vorgaenge — deren Eintraege werden immer entfernt.
+    chunk_cache_retention_days: int = Field(default=7, alias="CHUNK_CACHE_RETENTION_DAYS")
 
     # Vorverarbeitung (Orientierung übernimmt Document AI, kein lokales Auto-Rotate)
     preprocess_deskew: bool = Field(default=True, alias="PREPROCESS_DESKEW")

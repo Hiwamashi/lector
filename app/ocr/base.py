@@ -6,16 +6,67 @@ Bildvorverarbeitung und der Sandwich-PDF-Bau liegen engine-unabhängig darüber.
 
 from __future__ import annotations
 
+import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
+from typing import Protocol
 
 from PIL import Image
 
-from ..models import OcrResult
+from ..models import OcrPage, OcrResult
 
-# Wird mit der kumulierten Anzahl fertig verarbeiteter Seiten aufgerufen.
-ProgressCallback = Callable[[int], None]
+log = logging.getLogger("lector.ocr")
+
+class ProgressCallback(Protocol):
+    """Wird mit der kumulierten Anzahl fertig verarbeiteter Seiten aufgerufen.
+
+    `from_cache` sagt, ob der eben abgeschlossene Block aus dem Zwischenspeicher kam — ohne
+    das saehe ein Lauf, der ein langes Dokument in Sekunden abschliesst, wie eine
+    Fehlfunktion aus. Der Vorgabewert haelt aeltere Aufrufer am Leben, die nur die
+    Seitenzahl uebergeben.
+    """
+
+    def __call__(self, processed: int, from_cache: bool = False) -> None: ...
+
+
+class ChunkStore(Protocol):
+    """Ablageort fuer bewahrte Blockergebnisse, engine-unabhaengig.
+
+    Der Adapter kennt nur Blockindizes. An welchen Vorgang und welche Bedingungen ein
+    Eintrag gebunden ist, entscheidet der Aufrufer, der den Ablageort fertig bestueckt
+    uebergibt — ein kuenftiger Adapter erbt die Ersparnis damit, ohne etwas dafuer zu tun.
+    """
+
+    def get(self, chunk_index: int) -> list[OcrPage] | None:
+        """Bewahrtes Ergebnis dieses Blocks, oder None."""
+
+    def put(self, chunk_index: int, pages: list[OcrPage]) -> None:
+        """Ergebnis dieses Blocks bewahren."""
+
+
+class SafeChunkStore:
+    """Huelle, die jeden Fehler des Ablageorts verschluckt (siehe design.md D4).
+
+    Die Verhaeltnismaessigkeit ist eindeutig: Ein nicht bewahrter Block kostet einen
+    erneuten Aufruf, ein wegen des Zwischenspeichers abgebrochener Lauf kostet alle.
+    """
+
+    def __init__(self, inner: ChunkStore) -> None:
+        self._inner = inner
+
+    def get(self, chunk_index: int) -> list[OcrPage] | None:
+        try:
+            return self._inner.get(chunk_index)
+        except Exception:
+            log.warning("Zwischenspeicher nicht lesbar (Block %s)", chunk_index, exc_info=True)
+            return None
+
+    def put(self, chunk_index: int, pages: list[OcrPage]) -> None:
+        try:
+            self._inner.put(chunk_index, pages)
+        except Exception:
+            log.warning("Block %s liess sich nicht bewahren", chunk_index, exc_info=True)
 
 
 def chunked[T](items: list[T], size: int) -> Iterator[list[T]]:
@@ -57,6 +108,14 @@ class OcrAdapter(ABC):
 
     @abstractmethod
     def process(
-        self, pages: list[Image.Image], progress: ProgressCallback | None = None
+        self,
+        pages: list[Image.Image],
+        progress: ProgressCallback | None = None,
+        store: ChunkStore | None = None,
     ) -> OcrResult:
-        """Erkennt Text + Bounding-Boxes für alle Seiten. Chunkt intern bis page_limit."""
+        """Erkennt Text + Bounding-Boxes für alle Seiten. Chunkt intern bis page_limit.
+
+        Ist `store` gesetzt, MUSS der Adapter vor jedem Block dort nachsehen und einen
+        Treffer verwenden, statt die Engine zu fragen; jeder frisch erkannte Block wird
+        abgelegt, bevor der naechste beginnt.
+        """

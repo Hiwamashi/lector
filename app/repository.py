@@ -7,6 +7,8 @@ optional ein Notifier aufgerufen, damit die SSE-Schicht Live-Updates verteilen k
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -21,11 +23,16 @@ from .models import (
     EventType,
     GiroStatus,
     InvoiceEventType,
+    OcrPage,
     PaperlessInvoice,
     RecipientCache,
     RecipientStatus,
     SevdeskStatus,
+    ocr_pages_from_payload,
+    ocr_pages_to_payload,
 )
+
+log = logging.getLogger("lector.repository")
 
 _INVOICE_COLUMNS = (
     "id, paperless_id, title, correspondent, creditor_name, iban, bic, amount, currency, "
@@ -256,6 +263,9 @@ class Repository:
                     (status.value, error_message, document_id),
                 )
                 self._conn.commit()
+            # Endzustand: Es kommt kein Wiederholversuch mehr, der die bewahrten
+            # Teilergebnisse brauchen koennte.
+            self.clear_chunk_results(document_id)
             self._notify(document_id)
             return
         self.update_document(document_id, **fields)
@@ -299,6 +309,9 @@ class Repository:
             self._conn.commit()
             changed = cur.rowcount > 0
         if changed:
+            # Dieser Weg umgeht `set_status` — die Freigabe muss hier eigens erfolgen.
+            if status in (DocStatus.DONE, DocStatus.SKIPPED_ERECHNUNG, DocStatus.FAILED):
+                self.clear_chunk_results(document_id)
             self._notify(document_id)
         return changed
 
@@ -354,6 +367,106 @@ class Repository:
                 (DocStatus.PROCESSING.value,),
             ).fetchall()
         return [_row_to_document(r) for r in rows]
+
+    # ---- ocr_chunk_cache (bewahrte Teilergebnisse der Texterkennung) ------
+
+    def store_chunk_result(
+        self,
+        document_id: int,
+        chunk_index: int,
+        *,
+        fingerprint: str,
+        pages: list[OcrPage],
+    ) -> None:
+        """Legt das Ergebnis eines Blocks ab (Upsert je Vorgang und Blockindex).
+
+        Ein Lauf mit abweichendem Fingerabdruck überschreibt den alten Eintrag, statt ihn
+        als Müll liegen zu lassen — deshalb steht der Fingerabdruck neben dem Schlüssel,
+        nicht darin.
+        """
+        payload = json.dumps(ocr_pages_to_payload(pages), ensure_ascii=False)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO ocr_chunk_cache "
+                "(document_id, chunk_index, fingerprint, page_count, payload) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(document_id, chunk_index) DO UPDATE SET "
+                "fingerprint = excluded.fingerprint, page_count = excluded.page_count, "
+                "payload = excluded.payload, created_at = datetime('now')",
+                (document_id, chunk_index, fingerprint, len(pages), payload),
+            )
+            self._conn.commit()
+
+    def load_chunk_result(
+        self, document_id: int, chunk_index: int, *, fingerprint: str
+    ) -> list[OcrPage] | None:
+        """Liefert ein bewahrtes Blockergebnis — nur bei passendem Fingerabdruck.
+
+        Eine unlesbare oder nicht deutbare Zeile wird behandelt, als gäbe es sie nicht:
+        Ein erneuter Engine-Aufruf kostet Geld, ein falscher Textlayer kostet Vertrauen.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload FROM ocr_chunk_cache "
+                "WHERE document_id = ? AND chunk_index = ? AND fingerprint = ?",
+                (document_id, chunk_index, fingerprint),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return ocr_pages_from_payload(json.loads(row["payload"]))
+        except (ValueError, TypeError):
+            log.warning(
+                "Bewahrtes Blockergebnis unbrauchbar (Dokument %s, Block %s) — wird neu erkannt",
+                document_id,
+                chunk_index,
+            )
+            return None
+
+    def clear_chunk_results(self, document_id: int) -> int:
+        """Gibt alle bewahrten Blockergebnisse eines Vorgangs frei."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM ocr_chunk_cache WHERE document_id = ?", (document_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def count_chunk_results(self, document_id: int) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM ocr_chunk_cache WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+        return int(row["n"])
+
+    def purge_chunk_results(self, retention_days: int) -> int:
+        """Räumt bewahrte Blockergebnisse auf, die niemand mehr braucht.
+
+        Zwei Gründe, beide hier statt verstreut an den Aufrufstellen: Einträge zu Vorgängen,
+        die einen Endzustand erreicht haben (es kommt kein Wiederholversuch mehr), und
+        Einträge, deren Frist abgelaufen ist (Reste eines abgebrochenen Laufs). Die
+        Zustandsprüfung greift unabhängig von der Frist, damit ein Wert <= 0 nur das
+        Verfallen abschaltet, nicht das Aufräumen.
+        """
+        final = (DocStatus.DONE.value, DocStatus.SKIPPED_ERECHNUNG.value, DocStatus.FAILED.value)
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM ocr_chunk_cache WHERE document_id IN ("
+                f"  SELECT id FROM documents WHERE status IN ({','.join('?' * len(final))})"
+                ")",
+                final,
+            )
+            deleted = cur.rowcount
+            if retention_days > 0:
+                cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+                cur = self._conn.execute(
+                    "DELETE FROM ocr_chunk_cache WHERE created_at < ?",
+                    (cutoff.strftime("%Y-%m-%d %H:%M:%S"),),
+                )
+                deleted += cur.rowcount
+            self._conn.commit()
+        return deleted
 
     # ---- events ----------------------------------------------------------
 
