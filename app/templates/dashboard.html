@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="tiles">
-  {% set tile_order = ["processing", "pending", "done", "skipped_erechnung", "failed"] %}
+  {% set tile_order = ["processing", "pending", "blocked", "done", "skipped_erechnung", "failed"] %}
   {% for key in tile_order %}
   {# aria-current macht den aktiven Filter zugleich sichtbar und vorlesbar. #}
   <a class="tile tile--{{ key }}" href="/?status={{ key }}"

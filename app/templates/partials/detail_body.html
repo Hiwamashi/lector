@@ -15,6 +15,26 @@
 <div class="alert">{{ doc.error_message }}</div>
 {% endif %}
 
+{# Angehalten: Der Vorgang wartet auf eine Entscheidung. Seitenzahl und Grenze stehen
+   hier, damit man sie nicht aus Protokoll oder Konfiguration zusammensuchen muss. #}
+{% if doc.status == "blocked" %}
+<div class="notice notice--blocked">
+  <p class="notice-text">
+    Angehalten: <strong>{{ doc.total_pages or "?" }} Seiten</strong> überschreiten die
+    Grenze von <strong>{{ page_limit }} Seiten</strong>. Es wurde keine Texterkennung
+    ausgeführt — es sind noch keine Kosten entstanden.
+  </p>
+  <div class="notice-actions">
+    <form method="post" action="/documents/{{ doc.id }}/release">
+      <button type="submit">Freigeben und verarbeiten</button>
+    </form>
+    <form method="post" action="/documents/{{ doc.id }}/discard">
+      <button type="submit" class="button--quiet">Verwerfen</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <dl class="meta">
   <dt>Typ</dt><dd>{{ doc.doc_type or "—" }}</dd>
   <dt>OCR-Engine</dt><dd>{{ doc.ocr_engine or "—" }}</dd>

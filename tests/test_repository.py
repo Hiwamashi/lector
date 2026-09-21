@@ -86,3 +86,78 @@ def test_list_processing_returns_only_processing(tmp_path):
     assert [d.id for d in result] == [processing_id]
     assert pending_id not in [d.id for d in result]
     assert done_id not in [d.id for d in result]
+
+
+def test_blocked_is_not_an_end_state(tmp_path):
+    """`blocked` ist ein Wartezustand — kein Abschlusszeitpunkt, kein Ende."""
+    repo = make_repo(tmp_path)
+    doc_id = repo.create_document(original_filename="a.pdf", source_path="/scan-in/a.pdf")
+    repo.set_status(doc_id, DocStatus.PROCESSING)
+
+    repo.set_status(doc_id, DocStatus.BLOCKED)
+
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.BLOCKED
+    assert doc.finished_at is None
+
+
+def test_new_event_types_are_recorded(tmp_path):
+    repo = make_repo(tmp_path)
+    doc_id = repo.create_document(original_filename="a.pdf", source_path="/scan-in/a.pdf")
+
+    for event_type in (EventType.BLOCKED, EventType.RELEASED, EventType.DISCARDED):
+        repo.add_event(doc_id, event_type, f"Meldung {event_type}")
+
+    kinds = [e["event_type"] for e in repo.list_events(doc_id)]
+    assert EventType.BLOCKED in kinds
+    assert EventType.RELEASED in kinds
+    assert EventType.DISCARDED in kinds
+
+
+def test_page_limit_approved_defaults_to_false(tmp_path):
+    repo = make_repo(tmp_path)
+    doc_id = repo.create_document(original_filename="a.pdf", source_path="/scan-in/a.pdf")
+
+    assert repo.get_document(doc_id).page_limit_approved is False
+
+
+def test_migration_adds_page_limit_column_to_existing_db(tmp_path):
+    """Bestandsdatenbanken haben die Spalte nicht — sie muss beim Öffnen nachgezogen
+    werden, ohne bestehende Zeilen zu verlieren."""
+    import sqlite3
+
+    db_path = tmp_path / "alt.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE documents ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " original_filename TEXT NOT NULL,"
+        " source_path TEXT NOT NULL,"
+        " file_hash TEXT,"
+        " status TEXT NOT NULL,"
+        " doc_type TEXT,"
+        " ocr_engine TEXT,"
+        " total_pages INTEGER,"
+        " processed_pages INTEGER NOT NULL DEFAULT 0,"
+        " attempt_count INTEGER NOT NULL DEFAULT 0,"
+        " next_retry_at TEXT,"
+        " error_message TEXT,"
+        " output_path TEXT,"
+        " created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+        " started_at TEXT,"
+        " finished_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO documents (original_filename, source_path, status) VALUES (?, ?, ?)",
+        ("alt.pdf", "/scan-in/alt.pdf", DocStatus.DONE.value),
+    )
+    conn.commit()
+    conn.close()
+
+    repo = Repository(db_path)
+
+    cols = {row["name"] for row in repo._conn.execute("PRAGMA table_info(documents)")}
+    assert "page_limit_approved" in cols
+    doc = repo.get_document(1)
+    assert doc.original_filename == "alt.pdf"
+    assert doc.page_limit_approved is False

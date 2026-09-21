@@ -10,6 +10,10 @@ from enum import StrEnum
 class DocStatus(StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
+    # Wartezustand, kein Endzustand: Der Vorgang ist angehalten, weil die Verarbeitung
+    # eine Entscheidung des Anwenders braucht. Er verlässt ihn nur durch Freigabe oder
+    # Verwerfen — nie von selbst, und ohne eingeplanten Wiederholversuch.
+    BLOCKED = "blocked"
     DONE = "done"
     SKIPPED_ERECHNUNG = "skipped_erechnung"
     FAILED = "failed"
@@ -31,6 +35,9 @@ class EventType(StrEnum):
     MOVED_TO_CONSUME = "moved_to_consume"
     RETRY_SCHEDULED = "retry_scheduled"
     SKIPPED_ERECHNUNG = "skipped_erechnung"
+    BLOCKED = "blocked"
+    RELEASED = "released"
+    DISCARDED = "discarded"
     FAILED = "failed"
     DONE = "done"
 
@@ -50,6 +57,10 @@ class Document:
     next_retry_at: datetime | None = None
     error_message: str | None = None
     output_path: str | None = None
+    # Ausdrücklich erteilte Freigabe trotz überschrittener Seitenobergrenze. Liegt am
+    # Vorgang statt im Verlauf, weil sie die Verarbeitung steuert und nicht bloß
+    # protokolliert, was geschehen ist.
+    page_limit_approved: bool = False
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None

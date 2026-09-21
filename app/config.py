@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     retry_delay_minutes: int = Field(default=15, alias="RETRY_DELAY_MINUTES")
     retry_max: int = Field(default=3, alias="RETRY_MAX")
     chunk_size_pages: int = Field(default=15, alias="CHUNK_SIZE_PAGES")
+    # Obergrenze je Dokument, geprüft VOR dem ersten OCR-Aufruf. Jede Seite kostet bei
+    # Document AI Geld; ein irrtümlich eingelegter Massenscan soll anhalten statt
+    # durchzulaufen. 0 oder kleiner schaltet die Prüfung ab.
+    max_pages_per_document: int = Field(default=100, alias="MAX_PAGES_PER_DOCUMENT")
 
     # Vorverarbeitung (Orientierung übernimmt Document AI, kein lokales Auto-Rotate)
     preprocess_deskew: bool = Field(default=True, alias="PREPROCESS_DESKEW")

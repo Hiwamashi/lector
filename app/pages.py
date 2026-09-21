@@ -45,6 +45,28 @@ def load_image(path: Path) -> list[Image.Image]:
         return [img.convert("RGB")]
 
 
+def count_pages(path: Path, doc_type: DocType) -> int:
+    """Seitenzahl ermitteln, ohne eine einzige Seite zu rastern.
+
+    Bewusst getrennt von `extract_pages`: Die Entscheidung, ob ein Dokument überhaupt
+    verarbeitet wird, muss fallen, bevor der Arbeitsspeicher für die Bilder draufgeht.
+    Für PDF dieselbe Bibliothek wie beim Rendern — eine abweichende Zählung würde nach
+    einer Zahl blockieren, die die Extraktion später nicht bestätigt.
+    """
+    if doc_type == DocType.PDF:
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
+    if doc_type == DocType.TIFF:
+        with Image.open(path) as img:
+            return getattr(img, "n_frames", 1)
+    if doc_type == DocType.IMAGE:
+        return 1
+    raise ValueError(f"Seitenzählung für doc_type={doc_type} nicht unterstützt")
+
+
 def extract_pages(path: Path, doc_type: DocType) -> list[Image.Image]:
     if doc_type == DocType.PDF:
         return render_pdf(path)

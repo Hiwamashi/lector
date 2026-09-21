@@ -28,6 +28,11 @@
   --amber-bg: #fbf0db;
   --red: #b3261e;
   --red-bg: #fbe6e4;
+  /* Eigener Ton fuer "angehalten": weder Fehler noch Wartezustand der Reihe, sondern
+     "wartet auf eine Entscheidung". Amber ist an "wartet" vergeben, Rot waere eine
+     Wertung — die Blockade ist keine. Kontrast 6.3:1, im Band der uebrigen Badges. */
+  --violet: #6b4d9e;
+  --violet-bg: #efeaf8;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 32, 0.06), 0 2px 8px rgba(16, 24, 32, 0.04);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -58,6 +63,8 @@
     --amber-bg: #38290f;
     --red: #f08a80;
     --red-bg: #3a1c1a;
+    --violet: #b49ae0;
+    --violet-bg: #2a2140;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
   }
 }
@@ -106,7 +113,9 @@ body {
 .container { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
 
 /* Status-Kacheln */
-.tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; margin-bottom: 1.5rem; }
+/* auto-fit statt einer festen Spaltenzahl: Die Zahl der Zustaende ist gewachsen und kann
+   das wieder tun — eine fest verdrahtete 5 haette die sechste Kachel stumm gequetscht. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
 .tile {
   display: flex; flex-direction: column; gap: 0.25rem;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
@@ -117,6 +126,7 @@ body {
 .tile-label { color: var(--ink-soft); font-size: 0.85rem; }
 .tile--processing { border-top-color: var(--accent); }
 .tile--pending { border-top-color: var(--amber); }
+.tile--blocked { border-top-color: var(--violet); }
 .tile--done { border-top-color: var(--green); }
 .tile--skipped_erechnung { border-top-color: var(--accent); }
 .tile--failed { border-top-color: var(--red); }
@@ -189,6 +199,7 @@ body {
 .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
 .badge--processing { background: var(--accent-soft); color: var(--accent); }
 .badge--pending { background: var(--amber-bg); color: var(--amber); }
+.badge--blocked { background: var(--violet-bg); color: var(--violet); }
 .badge--done { background: var(--green-bg); color: var(--green); }
 .badge--skipped_erechnung { background: var(--accent-soft); color: var(--accent); }
 .badge--failed { background: var(--red-bg); color: var(--red); }
@@ -238,6 +249,21 @@ body {
 .progress-bar { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 0.3s ease; }
 .progress-label { position: relative; display: block; text-align: center; font-size: 0.8rem; color: var(--on-accent); line-height: 1.4rem; }
 .alert { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); border-radius: 8px; padding: 0.7rem 0.9rem; margin: 1rem 0; }
+
+/* Hinweis mit Handlungsbedarf — kein Fehler, deshalb nicht der Alert-Ton. Die beiden
+   Schaltflaechen sind bewusst unterschiedlich gewichtet: Freigeben verursacht Kosten,
+   Verwerfen ist der stillere, aber umkehrbare Weg (das Original bleibt im Fehlerordner). */
+.notice { border-radius: 8px; padding: 0.8rem 0.9rem; margin: 1rem 0; }
+.notice--blocked { background: var(--violet-bg); color: var(--violet); border: 1px solid var(--violet); }
+.notice-text { margin: 0 0 0.7rem; }
+.notice-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.notice-actions form { margin: 0; }
+.notice-actions button {
+  padding: 0.5rem 0.9rem; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--on-accent); font-size: 0.9rem; cursor: pointer; }
+.notice-actions .button--quiet { background: transparent; color: var(--ink); border-color: var(--border); }
+.notice-actions .button--quiet:hover { border-color: var(--ink-soft); }
+.notice-actions button:active { transform: translateY(1px); }
 
 .meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1.2rem; margin: 1rem 0; background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow); }

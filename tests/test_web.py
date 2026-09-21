@@ -797,3 +797,231 @@ def test_recovery_runs_before_worker_starts_processing_new_files(tmp_path, monke
         pass
 
     assert order == ["resolve", "worker_start"]
+
+
+# ---------------------------------------------------------------------------
+# Seitenobergrenze: angehaltene Vorgänge, Freigabe und Verwerfen
+# ---------------------------------------------------------------------------
+
+
+def _blocked_document(application, *, name="stapel.pdf", pages=9, with_file=True):
+    from app.models import DocStatus, EventType
+
+    repo = application.state.repo
+    src = application.state.settings.watch_dir / name
+    if with_file:
+        src.write_bytes(b"%PDF-1.4 inhalt")
+    doc_id = repo.create_document(original_filename=name, source_path=str(src))
+    repo.update_document(doc_id, total_pages=pages)
+    repo.set_status(doc_id, DocStatus.BLOCKED)
+    repo.add_event(doc_id, EventType.BLOCKED, f"{pages} Seiten über der Grenze")
+    return doc_id, src
+
+
+def test_blocked_detail_shows_pages_limit_and_both_actions(client):
+    c, application = client
+    doc_id, _ = _blocked_document(application, pages=9)
+
+    text = c.get(f"/documents/{doc_id}").text
+
+    assert "9 Seiten" in text
+    assert f"{application.state.settings.max_pages_per_document} Seiten" in text
+    assert f'action="/documents/{doc_id}/release"' in text
+    assert f'action="/documents/{doc_id}/discard"' in text
+
+
+def test_actions_are_absent_for_documents_that_are_not_blocked(client):
+    from app.models import DocStatus
+
+    c, application = client
+    repo = application.state.repo
+    pending_id = repo.create_document(original_filename="a.pdf", source_path="/x/a.pdf")
+    done_id = repo.create_document(original_filename="b.pdf", source_path="/x/b.pdf")
+    repo.set_status(done_id, DocStatus.DONE)
+
+    for doc_id in (pending_id, done_id):
+        text = c.get(f"/documents/{doc_id}").text
+        assert "/release" not in text
+        assert "/discard" not in text
+
+
+def test_viewing_a_blocked_document_changes_nothing(client):
+    from app.models import DocStatus
+
+    c, application = client
+    doc_id, _ = _blocked_document(application)
+
+    for _ in range(3):
+        assert c.get(f"/documents/{doc_id}").status_code == 200
+        assert c.get(f"/fragment/documents/{doc_id}").status_code == 200
+
+    assert application.state.repo.get_document(doc_id).status == DocStatus.BLOCKED
+
+
+def test_live_fragment_shows_the_same_facts_as_the_detail_page(client):
+    """Das SSE-Fragment rendert dasselbe Partial, bekommt seinen Kontext aber aus einer
+    eigenen Route. Fehlte dort `page_limit`, ersetzte Jinja es still durch einen leeren
+    String — die Live-Ansicht zeigte "Grenze von  Seiten", ohne dass ein Test rot wird."""
+    c, application = client
+    doc_id, _ = _blocked_document(application, pages=9)
+    limit = application.state.settings.max_pages_per_document
+
+    text = c.get(f"/fragment/documents/{doc_id}").text
+
+    assert "9 Seiten" in text
+    assert f"{limit} Seiten" in text
+    assert f'action="/documents/{doc_id}/release"' in text
+    assert f'action="/documents/{doc_id}/discard"' in text
+
+
+def test_decision_on_an_unknown_document_is_not_found(client):
+    """Ein nie vorhandener Vorgang ist kein Konflikt — und "nicht mehr angehalten" wäre
+    als Meldung sachlich falsch."""
+    c, _ = client
+
+    for route in ("release", "discard"):
+        resp = c.post(f"/documents/99999/{route}", follow_redirects=False)
+        assert resp.status_code == 404
+        assert "nicht gefunden" in resp.text
+
+
+def test_release_endpoint_requeues_and_redirects(client):
+    from app.models import DocStatus
+
+    c, application = client
+    doc_id, _ = _blocked_document(application)
+
+    resp = c.post(f"/documents/{doc_id}/release", follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/documents/{doc_id}"
+    doc = application.state.repo.get_document(doc_id)
+    assert doc.status == DocStatus.PENDING
+    assert doc.page_limit_approved is True
+
+
+def test_discard_endpoint_moves_original_and_redirects(client):
+    from app.models import DocStatus
+
+    c, application = client
+    doc_id, src = _blocked_document(application)
+
+    resp = c.post(f"/documents/{doc_id}/discard", follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert application.state.repo.get_document(doc_id).status == DocStatus.FAILED
+    assert not src.exists()
+    assert (application.state.settings.error_dir / "stapel.pdf").exists()
+
+
+def test_decision_on_a_non_blocked_document_is_a_conflict(client):
+    c, application = client
+    repo = application.state.repo
+    doc_id = repo.create_document(original_filename="a.pdf", source_path="/x/a.pdf")
+
+    assert c.post(f"/documents/{doc_id}/release", follow_redirects=False).status_code == 409
+    assert c.post(f"/documents/{doc_id}/discard", follow_redirects=False).status_code == 409
+
+
+def test_second_decision_is_a_conflict(client):
+    c, application = client
+    doc_id, _ = _blocked_document(application)
+
+    assert c.post(f"/documents/{doc_id}/release", follow_redirects=False).status_code == 303
+    assert c.post(f"/documents/{doc_id}/release", follow_redirects=False).status_code == 409
+
+
+def test_blocked_tile_and_filter(client):
+    c, application = client
+    doc_id, _ = _blocked_document(application)
+    application.state.repo.create_document(
+        original_filename="normal.pdf", source_path="/x/normal.pdf"
+    )
+
+    dashboard = c.get("/").text
+    assert "Angehalten" in dashboard
+    assert 'href="/?status=blocked"' in dashboard
+
+    filtered = c.get("/?status=blocked").text
+    assert f'data-row-id="{doc_id}"' in filtered
+    assert "normal.pdf" not in filtered
+
+
+def test_decision_emits_a_live_update(client):
+    """Die Entscheidung muss wie jede andere Zustandsänderung nachziehen."""
+    c, application = client
+    doc_id, _ = _blocked_document(application)
+    seen: list[str] = []
+    application.state.repo.set_notifier(seen.append)
+
+    c.post(f"/documents/{doc_id}/release", follow_redirects=False)
+
+    assert f"doc:{doc_id}" in seen
+
+
+def test_blocked_document_is_not_taken_in_again_from_the_watch_folder(client):
+    """D6: Der Dublettenschutz hält `blocked` für aktiv — sonst entstünde bei jedem Scan
+    des Eingangsordners ein zweiter Vorgang für dieselbe liegengebliebene Datei.
+
+    Die Bedingung ist als Ausschlussliste formuliert (`status != failed`); ein Umbau zu
+    einer Einschlussliste würde das lautlos brechen. Darum dieser Regressionstest.
+    """
+    import asyncio
+    import hashlib
+
+    from app.events import EventBus
+    from app.ocr.base import OcrAdapter
+    from app.worker import Worker
+
+    c, application = client
+    doc_id, src = _blocked_document(application)
+    repo = application.state.repo
+    repo.update_document(doc_id, file_hash=hashlib.sha256(src.read_bytes()).hexdigest())
+
+    class _Adapter(OcrAdapter):
+        name = "fake"
+
+        @property
+        def page_limit(self):
+            return 15
+
+        def process(self, pages, progress=None):  # pragma: no cover - nie aufgerufen
+            raise AssertionError("darf nicht laufen")
+
+    async def _intake_once():
+        worker = Worker(application.state.settings, repo, _Adapter(), EventBus())
+        worker._intake_file(src)
+
+    asyncio.run(_intake_once())
+
+    assert len(repo.list_documents()) == 1
+    assert repo.find_by_hash_active(
+        hashlib.sha256(src.read_bytes()).hexdigest()
+    ).id == doc_id
+
+
+def test_blocked_document_survives_a_restart(tmp_path, monkeypatch):
+    """6.2: Weder die Recovery noch der Watcher dürfen einen angehaltenen Vorgang
+    beim Start anfassen."""
+    _set_env_dirs(monkeypatch, tmp_path)
+
+    from app.config import Settings
+    from app.models import DocStatus
+    from app.repository import Repository
+
+    settings = Settings()
+    settings.ensure_dirs()
+    src = settings.watch_dir / "stapel.pdf"
+    src.write_bytes(b"%PDF-1.4 inhalt")
+    repo = Repository(settings.db_path)
+    doc_id = repo.create_document(original_filename="stapel.pdf", source_path=str(src))
+    repo.update_document(doc_id, total_pages=42)
+    repo.set_status(doc_id, DocStatus.BLOCKED)
+    repo.close()
+
+    main = _reload_app_main()
+    with TestClient(main.app):
+        doc = main.app.state.repo.get_document(doc_id)
+        assert doc.status == DocStatus.BLOCKED
+        assert doc.total_pages == 42
+        assert src.exists()
