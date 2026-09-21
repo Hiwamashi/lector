@@ -161,11 +161,16 @@ eigene Zeile steht davor, in einem Block, und ist die erste Zeile, die man beim 
 `lifespan` und wäre im `TestClient` nicht prüfbar. Eine Ausnahme ist testbar, ein
 Prozessabbruch nicht.
 
-**Zu verifizieren, nicht anzunehmen:** Dass uvicorn bei einer Ausnahme **vor** dem `yield`
-den Prozess wirklich beendet und nicht lauschend hängen bleibt, ist Framework-Verhalten,
-das in diesem Projekt nirgends belegt ist. Bleibt der Prozess stehen, wäre das Ergebnis ein
-laufender Container, der nichts tut — genau der Zustand, den diese Change beseitigen soll.
-Darum steht es als eigene Aufgabe am echten Container in `tasks.md`, nicht als Annahme hier.
+**Verifiziert am 2026-09-21, Exit-Code 3.** Ein lokal gebautes Abbild wurde ohne
+Restart-Policy (`docker run` im Vordergrund, ohne `--restart`) mit absichtlich
+unvollständiger ENV gestartet. `docker logs` zeigt den erwarteten Ablauf: die eigene
+Protokollzeile `ERROR lector.main: Konfiguration unvollständig — der Dienst startet
+nicht:` mit den drei Beanstandungen als Block, danach `ERROR: Application startup
+failed. Exiting.` Der Prozess blieb nicht lauschend stehen — `$?` nach `docker run` ergab
+`3`, und `docker inspect --format '{{.State.ExitCode}}'` bestätigte denselben Wert bei
+`State.Status=exited`, `State.Running=false`. Die Framework-Annahme aus diesem Abschnitt
+trifft zu; Aufgabe 7.2 (härterer Abbruch über Signal) war nicht nötig, `app/main.py` blieb
+unverändert. Nachweis in `.superpowers/sdd/tasks/task-7-report.md`, Abschnitt 7.1.
 
 ### D4 — Zwei Stufen: erst die Angaben, dann das Dateisystem
 
