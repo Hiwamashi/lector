@@ -87,7 +87,7 @@ wird eine eigene Change, die das betroffene Requirement modifiziert:
 | Lücke | Betroffene Capability | Fundstelle | Status |
 |---|---|---|---|
 | Nach Prozessneustart bleibt ein Dokument in `processing` dauerhaft liegen — kein Retry, kein `failed` | `verarbeitungs-lebenszyklus` | `app/pipeline.py:101` vs. `app/repository.py:289` | ✅ geschlossen durch `recovery-unterbrochener-verarbeitung` |
-| Keine Obergrenze für Seiten pro Dokument und kein Kostenbudget vor dem OCR-Aufruf | `ocr-veredelung` | `app/pipeline.py:42` | offen |
+| Keine Obergrenze für Seiten pro Dokument und kein Kostenbudget vor dem OCR-Aufruf | `ocr-veredelung` | `app/pipeline.py:42` | ✅ Obergrenze geschlossen durch `seitenobergrenze-mit-freigabe`; ein kumulatives Kostenbudget bleibt bewusst offen |
 | Teilergebnisse bereits verarbeiteter Chunks werden bei einem Fehler verworfen; der Retry bezahlt sie erneut | `ocr-veredelung` | `app/ocr/documentai.py:116` | offen |
 | Fehler werden nicht nach transient/permanent unterschieden; ein dauerhaft defektes Dokument verbraucht alle Versuche | `verarbeitungs-lebenszyklus` | `app/pipeline.py:71-90,116` | offen |
 | Fehlende bzw. falsche Pflicht-ENV wird nicht beim Start abgewiesen, sondern erst beim ersten Dokument | `verarbeitungs-lebenszyklus` | `app/config.py:12-116` | offen |
