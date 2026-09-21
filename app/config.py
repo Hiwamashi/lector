@@ -169,6 +169,19 @@ def _is_readable_file(path: Path) -> bool:
         return False
 
 
+class ConfigurationRejectedError(RuntimeError):
+    """Wird beim Start geworfen, wenn `validate_settings` oder die Schreibprobe in
+    `lifespan` (app/main.py) Beanstandungen findet. Trägt die gesammelten Beanstandungen
+    zusätzlich als `problems`, damit ein Test sie prüfen kann, ohne das Protokoll
+    abzufangen — die Ausnahme selbst ist der maßgebliche Träger der Information, das
+    `log.error` davor (design.md D3) dient nur der Lesbarkeit in `docker logs`."""
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        block = "\n".join(f"  {p}" for p in problems)
+        super().__init__(f"Konfiguration unvollständig — der Dienst startet nicht:\n{block}")
+
+
 def validate_settings(settings: Settings) -> list[str]:
     """Prüft ein bereits aufgebautes Settings-Objekt auf Angaben, die sonst erst beim
     ersten Dokument als Google-API-Fehler auffallen würden (fehlende Engine-Angaben,

@@ -1,5 +1,7 @@
+import pytest
+
 from app import config
-from app.config import Settings, validate_settings
+from app.config import ConfigurationRejectedError, Settings, validate_settings
 
 
 def _vollstaendige_documentai_settings(tmp_path, **overrides):
@@ -239,3 +241,25 @@ def test_validate_settings_sammelt_alle_beanstandungen_statt_abzubrechen(tmp_pat
     assert "GCP_PROJECT_ID" in meldung
     assert "RETRY_DELAY_MINUTES" in meldung
     assert "SEVDESK_API_TOKEN" in meldung
+
+
+# ---- Aufgabe 3.1: Ausnahmeklasse für einen abgelehnten Start -------------------------
+
+
+def test_configuration_rejected_error_ist_gezielt_abfangbar():
+    """3.1: Die eigene Ausnahmeklasse lässt sich gezielt abfangen, nicht nur als
+    generisches `RuntimeError` — und trägt die Beanstandungen für einen Test, ohne dass
+    er das Protokoll abfangen müsste."""
+    problems = ["GCP_PROJECT_ID ist leer (Pflicht bei OCR_PROVIDER=documentai)"]
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        raise ConfigurationRejectedError(problems)
+
+    assert exc_info.value.problems == problems
+    assert "GCP_PROJECT_ID" in str(exc_info.value)
+
+
+def test_configuration_rejected_error_ist_ein_runtime_error():
+    """Passt sich in die bestehende Fehlerhierarchie ein (`PaperlessError`,
+    `SevdeskError`, `RecipientSuggesterError` sind ebenfalls `RuntimeError`)."""
+    assert issubclass(ConfigurationRejectedError, RuntimeError)

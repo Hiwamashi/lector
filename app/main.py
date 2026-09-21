@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config import get_settings
+from .config import ConfigurationRejectedError, Settings, get_settings, validate_settings
 from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .girocode import PaymentData, qr_svg
@@ -156,10 +157,53 @@ templates.env.globals["recipient_status_labels"] = RECIPIENT_STATUS_LABELS
 templates.env.globals["static_url"] = static_url
 
 
+def _reject_startup(problems: list[str]) -> None:
+    """Bricht den Start ab: protokolliert alle Beanstandungen zuerst als zusammenhängenden
+    Block über `log.error`, wirft danach die Ausnahme. Trüge nur die Ausnahme die Meldung,
+    erschiene sie lediglich als Teil eines Tracebacks zwischen Starlette- und
+    uvicorn-Rahmen — die eigene Protokollzeile steht davor und ist die erste Zeile, die man
+    beim Lesen von `docker logs` findet (design.md D3)."""
+    block = "\n".join(f"  {p}" for p in problems)
+    log.error("Konfiguration unvollständig — der Dienst startet nicht:\n%s", block)
+    raise ConfigurationRejectedError(problems)
+
+
+def _check_writable_paths(settings: Settings) -> list[str]:
+    """Schreibprobe für die vier Arbeitsordner und das Verzeichnis von `DB_PATH`: legt in
+    jedem tatsächlich eine Datei an und entfernt sie wieder, statt `os.access` zu befragen.
+
+    Der Prozess läuft im Container als root, und `os.access` beantwortet die Frage für
+    root fast immer mit 'ja' — auch auf einem schreibgeschützt eingehängten Volume. Gegen
+    falsche Berechtigungen hilft das als root ohnehin nicht; der Fall, den diese Probe
+    fängt, ist der falsch eingehängte Ordner (`:ro`, fehlendes Volume, vollgelaufenes
+    Volume) — und das ist der Fall, der im Compose-Stack passiert (design.md D4)."""
+    directories = {
+        "WATCH_DIR": settings.watch_dir,
+        "CONSUME_DIR": settings.consume_dir,
+        "PROCESSED_DIR": settings.processed_dir,
+        "ERROR_DIR": settings.error_dir,
+        "Verzeichnis von DB_PATH": settings.db_path.parent,
+    }
+    problems: list[str] = []
+    for env_name, directory in directories.items():
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, prefix=".lector-schreibprobe-"):
+                pass
+        except OSError as exc:
+            problems.append(f"{env_name} ({directory}) ist nicht beschreibbar: {exc}")
+    return problems
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    problems = validate_settings(settings)
+    if problems:
+        _reject_startup(problems)
     settings.ensure_dirs()
+    problems = _check_writable_paths(settings)
+    if problems:
+        _reject_startup(problems)
     bus = EventBus()
     repo = Repository(settings.db_path, notifier=bus.publish_threadsafe)
     stale = repo.reset_stale_exports()

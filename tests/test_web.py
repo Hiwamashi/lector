@@ -1,5 +1,6 @@
 import importlib
 import logging
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1032,3 +1033,134 @@ def test_blocked_document_survives_a_restart(tmp_path, monkeypatch):
         assert doc.status == DocStatus.BLOCKED
         assert doc.total_pages == 42
         assert src.exists()
+
+
+# ---------------------------------------------------------------------------
+# Gruppe 3 (startvalidierung-und-healthcheck): Einbindung in die Startsequenz
+# ---------------------------------------------------------------------------
+
+
+def test_startup_wird_bei_unvollstaendiger_konfiguration_abgelehnt(tmp_path, monkeypatch):
+    """3.2: Eine unvollständige Konfiguration lässt den `TestClient` mit der eigenen
+    Ausnahme scheitern, statt den Dienst lauffähig, aber wirkungslos zu starten. Die
+    Ausnahme trägt die Beanstandungen, damit dieser Test sie prüfen kann, ohne das
+    Protokoll abzufangen."""
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("GCP_PROJECT_ID", "")
+
+    from app.config import ConfigurationRejectedError
+
+    main = _reload_app_main()
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(main.app):
+            pass
+
+    assert any("GCP_PROJECT_ID" in p for p in exc_info.value.problems)
+
+
+def test_abgelehnter_start_protokolliert_beanstandungen_als_block_vor_der_ausnahme(
+    tmp_path, monkeypatch, caplog
+):
+    """3.2: Die Beanstandungen erscheinen zuerst als eigener, zusammenhängender
+    Protokollblock (design.md D3) — sonst stünden sie nur als Teil des Tracebacks
+    zwischen Starlette- und uvicorn-Rahmen, statt als erste Zeile in `docker logs`."""
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("GCP_PROJECT_ID", "")
+
+    from app.config import ConfigurationRejectedError
+
+    main = _reload_app_main()
+
+    with caplog.at_level(logging.ERROR, logger="lector.main"):
+        with pytest.raises(ConfigurationRejectedError):
+            with TestClient(main.app):
+                pass
+
+    assert "Konfiguration unvollständig" in caplog.text
+    assert "GCP_PROJECT_ID" in caplog.text
+
+
+def test_abgelehnter_start_wegen_schreibprobe_hinterlaesst_keine_wirkung(tmp_path, monkeypatch):
+    """3.3: Scheitert die Schreibprobe (Stufe 2, design.md D4), ist `ensure_dirs()`
+    zwar bereits gelaufen, aber es entsteht keine Datenbankdatei am Ort von `DB_PATH`,
+    kein Vorgang und keine bewegte Datei — die Schreibprobe sitzt zwischen
+    `ensure_dirs()` und dem Bau des `Repository`. Genau diese Reihenfolge sichert die
+    Gegenprobe (3.6) ab."""
+    if os.geteuid() == 0:
+        pytest.skip(
+            "läuft als root — chmod schützt den Ordner dann nicht wirklich, "
+            "der Test würde falsch grün"
+        )
+
+    _setup_test_environment(monkeypatch, tmp_path)
+
+    from app.config import ConfigurationRejectedError, Settings
+
+    settings = Settings()
+    settings.consume_dir.mkdir(parents=True)
+    settings.consume_dir.chmod(0o500)  # lesbar, nicht beschreibbar
+
+    settings.watch_dir.mkdir(parents=True, exist_ok=True)
+    eingang = settings.watch_dir / "eingang.pdf"
+    eingang.write_bytes(b"%PDF-1.4 inhalt")
+
+    main = _reload_app_main()
+    try:
+        with pytest.raises(ConfigurationRejectedError):
+            with TestClient(main.app):
+                pass
+    finally:
+        settings.consume_dir.chmod(0o700)
+
+    assert not settings.db_path.exists()
+    assert eingang.exists()
+    assert list(settings.processed_dir.iterdir()) == []
+    assert list(settings.error_dir.iterdir()) == []
+
+
+def test_schreibprobe_lehnt_start_bei_schreibgeschuetztem_ordner_ab(tmp_path, monkeypatch):
+    """3.4: Die Schreibprobe fängt einen echten Berechtigungsfehler ab, weil sie
+    tatsächlich schreibt statt `os.access` zu befragen (design.md D4): Der Prozess läuft
+    im Container als root, für den `os.access` die Frage fast immer mit 'ja'
+    beantwortet — auch auf einem schreibgeschützt eingehängten Volume."""
+    if os.geteuid() == 0:
+        pytest.skip(
+            "läuft als root — chmod schützt den Ordner dann nicht wirklich, "
+            "der Test würde falsch grün"
+        )
+
+    _setup_test_environment(monkeypatch, tmp_path)
+
+    from app.config import ConfigurationRejectedError, Settings
+
+    settings = Settings()
+    settings.consume_dir.mkdir(parents=True)
+    settings.consume_dir.chmod(0o500)  # lesbar, nicht beschreibbar
+
+    main = _reload_app_main()
+    try:
+        with pytest.raises(ConfigurationRejectedError) as exc_info:
+            with TestClient(main.app):
+                pass
+    finally:
+        settings.consume_dir.chmod(0o700)
+
+    assert any("CONSUME_DIR" in p for p in exc_info.value.problems)
+
+
+def test_noch_nicht_vorhandener_arbeitsordner_wird_angelegt_und_start_laeuft_weiter(
+    tmp_path, monkeypatch
+):
+    """3.5: Ein beim Start noch fehlender Arbeitsordner wird von `ensure_dirs()`
+    angelegt und ist damit vorhanden, wenn die Schreibprobe ihn erreicht — der Start
+    scheitert nicht daran, dass ein Ordner beim ersten Aufruf noch fehlt."""
+    _setup_test_environment(monkeypatch, tmp_path)
+
+    watch_dir = tmp_path / "scan-in"
+    assert not watch_dir.exists()
+
+    main = _reload_app_main()
+    with TestClient(main.app) as c:
+        assert watch_dir.is_dir()
+        assert c.get("/healthz").status_code == 200
