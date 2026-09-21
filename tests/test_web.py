@@ -27,6 +27,15 @@ def test_healthz(client):
     assert c.get("/healthz").json() == {"status": "ok"}
 
 
+def test_worker_liegt_in_app_state(client):
+    """4.5: Der Worker muss über `app.state` erreichbar sein, damit z.B. `/healthz`
+    (Gruppe 5) seine Zustandsauskunft abfragen kann."""
+    _, application = client
+    from app.worker import Worker
+
+    assert isinstance(application.state.worker, Worker)
+
+
 def test_dashboard_empty(client):
     c, _ = client
     resp = c.get("/")

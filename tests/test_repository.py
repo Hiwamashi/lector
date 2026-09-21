@@ -1,5 +1,7 @@
+import threading
+
 from app.models import DocStatus, DocType, EventType
-from app.repository import Repository
+from app.repository import DatabaseHealthState, Repository
 
 
 def make_repo(tmp_path):
@@ -161,3 +163,51 @@ def test_migration_adds_page_limit_column_to_existing_db(tmp_path):
     doc = repo.get_document(1)
     assert doc.original_filename == "alt.pdf"
     assert doc.page_limit_approved is False
+
+
+def test_check_health_regulaer_ist_benutzbar(tmp_path):
+    """4.6 (regulär): Ohne Konkurrenz um den Lock liefert die Testabfrage sofort 'usable'."""
+    repo = make_repo(tmp_path)
+
+    health = repo.check_health()
+
+    assert health.state == DatabaseHealthState.USABLE
+    assert health.error is None
+
+
+def test_check_health_meldet_beschaeftigt_wenn_lock_von_anderem_thread_gehalten(tmp_path):
+    """4.6 (beschäftigt): Hält ein anderer Thread den Lock, darf `check_health` nicht
+    warten — die kurze Frist läuft ab, die Datenbank gilt als benutzt, nicht als kaputt."""
+    repo = make_repo(tmp_path)
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock():
+        with repo._lock:
+            lock_held.set()
+            release_lock.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert lock_held.wait(timeout=5)
+
+        health = repo.check_health(timeout=0.05)
+
+        assert health.state == DatabaseHealthState.BUSY
+        assert health.error is None
+    finally:
+        release_lock.set()
+        holder.join(timeout=5)
+
+
+def test_check_health_meldet_nicht_benutzbar_bei_geschlossener_verbindung(tmp_path):
+    """4.6 (geschlossene Verbindung): Der Lock ist frei, aber die Testabfrage schlägt
+    fehl — das ist der Fall 'nicht benutzbar', nicht 'beschäftigt'."""
+    repo = make_repo(tmp_path)
+    repo.close()
+
+    health = repo.check_health()
+
+    assert health.state == DatabaseHealthState.UNUSABLE
+    assert health.error is not None

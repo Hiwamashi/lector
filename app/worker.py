@@ -13,6 +13,8 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
@@ -33,6 +35,33 @@ log = logging.getLogger("lector.worker")
 
 _RETRY_POLL_SECONDS = 30.0
 _RETENTION_POLL_SECONDS = 3600.0
+
+# Namen der Hintergrundarbeiten, die `start()` immer anlegt (Zeilen 79-84 unten) — im
+# Gegensatz zu "paperless-sync", die nur bei wirksamem Feature entsteht.
+_ALWAYS_STARTED_TASKS = ("scan", "process", "retry", "retention")
+_PAPERLESS_TASK_NAME = "paperless-sync"
+
+
+class TaskState(StrEnum):
+    """Zustand einer einzelnen Hintergrundarbeit des Workers.
+
+    "Nicht gestartet" ist ausdrücklich kein Fehler — sie gilt nur für die
+    Paperless-Schleife bei abgeschaltetem Feature. Jede andere fehlende Task ist ein
+    struktureller Fehlerfall (siehe `Worker._core_task_status`).
+    """
+
+    LAUFEND = "laufend"
+    BEENDET = "beendet"
+    NICHT_GESTARTET = "nicht_gestartet"
+
+
+@dataclass
+class BackgroundTaskStatus:
+    """Zustandsauskunft einer Hintergrundarbeit — rein lesend, keine Selbstheilung."""
+
+    name: str
+    state: TaskState
+    error: str | None = None
 
 
 class _WakeHandler(FileSystemEventHandler):
@@ -103,6 +132,62 @@ class Worker:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._executor.shutdown(wait=False, cancel_futures=True)
         log.info("Worker gestoppt")
+
+    def background_task_states(self) -> list[BackgroundTaskStatus]:
+        """Meldet je Hintergrundarbeit, ob sie läuft, beendet ist oder wegen eines
+        abgeschalteten Features nie gestartet wurde.
+
+        Rein lesend: fragt nur `task.done()`/`task.exception()` ab, startet nichts neu
+        und führt keine eigene Buchführung (keinen Zeitstempel, keine Frist) — eine
+        wirklich beendete Task ist ein struktureller Fehler, der auffallen soll, statt
+        weggeräumt zu werden.
+        """
+        by_name = {task.get_name(): task for task in self._tasks}
+        statuses = [
+            self._core_task_status(name, by_name.get(name)) for name in _ALWAYS_STARTED_TASKS
+        ]
+        statuses.append(self._paperless_task_status(by_name.get(_PAPERLESS_TASK_NAME)))
+        return statuses
+
+    def _core_task_status(self, name: str, task: asyncio.Task | None) -> BackgroundTaskStatus:
+        """Für die vier Tasks, die `start()` immer anlegt — es gibt für sie kein
+        abschaltbares Feature. Fehlt eine dennoch, lief `start()` nie oder brach vorzeitig
+        ab: ein Fehlerfall, kein „nicht gestartet, weil abgeschaltet"."""
+        if task is None:
+            return BackgroundTaskStatus(name, TaskState.BEENDET, error="Task wurde nie gestartet")
+        if not task.done():
+            return BackgroundTaskStatus(name, TaskState.LAUFEND)
+        return BackgroundTaskStatus(name, TaskState.BEENDET, error=self._task_error(task))
+
+    def _paperless_task_status(self, task: asyncio.Task | None) -> BackgroundTaskStatus:
+        if task is None:
+            if self.paperless_sync is not None and self.paperless_sync.enabled:
+                # Feature wirksam, Task aber nicht vorhanden: `start()` lief nie oder
+                # brach vor dem Anlegen dieser Task ab — ein Fehlerfall.
+                return BackgroundTaskStatus(
+                    _PAPERLESS_TASK_NAME, TaskState.BEENDET, error="Task wurde nie gestartet"
+                )
+            return BackgroundTaskStatus(_PAPERLESS_TASK_NAME, TaskState.NICHT_GESTARTET)
+        if not task.done():
+            return BackgroundTaskStatus(_PAPERLESS_TASK_NAME, TaskState.LAUFEND)
+        return BackgroundTaskStatus(
+            _PAPERLESS_TASK_NAME, TaskState.BEENDET, error=self._task_error(task)
+        )
+
+    @staticmethod
+    def _task_error(task: asyncio.Task) -> str | None:
+        """Liest die Ursache einer beendeten Task, ohne an einem Abbruch zu reißen.
+
+        `task.exception()` wirft selbst eine `CancelledError`, wenn die Task abgebrochen
+        wurde — auf einer bereits beendeten Task ist das kein Bug, sondern die
+        dokumentierte Art, einen Abbruch zu melden. Ungefangen würde die Zustandsauskunft
+        an genau dem Zustand reißen, den sie beschreiben soll.
+        """
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return "Task wurde abgebrochen"
+        return f"{type(exc).__name__}: {exc}" if exc is not None else None
 
     # ---- intern ----------------------------------------------------------
 

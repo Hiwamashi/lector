@@ -219,6 +219,7 @@ async def lifespan(app: FastAPI):
     app.state.repo = repo
     app.state.bus = bus
     app.state.sync = sync
+    app.state.worker = worker
     await worker.start()
     try:
         yield
