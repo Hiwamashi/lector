@@ -30,3 +30,9 @@ def test_build_alternative_bleibt_als_kommentar_dokumentiert():
     """Der lokale Build-Weg soll auffindbar bleiben, nur nicht aktiv sein."""
     text = COMPOSE.read_text(encoding="utf-8")
     assert "#   build: ." in text
+
+
+def test_lector_deklariert_healthcheck():
+    """Ohne diesen Block zeigt `docker ps` nie mehr als "Up", obwohl das Abbild
+    laut Dockerfile einen HEALTHCHECK mitbringt."""
+    assert "healthcheck" in _lector_service()

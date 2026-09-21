@@ -91,9 +91,16 @@ services:
     # auf dem NAS scheitert das, weil dort kein Build-Kontext liegt.
     restart: unless-stopped
     depends_on:
-      - webserver                 # Paperless zuerst starten (Start-Reihenfolge, kein Health-Check)
+      - webserver                 # Paperless zuerst starten (Start-Reihenfolge; der Health-Check
+                                   # unten wird dafuer bewusst nicht herangezogen)
     ports:
       - "8001:8001"               # Web-UI / API (nur LAN)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=5).status == 200"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
     volumes:
       - ./scan-in:/scan-in
       - ./consume:/consume        # geteilt mit Paperless (webserver-Service)
