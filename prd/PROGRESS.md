@@ -298,7 +298,42 @@ Weiteres:
   Testdouble muss dem erweiterten Vertrag folgen (eine Zeile). Rueckwaerts kompatibel blieb
   dagegen der Fortschritts-Callback, als Protokoll mit Vorgabewert.
 
-316 Tests gruen (vorher 263), `ruff` sauber. Feature-Doku unter
+**Abschlussreview (Opus, ueber den ganzen Feature-Diff) — vier Important, alle behoben:**
+
+- **Eine leere Engine-Antwort waere dauerhaft festgeschrieben worden.** Ein Document mit
+  null Seiten wurde abgelegt; `[]` ist nicht `None` und galt beim naechsten Lauf als
+  Treffer — der Retry haette den fehlenden Textlayer nie mehr geheilt. Die Spalte
+  `page_count` wurde geschrieben und nie gelesen. Jetzt pruefen zwei Ebenen unabhaengig:
+  das Repository verwirft `page_count <= 0`, der Adapter vergleicht gegen die tatsaechliche
+  Blocklaenge (faengt auch "zu wenige, aber mehr als null").
+- **Die Pruefsumme alterte gegenueber der Datei auf der Platte.** `doc.file_hash` stammte
+  aus der Aufnahme, gerendert wurde aus der Datei im Eingangsordner — die waehrend des
+  15-Minuten-Retry-Fensters dort liegen bleibt. Wird sie in diesem Fenster durch eine andere
+  Datei gleichen Namens ersetzt, waeren bewahrte Bloecke des alten Dokuments ueber die
+  Bilder des neuen gelegt worden: ein *falscher* Textlayer, der schwerste denkbare Schaden
+  dieser Funktion. Der Hash wird jetzt je Lauf frisch aus der gelesenen Datei gebildet; bei
+  Abweichung greifen die alten Eintraege von selbst nicht mehr, und eine Protokollzeile
+  nennt es.
+- **Der "engine-unabhaengige" Zwischenspeicher hatte einen engine-abhaengigen
+  Fingerabdruck** (`docai_*`-Felder fest in `pipeline.py`). Jetzt deklariert jede Engine
+  ueber `OcrAdapter.identity`, was sie identifiziert; Document AI baut sie aus Projekt,
+  Region und Prozessor — das schliesst zugleich die zuvor fehlende `GCP_PROJECT_ID`.
+- **Der Test fuer den gemischten Lauf konnte nicht fehlschlagen.** Er mass die Wanduhr
+  gegen 1,5 s; nachgemessen lag die Regression bei 1,004 s und waere gruen geblieben. Er
+  belegt jetzt direkt, welche Seiten gedrosselt wurden.
+
+Dazu sieben Minor (u. a. ein tautologischer Test, die Fehlerhuelle eine Ebene zu tief, ein
+fehlender Integrationstest ueber die Naht zwischen echtem Adapter und echtem Store). Die
+Huelle sitzt jetzt in der Pipeline statt im Adapter — damit gilt die Spec-Garantie "das
+Bewahren darf den Lauf nicht zum Scheitern bringen" fuer jede kuenftige Engine automatisch
+statt nur durch deren Disziplin.
+
+Geparkt mit Begruendung: Der Adapter-Vertrag schreibt die Laengenpruefung nicht als Pflicht
+fest (nur ein Adapter existiert — gehoert in die Change, die eine zweite Engine einfuehrt),
+und ein Test-Double huellt seinen Store doppelt (harmlos, die Naht ist anderweitig
+abgedeckt).
+
+320 Tests gruen (vorher 263), `ruff` sauber. Feature-Doku unter
 `feature-documentation/chunk-teilergebnisse.md`; `ocr-adapter.md` beschreibt den erweiterten
 Vertrag fuer kuenftige Engines.
 
