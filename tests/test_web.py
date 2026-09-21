@@ -10,11 +10,7 @@ import app.main
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("WATCH_DIR", str(tmp_path / "scan-in"))
-    monkeypatch.setenv("CONSUME_DIR", str(tmp_path / "consume"))
-    monkeypatch.setenv("PROCESSED_DIR", str(tmp_path / "processed"))
-    monkeypatch.setenv("ERROR_DIR", str(tmp_path / "error"))
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "lector.db"))
+    _setup_test_environment(monkeypatch, tmp_path)
 
     import app.config
     import app.main
@@ -674,12 +670,23 @@ def test_pages_carry_live_status_hint(client):
 # verwenden.
 
 
-def _set_env_dirs(monkeypatch, tmp_path):
+def _setup_test_environment(monkeypatch, tmp_path):
+    """Richtet die komplette Test-Umgebung ein: Verzeichnisse, GCP-Credentials,
+    Document-AI-Konfiguration."""
     monkeypatch.setenv("WATCH_DIR", str(tmp_path / "scan-in"))
     monkeypatch.setenv("CONSUME_DIR", str(tmp_path / "consume"))
     monkeypatch.setenv("PROCESSED_DIR", str(tmp_path / "processed"))
     monkeypatch.setenv("ERROR_DIR", str(tmp_path / "error"))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "lector.db"))
+
+    # Google Cloud-Authentifizierung (leere Datei, der Inhalt wird nicht gelesen).
+    creds_file = tmp_path / "gcp_credentials.json"
+    creds_file.touch()
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(creds_file))
+
+    # Document-AI-Konfiguration.
+    monkeypatch.setenv("GCP_PROJECT_ID", "test-project")
+    monkeypatch.setenv("DOCAI_PROCESSOR_ID", "test-processor")
 
 
 def _reload_app_main():
@@ -691,7 +698,7 @@ def _reload_app_main():
 def test_stale_processing_document_is_resolved_on_startup(tmp_path, monkeypatch):
     """3.1: Ein beim Absturz auf `processing` hängengebliebener Vorgang darf nach dem
     Start nicht mehr in diesem Zustand stehen."""
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -716,7 +723,7 @@ def test_stale_processing_document_is_resolved_on_startup(tmp_path, monkeypatch)
 def test_resolved_count_is_logged_only_when_positive(tmp_path, monkeypatch, caplog):
     """3.2: Die Startzeile nennt die Anzahl aufgelöster Vorgänge — aber nur, wenn es
     überhaupt welche gab (analog zu `reset_stale_exports`)."""
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -756,7 +763,7 @@ def test_recovery_runs_before_worker_starts_processing_new_files(tmp_path, monke
     im Produktionscode NACH `await worker.start()`, würde `order` mit `"worker_start"`
     beginnen und die letzte Zusicherung dieses Tests schlüge fehl.
     """
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -1003,7 +1010,7 @@ def test_blocked_document_is_not_taken_in_again_from_the_watch_folder(client):
 def test_blocked_document_survives_a_restart(tmp_path, monkeypatch):
     """6.2: Weder die Recovery noch der Watcher dürfen einen angehaltenen Vorgang
     beim Start anfassen."""
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
