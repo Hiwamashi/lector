@@ -195,3 +195,78 @@ class OcrPage:
 @dataclass
 class OcrResult:
     pages: list[OcrPage] = field(default_factory=list)
+
+
+def ocr_pages_to_payload(pages: list[OcrPage]) -> list[dict]:
+    """Wandelt Seiten in JSON-taugliche Daten, um sie zwischenspeichern zu können."""
+    return [
+        {
+            "page_index": p.page_index,
+            "width": p.width,
+            "height": p.height,
+            "tokens": [
+                {
+                    "text": t.text,
+                    "x0": t.x0,
+                    "y0": t.y0,
+                    "x1": t.x1,
+                    "y1": t.y1,
+                    "confidence": t.confidence,
+                }
+                for t in p.tokens
+            ],
+        }
+        for p in pages
+    ]
+
+
+def _as_float(source: dict, key: str) -> float:
+    value = source.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Feld {key!r} fehlt oder ist keine Zahl: {value!r}")
+    return float(value)
+
+
+def ocr_pages_from_payload(data: object) -> list[OcrPage]:
+    """Baut Seiten aus zwischengespeicherten Daten zurück.
+
+    Bewusst Feld für Feld statt generisch: Ein Zwischenspeicher, der halbe oder
+    fremdartige Objekte zurückgibt, würde den Fehler erst im fertigen PDF sichtbar machen.
+    Wirft `ValueError`, sobald etwas nicht passt — der Aufrufer behandelt den Eintrag dann,
+    als gäbe es ihn nicht.
+    """
+    if not isinstance(data, list):
+        raise ValueError(f"Erwartet wurde eine Liste von Seiten, nicht {type(data).__name__}")
+    pages: list[OcrPage] = []
+    for raw_page in data:
+        if not isinstance(raw_page, dict):
+            raise ValueError(f"Seite ist kein Objekt: {type(raw_page).__name__}")
+        index = raw_page.get("page_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise ValueError(f"page_index fehlt oder ist keine ganze Zahl: {index!r}")
+        page = OcrPage(
+            page_index=index,
+            width=_as_float(raw_page, "width"),
+            height=_as_float(raw_page, "height"),
+        )
+        raw_tokens = raw_page.get("tokens", [])
+        if not isinstance(raw_tokens, list):
+            raise ValueError("tokens ist keine Liste")
+        for raw_token in raw_tokens:
+            if not isinstance(raw_token, dict):
+                raise ValueError(f"Token ist kein Objekt: {type(raw_token).__name__}")
+            text = raw_token.get("text")
+            if not isinstance(text, str):
+                raise ValueError(f"text fehlt oder ist keine Zeichenkette: {text!r}")
+            page.tokens.append(
+                OcrToken(
+                    text=text,
+                    x0=_as_float(raw_token, "x0"),
+                    y0=_as_float(raw_token, "y0"),
+                    x1=_as_float(raw_token, "x1"),
+                    y1=_as_float(raw_token, "y1"),
+                    confidence=_as_float(raw_token, "confidence"),
+                )
+            )
+        pages.append(page)
+    return pages

@@ -85,6 +85,26 @@ CREATE INDEX IF NOT EXISTS idx_invoice_events_invoice ON invoice_events(invoice_
 -- maßgebliche Empfänger-Wert lebt im Paperless-Custom-Field; hier liegt nur der
 -- Vorschlag + Review-Status, damit die Übersicht ohne erneuten LLM-Aufruf lädt.
 -- ----------------------------------------------------------------------------
+-- ----------------------------------------------------------------------------
+-- Bewahrte Teilergebnisse der Texterkennung, ein Datensatz je Block. Sie dienen
+-- ausschliesslich dem Wiederholversuch: Scheitert ein Lauf an einem spaeteren Block,
+-- muessen die frueheren nicht erneut (und erneut kostenpflichtig) erkannt werden.
+-- `fingerprint` bindet den Eintrag an Inhalt und Bedingungen des Laufs; weicht er ab,
+-- wird der Eintrag nicht verwendet, sondern beim naechsten Lauf ueberschrieben.
+-- Wird beim Erreichen eines Endzustands geleert und verfaellt sonst nach einer Frist.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ocr_chunk_cache (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    fingerprint TEXT    NOT NULL,
+    page_count  INTEGER NOT NULL,
+    payload     TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (document_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunk_cache_created ON ocr_chunk_cache(created_at);
+
 CREATE TABLE IF NOT EXISTS document_recipients (
     paperless_id    INTEGER PRIMARY KEY,
     suggested_label TEXT,

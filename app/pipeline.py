@@ -6,6 +6,7 @@ OCR-Veredelung. Fehler führen zu Auto-Retry (bis `retry_max`) bzw. endgültigem
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import tempfile
 from pathlib import Path
@@ -15,7 +16,7 @@ from .detection import detect
 from .fileops import copy_into, move_into
 from .models import DocStatus, EventType
 from .ocr.base import OcrAdapter
-from .pages import count_pages, extract_pages
+from .pages import PDF_RENDER_DPI, count_pages, extract_pages
 from .pdfbuilder import build_sandwich_pdf
 from .preprocessing import preprocess_page
 from .repository import Repository
@@ -57,6 +58,50 @@ def _block_oversized(doc, repo: Repository, pages: int, limit: int) -> None:
     )
 
 
+def chunk_fingerprint(doc, settings: Settings, adapter: OcrAdapter) -> str:
+    """Bindet einen bewahrten Block an Inhalt und Bedingungen seines Laufs.
+
+    Enthalten ist alles, was das Erkennungsergebnis beeinflusst: der Inhalt des Originals,
+    die Blockgrenzen, die Aufbereitung der Bilder und die befragte Engine. Ändert sich eine
+    dieser Größen, passt der Fingerabdruck nicht mehr und der Block wird neu erkannt.
+
+    Bewusst NICHT über die erzeugten Bilder: Dass Rasterung und Schieflagenkorrektur
+    bitgenau reproduzierbar sind, ist nirgends belegt — ein einziges abweichendes Pixel
+    würde den Zwischenspeicher dauerhaft ins Leere greifen lassen.
+    """
+    parts = [
+        doc.file_hash or "",
+        str(adapter.page_limit),
+        str(settings.chunk_size_pages),
+        str(bool(settings.preprocess_deskew)),
+        str(bool(settings.preprocess_contrast)),
+        str(PDF_RENDER_DPI),
+        adapter.name,
+        settings.docai_processor_id,
+        settings.docai_location,
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+class _RepositoryChunkStore:
+    """Bindet den engine-unabhängigen Ablageort an Vorgang und Fingerabdruck."""
+
+    def __init__(self, repo: Repository, document_id: int, fingerprint: str) -> None:
+        self._repo = repo
+        self._document_id = document_id
+        self._fingerprint = fingerprint
+
+    def get(self, chunk_index: int):
+        return self._repo.load_chunk_result(
+            self._document_id, chunk_index, fingerprint=self._fingerprint
+        )
+
+    def put(self, chunk_index: int, pages) -> None:
+        self._repo.store_chunk_result(
+            self._document_id, chunk_index, fingerprint=self._fingerprint, pages=pages
+        )
+
+
 def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) -> None:
     source = Path(doc.source_path)
 
@@ -76,11 +121,18 @@ def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) 
     repo.add_event(doc.id, EventType.PREPROCESSING, f"{total} Seite(n) vorverarbeiten")
     preprocessed = [preprocess_page(img, settings) for img in images]
 
-    def on_progress(processed: int) -> None:
+    def on_progress(processed: int, from_cache: bool = False) -> None:
         repo.set_progress(doc.id, processed)
-        repo.add_event(doc.id, EventType.OCR_CHUNK, f"Seite {processed} von {total}")
+        herkunft = " (aus Zwischenspeicher, keine erneute Erkennung)" if from_cache else ""
+        repo.add_event(doc.id, EventType.OCR_CHUNK, f"Seite {processed} von {total}{herkunft}")
 
-    ocr = adapter.process(preprocessed, on_progress)
+    # Ohne Prüfsumme am Vorgang kein Zwischenspeicher: Der Schlüssel trüge nicht, und ein
+    # falsch zugeordnetes Ergebnis wäre schlimmer als eine erneute Erkennung.
+    store = None
+    if doc.file_hash:
+        store = _RepositoryChunkStore(repo, doc.id, chunk_fingerprint(doc, settings, adapter))
+
+    ocr = adapter.process(preprocessed, on_progress, store)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_pdf = Path(tmp) / _output_pdf_name(doc.original_filename)
