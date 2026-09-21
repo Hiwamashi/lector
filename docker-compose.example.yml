@@ -116,6 +116,15 @@ services:
       RETRY_DELAY_MINUTES: 15
       RETRY_MAX: 3
       CHUNK_SIZE_PAGES: 15
+      # Obergrenze Seiten je Dokument, geprueft VOR dem ersten OCR-Aufruf.
+      # Darueber wird der Vorgang angehalten (Status "blocked") und wartet im
+      # Web-UI auf Freigabe oder Verwerfen - es entstehen keine OCR-Kosten.
+      # 0 schaltet die Pruefung ab.
+      MAX_PAGES_PER_DOCUMENT: 100
+      # Verfallsfrist bewahrter OCR-Teilergebnisse. Sie ersparen einem
+      # Wiederholversuch, bereits erkannte Bloecke erneut zu bezahlen, und
+      # werden beim Abschluss eines Vorgangs ohnehin entfernt. 0 = kein Verfallen.
+      CHUNK_CACHE_RETENTION_DAYS: 7
       PREPROCESS_DESKEW: "true"
       PREPROCESS_CONTRAST: "true"
       POLL_INTERVAL_SECONDS: "2.0"
