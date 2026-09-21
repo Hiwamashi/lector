@@ -74,6 +74,8 @@ ob ein Fehlschlag von der Änderung oder von einem Fixture-Mangel kommt.
 
 - [ ] 8.1 `feature-documentation/konfiguration.md` um die Tabelle aus D2 ergänzen: welche Angabe unter welcher Bedingung Pflicht ist, und was bewusst nicht geprüft wird — ausdrücklich festhalten, dass `CHUNK_SIZE_PAGES` auf das Engine-Limit geklemmt wird (≤ 0 und Werte über dem Limit ergeben beide das Limit) und dass ≤ 0 bei den vier Zählern „abgeschaltet" bedeutet
 - [ ] 8.2 Neue Feature-Datei `feature-documentation/startvalidierung-und-healthcheck.md`: Startverhalten, Prüfumfang, Antwortform des Health-Endpunkts, Zustandstest des Containers, und die Begründung für den harten Abbruch gegenüber einem Wartezustand
+- [ ] 8.2a Die neue Datei in die Index-Tabelle „Module ↔ Feature" in `feature-documentation/README.md` aufnehmen (Zeile pro Datei, Spalten Datei/Modul/Feature) — ohne diesen Eintrag ist die Doku für einen Agenten, der über den Index navigiert, nicht auffindbar
+- [ ] 8.2b `feature-documentation/docker-deployment.md` um den `HEALTHCHECK` ergänzen: dass es einen gibt, warum er über den Python-Interpreter statt über `curl` läuft, und dass er nichts neu startet
 - [ ] 8.3 `.env.example` an den Pflichtstatus anpassen — die Pflichtangaben als solche kennzeichnen, samt Bedingung
 - [ ] 8.4 Lückentabelle in `openspec/changes/baseline-specs-kernpipeline/proposal.md` nachziehen: zwei Einträge geschlossen, neuer Eintrag für `LOG_LEVEL` über ENV (heute fest auf `INFO`, `app/main.py:34`)
 - [ ] 8.5 `prd/PROGRESS.md` um den Abschnitt zu dieser Change ergänzen, mit dem Befund aus 7.1 und dem Hinweis auf den Abgleich der `.env` vor dem Rollout
