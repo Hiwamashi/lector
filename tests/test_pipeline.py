@@ -60,10 +60,10 @@ def _settings(tmp_path, **overrides):
     return s
 
 
-def _make_pdf(path, pages=2):
+def _make_pdf(path, pages=2, note=""):
     c = canvas.Canvas(str(path))
     for i in range(pages):
-        c.drawString(100, 700, f"Seite {i + 1}")
+        c.drawString(100, 700, f"Seite {i + 1} {note}")
         c.showPage()
     c.save()
 
@@ -357,7 +357,9 @@ def test_fingerprint_is_stable_for_unchanged_conditions(tmp_path):
     doc = repo.get_document(doc_id)
     adapter = FakeAdapter()
 
-    assert chunk_fingerprint(doc, s, adapter) == chunk_fingerprint(doc, s, adapter)
+    assert chunk_fingerprint(doc.file_hash, s, adapter) == chunk_fingerprint(
+        doc.file_hash, s, adapter
+    )
 
 
 @pytest.mark.parametrize(
@@ -366,8 +368,6 @@ def test_fingerprint_is_stable_for_unchanged_conditions(tmp_path):
         {"PREPROCESS_DESKEW": "true"},
         {"PREPROCESS_CONTRAST": "true"},
         {"CHUNK_SIZE_PAGES": "7"},
-        {"DOCAI_PROCESSOR_ID": "anderer-prozessor"},
-        {"DOCAI_LOCATION": "us"},
     ],
 )
 def test_fingerprint_changes_with_every_relevant_condition(tmp_path, overrides):
@@ -378,9 +378,10 @@ def test_fingerprint_changes_with_every_relevant_condition(tmp_path, overrides):
     doc_id, _ = _hashed_doc(repo, s)
     doc = repo.get_document(doc_id)
     adapter = FakeAdapter()
-    vorher = chunk_fingerprint(doc, s, adapter)
+    vorher = chunk_fingerprint(doc.file_hash, s, adapter)
 
-    assert chunk_fingerprint(doc, _settings(tmp_path, **overrides), adapter) != vorher
+    geaendert = chunk_fingerprint(doc.file_hash, _settings(tmp_path, **overrides), adapter)
+    assert geaendert != vorher
 
 
 def test_fingerprint_changes_with_the_document_content(tmp_path):
@@ -397,7 +398,9 @@ def test_fingerprint_changes_with_the_document_content(tmp_path):
     )
     adapter = FakeAdapter()
 
-    assert chunk_fingerprint(doc, s, adapter) != chunk_fingerprint(andere, s, adapter)
+    assert chunk_fingerprint(doc.file_hash, s, adapter) != chunk_fingerprint(
+        andere.file_hash, s, adapter
+    )
 
 
 def test_fingerprint_changes_with_the_engine(tmp_path):
@@ -411,7 +414,33 @@ def test_fingerprint_changes_with_the_engine(tmp_path):
     class AndereEngine(FakeAdapter):
         name = "andere"
 
-    assert chunk_fingerprint(doc, s, FakeAdapter()) != chunk_fingerprint(doc, s, AndereEngine())
+    assert chunk_fingerprint(doc.file_hash, s, FakeAdapter()) != chunk_fingerprint(
+        doc.file_hash, s, AndereEngine()
+    )
+
+
+def test_fingerprint_changes_with_the_adapter_identity(tmp_path):
+    """Befund 3: `chunk_fingerprint` kennt keine `docai_*`-Felder mehr — die engine-eigene
+    Konfiguration (Projekt, Region, Prozessor, ...) fließt ausschließlich über
+    `adapter.identity` ein. Zwei Adapter mit gleichem `name`, aber unterschiedlicher
+    `identity` (z.B. verschiedene Prozessoren derselben Engine), müssen unterschiedliche
+    Fingerabdrücke ergeben."""
+    from app.pipeline import chunk_fingerprint
+
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, _ = _hashed_doc(repo, s)
+    doc = repo.get_document(doc_id)
+
+    class MitIdentityA(FakeAdapter):
+        identity = "engine-a"
+
+    class MitIdentityB(FakeAdapter):
+        identity = "engine-b"
+
+    assert chunk_fingerprint(doc.file_hash, s, MitIdentityA()) != chunk_fingerprint(
+        doc.file_hash, s, MitIdentityB()
+    )
 
 
 def test_document_without_hash_uses_no_cache(tmp_path):
@@ -478,3 +507,30 @@ def test_changed_preprocessing_invalidates_the_cache(tmp_path):
     run_pipeline(doc_id, repo, geaendert, zweiter)
 
     assert zweiter.engine_chunks == 3  # alles neu erkannt
+
+
+def test_a_replaced_file_on_disk_invalidates_the_cached_chunks(tmp_path, caplog):
+    """Befund 2: `doc.file_hash` wird nur bei der Aufnahme gesetzt und danach nie gegen
+    `doc.source_path` geprüft. Bleibt das Original während eines eingeplanten Wiederholver-
+    suchs im Eingang liegen und landet dort in der Zwischenzeit eine andere Datei mit
+    gleichem Namen, dürfen bewahrte Blöcke des ALTEN Inhalts nicht über die Bilder des NEUEN
+    gelegt werden. `_handle_ocr` muss dafür den Hash der Datei auf der Platte neu bilden."""
+    s = _settings(tmp_path)
+    repo = Repository(s.db_path)
+    doc_id, src = _hashed_doc(repo, s, pages=3)
+
+    run_pipeline(doc_id, repo, s, PartialFailAdapter(chunk_size=1, fail_from=2))
+    assert repo.get_document(doc_id).status == DocStatus.PENDING
+    assert repo.count_chunk_results(doc_id) == 2
+
+    # Eine andere Datei landet unter demselben Pfad, während das Original auf den Retry
+    # wartet — doc.file_hash in der Datenbank bleibt dabei unverändert.
+    _make_pdf(src, pages=3, note="andere-datei")
+
+    zweiter = PartialFailAdapter(chunk_size=1)
+    with caplog.at_level("WARNING", logger="lector.pipeline"):
+        run_pipeline(doc_id, repo, s, zweiter)
+
+    assert repo.get_document(doc_id).status == DocStatus.DONE
+    assert zweiter.engine_chunks == 3  # keine Wiederverwendung über die alte Datei hinweg
+    assert any("Prüfsumme" in r.message for r in caplog.records)

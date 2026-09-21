@@ -17,7 +17,6 @@ from .base import (
     OcrAdapter,
     ProgressCallback,
     RateLimiter,
-    SafeChunkStore,
     chunked,
 )
 
@@ -98,6 +97,21 @@ class DocumentAiAdapter(OcrAdapter):
             return min(configured, DOCAI_ONLINE_PAGE_LIMIT)
         return DOCAI_ONLINE_PAGE_LIMIT
 
+    @property
+    def identity(self) -> str:
+        """Projekt, Region und Prozessor — erst damit ist die Engine eindeutig.
+
+        Derselbe Prozessorname existiert potenziell in mehreren Projekten/Regionen; der
+        Pfad `projects/{project}/locations/{loc}/processors/{id}` (wie ihn `_ensure_client`
+        für den echten Aufruf baut) ist die kleinste eindeutige Angabe. Absichtlich ohne
+        Erzeugung des Clients — die Kennung muss auch ohne Credentials berechenbar sein.
+        """
+        return (
+            f"projects/{self._settings.gcp_project_id}"
+            f"/locations/{self._settings.docai_location}"
+            f"/processors/{self._settings.docai_processor_id}"
+        )
+
     def _ensure_client(self):
         if self._client is not None:
             return
@@ -126,13 +140,16 @@ class DocumentAiAdapter(OcrAdapter):
         progress: ProgressCallback | None = None,
         store: ChunkStore | None = None,
     ) -> OcrResult:
-        safe_store = SafeChunkStore(store) if store is not None else None
         result = OcrResult()
         processed = 0
         offset = 0
         for chunk_index, chunk in enumerate(chunked(pages, self.page_limit)):
-            cached = safe_store.get(chunk_index) if safe_store else None
-            if cached is not None:
+            cached = store.get(chunk_index) if store else None
+            # Ein bewahrter Block gilt nur, wenn seine Seitenzahl zur tatsächlichen
+            # Blocklänge passt — eine leere oder verkürzte Antwort (HTTP 200, aber ohne
+            # Inhalt) darf den fehlenden Textlayer nicht dauerhaft festschreiben.
+            from_cache = cached is not None and len(cached) == len(chunk)
+            if from_cache:
                 result.pages.extend(cached)
             else:
                 # Die Drosselung sitzt bewusst HINTER dem Nachsehen: Sie schützt die Quota
@@ -145,10 +162,10 @@ class DocumentAiAdapter(OcrAdapter):
                 result.pages.extend(chunk_pages)
                 # Ablegen, bevor der nächste Block beginnt — scheitert der, ist dieser
                 # bereits in Sicherheit.
-                if safe_store:
-                    safe_store.put(chunk_index, chunk_pages)
+                if store:
+                    store.put(chunk_index, chunk_pages)
             offset += len(chunk)
             processed += len(chunk)
             if progress:
-                progress(processed, cached is not None)
+                progress(processed, from_cache)
         return result

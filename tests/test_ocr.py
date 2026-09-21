@@ -127,9 +127,3 @@ def test_payload_rejects_broken_data(broken):
         ocr_pages_from_payload(broken)
 
 
-def test_payload_rejects_empty_or_invalid_json_text():
-    """Eine leere oder abgeschnittene Zeile im Zwischenspeicher darf nicht als
-    'Dokument ohne Seiten' durchgehen."""
-    for text in ("", "   ", "{kaputt"):
-        with pytest.raises(ValueError):
-            ocr_pages_from_payload(json.loads(text))

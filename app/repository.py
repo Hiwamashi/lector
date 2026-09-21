@@ -407,11 +407,20 @@ class Repository:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT payload FROM ocr_chunk_cache "
+                "SELECT page_count, payload FROM ocr_chunk_cache "
                 "WHERE document_id = ? AND chunk_index = ? AND fingerprint = ?",
                 (document_id, chunk_index, fingerprint),
             ).fetchone()
         if row is None:
+            return None
+        if row["page_count"] <= 0:
+            # Eine leere Antwort (HTTP 200, aber ohne Seiten) ist kein gültiger Treffer —
+            # sonst heilt kein Wiederholversuch den fehlenden Textlayer je wieder.
+            log.warning(
+                "Bewahrtes Blockergebnis ohne Seiten (Dokument %s, Block %s) — wird neu erkannt",
+                document_id,
+                chunk_index,
+            )
             return None
         try:
             return ocr_pages_from_payload(json.loads(row["payload"]))

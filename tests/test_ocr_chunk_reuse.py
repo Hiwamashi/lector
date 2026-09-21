@@ -8,6 +8,7 @@ from PIL import Image
 
 from app.config import Settings
 from app.models import OcrPage, OcrToken
+from app.ocr.base import SafeChunkStore
 from app.ocr.documentai import DocumentAiAdapter
 
 
@@ -127,6 +128,20 @@ def test_every_finished_chunk_is_stored_before_the_next_begins():
     assert len(store.data[0]) == 2
 
 
+def test_a_short_cached_chunk_is_not_used():
+    """Befund 1: Eine leere oder verkürzte Antwort (HTTP 200, aber ohne Inhalt) darf den
+    Retry nie wieder heilen können — der Adapter kennt hier die tatsächliche Blocklänge und
+    prüft zusätzlich zum Repository-seitigen `page_count`-Check."""
+    adapter = _adapter()
+    store = MemoryStore({0: []})  # bewahrt, aber leer — 2 Seiten wären erwartet
+
+    result = adapter.process(_images(4), store=store)
+
+    # beide Blöcke gingen an die Engine, keiner wurde fälschlich aus dem leeren Eintrag bedient
+    assert adapter.calls == [2, 2]
+    assert len(result.pages) == 4
+
+
 def test_fully_cached_run_calls_the_engine_never():
     adapter = _adapter()
     store = MemoryStore({0: _cached_pages(0, 1), 1: _cached_pages(2, 3)})
@@ -150,16 +165,24 @@ def test_cached_chunks_are_not_throttled():
 
 
 def test_mixed_run_throttles_only_the_pages_actually_sent():
-    settings = _settings(DOCAI_MAX_PAGES_PER_MINUTE="120")  # 0,5 s pro Seite
+    """D5, direkt geprüft: Die Drosselung darf nur für Blöcke greifen, die tatsächlich an
+    die Engine gehen — nicht für aus dem Zwischenspeicher bedientes.
+
+    Eine Zeitmessung ist dafür kein verlässlicher Nachweis (nachgemessen: mit Cache-Skip
+    0,000 s, ohne — bei zurückgebauter Drosselungs-Reihenfolge — 1,004 s; beides liegt unter
+    jeder sinnvollen Schwelle). Stattdessen wird `RateLimiter.acquire` ersetzt und die
+    tatsächlich gedrosselten Seitenzahlen werden gesammelt.
+    """
+    settings = _settings(DOCAI_MAX_PAGES_PER_MINUTE="120")
     adapter = _adapter(settings)
     store = MemoryStore({0: _cached_pages(0, 1)})
+    throttled: list[int] = []
+    adapter._rate_limiter.acquire = lambda pages: throttled.append(pages)
 
-    start = time.monotonic()
     adapter.process(_images(4), store=store)
-    dauer = time.monotonic() - start
 
-    # Nur der zweite Block (2 Seiten) ging raus. Vier gedrosselte Seiten wären ~2 s.
-    assert dauer < 1.5
+    # Nur der zweite Block (2 Seiten, nicht bewahrt) wurde gedrosselt.
+    assert throttled == [2]
 
 
 def test_progress_distinguishes_cached_from_fresh_chunks():
@@ -187,14 +210,35 @@ def test_page_indices_stay_ordered_across_a_mixed_run():
 
 
 def test_a_failing_store_does_not_break_the_run():
-    """D4: Ein nicht bewahrter Block kostet einen Aufruf, ein Abbruch kostet alle."""
+    """D4: Ein nicht bewahrter Block kostet einen Aufruf, ein Abbruch kostet alle.
+
+    Befund 7: Die Fehlerhülle (`SafeChunkStore`) sitzt seit der Korrektur in der Pipeline,
+    nicht mehr im Adapter — der Adapter selbst bleibt undefensiv. Der Test hüllt den Store
+    deshalb hier selbst, genau wie `_handle_ocr` es tut.
+    """
     for store in (ExplodingStore(on_get=True), ExplodingStore(on_put=True)):
         adapter = _adapter()
 
-        result = adapter.process(_images(4), store=store)
+        result = adapter.process(_images(4), store=SafeChunkStore(store))
 
         assert len(result.pages) == 4
         assert adapter.calls == [2, 2]
+
+
+def test_identity_reflects_project_location_and_processor():
+    """Befund 3/6: Der Prozessorname allein identifiziert die Engine nicht eindeutig —
+    erst zusammen mit Projekt und Region. `_ensure_client` baut denselben Pfad."""
+    basis = dict(GCP_PROJECT_ID="projekt-a", DOCAI_LOCATION="eu", DOCAI_PROCESSOR_ID="proc-1")
+    adapter = DocumentAiAdapter(_settings(**basis))
+
+    assert adapter.identity == "projects/projekt-a/locations/eu/processors/proc-1"
+
+    anderer_prozessor = DocumentAiAdapter(_settings(**{**basis, "DOCAI_PROCESSOR_ID": "proc-2"}))
+    andere_region = DocumentAiAdapter(_settings(**{**basis, "DOCAI_LOCATION": "us"}))
+    anderes_projekt = DocumentAiAdapter(_settings(**{**basis, "GCP_PROJECT_ID": "projekt-b"}))
+
+    assert len({adapter.identity, anderer_prozessor.identity, andere_region.identity,
+                anderes_projekt.identity}) == 4
 
 
 def test_without_a_store_the_adapter_behaves_as_before():

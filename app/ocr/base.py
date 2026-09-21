@@ -18,24 +18,25 @@ from ..models import OcrPage, OcrResult
 
 log = logging.getLogger("lector.ocr")
 
+
 class ProgressCallback(Protocol):
     """Wird mit der kumulierten Anzahl fertig verarbeiteter Seiten aufgerufen.
 
     `from_cache` sagt, ob der eben abgeschlossene Block aus dem Zwischenspeicher kam — ohne
-    das saehe ein Lauf, der ein langes Dokument in Sekunden abschliesst, wie eine
-    Fehlfunktion aus. Der Vorgabewert haelt aeltere Aufrufer am Leben, die nur die
-    Seitenzahl uebergeben.
+    das sähe ein Lauf, der ein langes Dokument in Sekunden abschließt, wie eine
+    Fehlfunktion aus. Der Vorgabewert hält ältere Aufrufer am Leben, die nur die
+    Seitenzahl übergeben.
     """
 
     def __call__(self, processed: int, from_cache: bool = False) -> None: ...
 
 
 class ChunkStore(Protocol):
-    """Ablageort fuer bewahrte Blockergebnisse, engine-unabhaengig.
+    """Ablageort für bewahrte Blockergebnisse, engine-unabhängig.
 
     Der Adapter kennt nur Blockindizes. An welchen Vorgang und welche Bedingungen ein
-    Eintrag gebunden ist, entscheidet der Aufrufer, der den Ablageort fertig bestueckt
-    uebergibt — ein kuenftiger Adapter erbt die Ersparnis damit, ohne etwas dafuer zu tun.
+    Eintrag gebunden ist, entscheidet der Aufrufer, der den Ablageort fertig bestückt
+    übergibt — ein künftiger Adapter erbt die Ersparnis damit, ohne etwas dafür zu tun.
     """
 
     def get(self, chunk_index: int) -> list[OcrPage] | None:
@@ -46,9 +47,9 @@ class ChunkStore(Protocol):
 
 
 class SafeChunkStore:
-    """Huelle, die jeden Fehler des Ablageorts verschluckt (siehe design.md D4).
+    """Hülle, die jeden Fehler des Ablageorts verschluckt (siehe design.md D4).
 
-    Die Verhaeltnismaessigkeit ist eindeutig: Ein nicht bewahrter Block kostet einen
+    Die Verhältnismäßigkeit ist eindeutig: Ein nicht bewahrter Block kostet einen
     erneuten Aufruf, ein wegen des Zwischenspeichers abgebrochener Lauf kostet alle.
     """
 
@@ -66,7 +67,7 @@ class SafeChunkStore:
         try:
             self._inner.put(chunk_index, pages)
         except Exception:
-            log.warning("Block %s liess sich nicht bewahren", chunk_index, exc_info=True)
+            log.warning("Block %s ließ sich nicht bewahren", chunk_index, exc_info=True)
 
 
 def chunked[T](items: list[T], size: int) -> Iterator[list[T]]:
@@ -102,6 +103,17 @@ class OcrAdapter(ABC):
     name: str = "abstract"
 
     @property
+    def identity(self) -> str:
+        """Alles, was diese Engine für ein Erkennungsergebnis identifiziert.
+
+        Vorgabewert ist `name`. Eine Engine mit mehreren Konfigurationen (Projekt, Region,
+        Prozessor, Modellversion, ...) MUSS diese Eigenschaft überschreiben — sonst bliebe
+        ein bewahrter Block nach dem Umkonfigurieren fälschlich gültig, weil `chunk_fingerprint`
+        davon nichts wüsste.
+        """
+        return self.name
+
+    @property
     @abstractmethod
     def page_limit(self) -> int:
         """Maximale Seitenzahl pro Online-Request dieser Engine."""
@@ -117,5 +129,7 @@ class OcrAdapter(ABC):
 
         Ist `store` gesetzt, MUSS der Adapter vor jedem Block dort nachsehen und einen
         Treffer verwenden, statt die Engine zu fragen; jeder frisch erkannte Block wird
-        abgelegt, bevor der naechste beginnt.
+        abgelegt, bevor der nächste beginnt. Der übergebene `store` ist bereits gegen eigene
+        Fehler abgesichert (der Aufrufer hüllt ihn in `SafeChunkStore`) — der Adapter muss
+        sich darum nicht kümmern.
         """

@@ -14,8 +14,9 @@ from pathlib import Path
 from .config import Settings
 from .detection import detect
 from .fileops import copy_into, move_into
+from .fileops import file_hash as compute_file_hash
 from .models import DocStatus, EventType
-from .ocr.base import OcrAdapter
+from .ocr.base import OcrAdapter, SafeChunkStore
 from .pages import PDF_RENDER_DPI, count_pages, extract_pages
 from .pdfbuilder import build_sandwich_pdf
 from .preprocessing import preprocess_page
@@ -58,27 +59,31 @@ def _block_oversized(doc, repo: Repository, pages: int, limit: int) -> None:
     )
 
 
-def chunk_fingerprint(doc, settings: Settings, adapter: OcrAdapter) -> str:
+def chunk_fingerprint(file_hash: str, settings: Settings, adapter: OcrAdapter) -> str:
     """Bindet einen bewahrten Block an Inhalt und Bedingungen seines Laufs.
 
     Enthalten ist alles, was das Erkennungsergebnis beeinflusst: der Inhalt des Originals,
-    die Blockgrenzen, die Aufbereitung der Bilder und die befragte Engine. Ändert sich eine
-    dieser Größen, passt der Fingerabdruck nicht mehr und der Block wird neu erkannt.
+    die Blockgrenzen, die Aufbereitung der Bilder und die befragte Engine (`adapter.identity`
+    statt einzelner Einstellungen — der Fingerabdruck bleibt so engine-unabhängig, siehe
+    `OcrAdapter.identity`). Ändert sich eine dieser Größen, passt der Fingerabdruck nicht
+    mehr und der Block wird neu erkannt.
+
+    `file_hash` ist die Prüfsumme der tatsächlich gelesenen Datei zum Zeitpunkt dieses
+    Laufs — bewusst nicht `doc.file_hash` aus der Datenbank, das seit der Aufnahme veraltet
+    sein kann (siehe `_handle_ocr`).
 
     Bewusst NICHT über die erzeugten Bilder: Dass Rasterung und Schieflagenkorrektur
     bitgenau reproduzierbar sind, ist nirgends belegt — ein einziges abweichendes Pixel
     würde den Zwischenspeicher dauerhaft ins Leere greifen lassen.
     """
     parts = [
-        doc.file_hash or "",
+        file_hash,
         str(adapter.page_limit),
         str(settings.chunk_size_pages),
         str(bool(settings.preprocess_deskew)),
         str(bool(settings.preprocess_contrast)),
         str(PDF_RENDER_DPI),
-        adapter.name,
-        settings.docai_processor_id,
-        settings.docai_location,
+        adapter.identity,
     ]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
@@ -130,7 +135,30 @@ def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) 
     # falsch zugeordnetes Ergebnis wäre schlimmer als eine erneute Erkennung.
     store = None
     if doc.file_hash:
-        store = _RepositoryChunkStore(repo, doc.id, chunk_fingerprint(doc, settings, adapter))
+        # Der Hash wird HIER neu aus der Datei auf der Platte gebildet, nicht aus
+        # doc.file_hash übernommen: Bei einem eingeplanten Wiederholversuch bleibt das
+        # Original bis zu RETRY_DELAY_MINUTES im Eingang liegen — landet in diesem Fenster
+        # eine andere Datei unter demselben Namen, wäre doc.file_hash veraltet und
+        # bewahrte Blöcke des alten Dokuments landeten über den Bildern des neuen.
+        try:
+            current_hash = compute_file_hash(source)
+        except OSError:
+            current_hash = None
+        if current_hash is not None:
+            if current_hash != doc.file_hash:
+                log.warning(
+                    "Prüfsumme der Datei auf der Platte weicht vom gespeicherten Wert ab "
+                    "(Dokument %s): gespeichert %s…, aktuell %s… — bewahrte Blöcke greifen "
+                    "dadurch von selbst nicht mehr",
+                    doc.id,
+                    doc.file_hash[:12],
+                    current_hash[:12],
+                )
+            store = SafeChunkStore(
+                _RepositoryChunkStore(
+                    repo, doc.id, chunk_fingerprint(current_hash, settings, adapter)
+                )
+            )
 
     ocr = adapter.process(preprocessed, on_progress, store)
 

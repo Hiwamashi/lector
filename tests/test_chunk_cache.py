@@ -76,6 +76,17 @@ def test_load_returns_nothing_for_unknown_chunk(tmp_path):
     assert repo.load_chunk_result(doc_id, 7, fingerprint=FP) is None
 
 
+def test_an_empty_result_is_treated_as_absent(tmp_path):
+    """Befund 1: HTTP 200 mit leerem Inhalt (`page_count=0`) darf nie als Treffer gelten —
+    sonst heilt kein Wiederholversuch den fehlenden Textlayer mehr."""
+    repo = _repo(tmp_path)
+    doc_id = _doc(repo)
+    repo.store_chunk_result(doc_id, 0, fingerprint=FP, pages=[])
+
+    assert repo.count_chunk_results(doc_id) == 1  # der leere Eintrag wurde abgelegt ...
+    assert repo.load_chunk_result(doc_id, 0, fingerprint=FP) is None  # ... gilt aber nicht
+
+
 def test_unreadable_payload_is_treated_as_absent(tmp_path):
     """Lieber ein erneuter Engine-Aufruf als ein falscher Textlayer."""
     repo = _repo(tmp_path)

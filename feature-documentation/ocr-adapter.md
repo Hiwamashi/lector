@@ -7,6 +7,11 @@
 Engine-unabhängig (PRD §4.4). Vertrag:
 
 - `page_limit: int` — maximale Seitenzahl pro Online-Request der Engine.
+- `identity: str` — alles, was diese Engine für ein Erkennungsergebnis identifiziert.
+  Vorgabewert ist `name`; eine Engine mit mehreren Konfigurationen (Projekt, Region,
+  Prozessor, Modellversion, …) **muss** die Eigenschaft überschreiben, sonst bliebe ein
+  bewahrter Block nach dem Umkonfigurieren fälschlich gültig (siehe unten,
+  Document-AI-Adapter).
 - `process(pages, progress, store) -> OcrResult` — erkennt Text + Bounding-Boxes für alle
   Seiten, **chunkt intern** bis `page_limit` und meldet über
   `progress(processed_pages, from_cache)` den kumulierten Fortschritt. `store` ist optional
@@ -28,10 +33,11 @@ beginnt. Damit kostet ein Wiederholversuch nur noch die fehlenden Blöcke.
 
 Der Adapter kennt dabei nur **Blockindizes**. An welchen Vorgang und welche Bedingungen ein
 Eintrag gebunden ist, entscheidet der Aufrufer, der den Ablageort fertig bestückt übergibt
-(`_RepositoryChunkStore` in `app/pipeline.py`). Eine neue Engine erbt die Ersparnis also,
-ohne etwas über Prüfsummen oder Einstellungen wissen zu müssen — sie muss nur die drei
-Regeln oben einhalten und `store` in `SafeChunkStore` hüllen, damit ein Fehler des
-Ablageorts den Lauf nicht abbricht.
+(`_RepositoryChunkStore` in `app/pipeline.py`). Die Fehlerhülle (`SafeChunkStore`) legt
+ebenfalls der Aufrufer um den Store, **bevor** er ihn übergibt — der Adapter verlässt sich
+darauf und bleibt selbst nicht defensiv. Eine neue Engine erbt die Ersparnis also, ohne etwas
+über Prüfsummen, Einstellungen oder Fehlertoleranz wissen zu müssen — sie muss nur die zwei
+Regeln oben einhalten.
 
 Zwei Fallstricke, an denen der Document-AI-Adapter sich orientiert:
 
@@ -51,6 +57,10 @@ spätere Engines (Cloud Vision, AWS Textract).
 - Region-Endpoint `<DOCAI_LOCATION>-documentai.googleapis.com`; Client wird **lazy** beim
   ersten Aufruf erzeugt (Start ohne Credentials möglich).
 - `page_limit` = `min(CHUNK_SIZE_PAGES, 15)` (Online-Limit der Engine).
+- `identity` = `projects/{GCP_PROJECT_ID}/locations/{DOCAI_LOCATION}/processors/{DOCAI_PROCESSOR_ID}`
+  — derselbe Pfad, den `_ensure_client` für den echten Aufruf baut. Erst diese Kombination
+  identifiziert einen Prozessor eindeutig; nur der Name allein tut es nicht. Wird ohne
+  Client-Erzeugung berechnet, damit die Kennung auch ohne Credentials verfügbar ist.
 - Pro Block: Seiten → mehrseitiges TIFF (in-memory) → `process_document`. Antwort wird über die
   **reine** Funktion `document_to_pages(document, page_offset)` in `OcrPage`/`OcrToken`
   übersetzt (duck-typed, daher ohne echte API testbar).
