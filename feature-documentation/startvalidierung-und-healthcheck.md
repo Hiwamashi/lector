@@ -1,7 +1,8 @@
 # Startvalidierung und Health-Check
 
-**Module:** `app/config.py` (`validate_settings`, `ConfigurationRejectedError`,
-`_ENGINE_REQUIRED_FIELDS`, `_env_name`, `_is_readable_file`), `app/main.py`
+**Module:** `app/config.py` (`get_settings_and_problems`, `validate_settings`,
+`ConfigurationRejectedError`, `_ENGINE_REQUIRED_FIELDS`, `_env_name`,
+`_ALIAS_TO_FIELD_NAME`, `_type_error_to_problem`, `_is_readable_file`), `app/main.py`
 (`lifespan`, `_reject_startup`, `_check_writable_paths`, `_health_status`, `/healthz`),
 `app/worker.py` (`TaskState`, `background_task_states`, `observer_state`),
 `app/repository.py` (`DatabaseHealthState`, `check_health`), `Dockerfile`,
@@ -17,8 +18,8 @@ unbedingt `{"status": "ok"}`, unabhängig davon, ob der Worker überhaupt lief.
 
 ## Startverhalten
 
-Ablauf in `lifespan` (`app/main.py`): `get_settings()` → `validate_settings()` →
-`ensure_dirs()` → Schreibprobe → `Repository(...)` → … in zwei bewusst getrennten Stufen:
+Ablauf in `lifespan` (`app/main.py`): `get_settings_and_problems()` → `ensure_dirs()` →
+Schreibprobe → `Repository(...)` → … in zwei bewusst getrennten Stufen:
 
 1. **Angaben prüfen** (`validate_settings`) — reine Auswertung des `Settings`-Objekts plus
    ein Lesetest der Credentials-Datei. Keine Wirkung nach außen.
@@ -64,13 +65,39 @@ die Angabe gesetzt wird — nicht den Feldnamen der Klasse.
 `validate_settings()` wirft selbst nicht und bricht nicht bei der ersten Beanstandung ab:
 Sie sammelt alle in einer Liste, damit der Aufrufer sie in einem Durchgang meldet.
 
-**Typfehler sind eine eigene, vorgelagerte Klasse.** Ein Wert, der nicht dem verlangten Typ
-entspricht (z. B. `RETRY_MAX=abc`), lässt bereits `get_settings()` mit einer
-pydantic-`ValidationError` scheitern — **bevor** `validate_settings()` überhaupt läuft.
-Pydantic nennt dabei den Alias (`RETRY_MAX`), nicht den Feldnamen, sammelt aber nur die
-eigenen Typfehler in einem Durchgang, nicht gemeinsam mit den Beanstandungen aus
-`validate_settings()`: Ein gleichzeitiger Typfehler und eine fehlende Pflichtangabe werden
-so über zwei Neustarts sichtbar, nicht über einen.
+**Typfehler laufen durch dieselbe Sammelstelle wie inhaltliche Beanstandungen.** Ein Wert,
+der nicht dem verlangten Typ entspricht (z. B. `RETRY_MAX=abc`), lässt die Konstruktion von
+`Settings` mit einer pydantic-`ValidationError` scheitern — bevor ein `Settings`-Objekt
+existiert, auf dem `validate_settings()` überhaupt laufen könnte. Ohne weitere Behandlung
+würde ein Typfehler deshalb eine gleichzeitig leere Pflichtangabe verdecken: Der Anwender
+korrigiert den Typfehler, startet neu, und sieht erst dann die leere Pflichtangabe — zwei
+Neustarts für eine mehrfach unvollständige Konfiguration, genau das, was das Requirement
+„Die Startprüfung nennt alle Beanstandungen in einem Durchgang" ausschließt.
+
+`get_settings_and_problems()` (`app/config.py`) löst das über zwei Stufen. Zuerst wird
+`get_settings()` normal versucht; gelingt es, laufen die inhaltlichen Prüfungen über
+`validate_settings()` wie zuvor. Scheitert die Konstruktion, wird jeder Eintrag aus
+`ValidationError.errors()` zu einer Beanstandung mit dem ENV-Namen (dem Alias, den
+pydantic-settings in `error["loc"][0]` einträgt — bei diesem flachen Modell ohne
+verschachtelte Unter-Modelle immer das gesamte `loc`-Tupel). Die betroffenen Felder werden
+danach als Konstruktor-Argumente auf ihren Standardwert gesetzt — ein Konstruktor-Argument
+hat in pydantic-settings Vorrang vor der Umgebung — und `Settings` ein zweites Mal gebaut.
+Gelingt dieser zweite Bau, laufen die inhaltlichen Prüfungen zusätzlich auf diesem Objekt,
+und ihre Beanstandungen werden an die Typfehler angehängt: Ein gleichzeitiger Typfehler und
+eine leere Pflichtangabe erscheinen dadurch in **einer** Meldung. Scheitert auch der zweite
+Bau, bleibt es bei den Typfehlern allein — unter der aktuellen `Settings`-Klasse (jedes
+Feld trägt einen zum eigenen Typ passenden Standardwert, keine modellübergreifenden
+Validatoren) tritt dieser Fall nicht ein, ist aber als Absicherung vorgesehen, falls das
+künftig nicht mehr gilt.
+
+**Der ehrlich zu benennende Rand:** Ein Feature-Schalter mit Typfehler (z. B.
+`FEATURE_PAPERLESS_SYNC=vielleicht`) fällt im zweiten Bau auf seinen Standardwert (`False`)
+zurück; die davon abhängigen Prüfungen in `validate_settings()` (z. B. Pflicht auf
+`PAPERLESS_URL`/`PAPERLESS_TOKEN`) greifen dann nicht, obwohl der Anwender den Schalter
+eigentlich aktivieren wollte. Das führt nicht in die Irre, weil der Typfehler selbst
+gemeldet wird — der Schalter steht als eigene Beanstandung in derselben Meldung — und der
+nächste Start nach dessen Behebung den Rest zeigt. Es ist aber bewusst kein Versuch, den
+*gemeinten* Wert des Schalters zu erraten.
 
 ### Die Ablehnung wird zweimal sichtbar
 

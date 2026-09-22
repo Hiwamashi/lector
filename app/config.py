@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -158,6 +158,81 @@ def _env_name(field_name: str) -> str:
     """Liest den ENV-Namen (Alias) zu einem Feld aus dem Modell, statt ihn zu wiederholen."""
     alias = Settings.model_fields[field_name].alias
     return alias if alias is not None else field_name
+
+
+# Kehrrichtung zu _env_name(): vom ENV-Namen (Alias), wie ihn eine pydantic-ValidationError
+# in error["loc"][0] nennt, zurück zum Feldnamen der Klasse — nur darüber lässt sich der
+# zugehörige Standardwert aus Settings.model_fields auflösen.
+_ALIAS_TO_FIELD_NAME: dict[str, str] = {
+    (field.alias or name): name for name, field in Settings.model_fields.items()
+}
+
+
+def _type_error_to_problem(error: dict) -> str:
+    """Übersetzt einen einzelnen Eintrag aus `ValidationError.errors()` in eine
+    Beanstandung in derselben Form wie `validate_settings()` — mit dem ENV-Namen, unter
+    dem der Anwender die Angabe setzt. `error["loc"]` ist bei diesem Modell immer ein
+    Ein-Element-Tupel, weil `Settings` flach ist (keine verschachtelten Unter-Modelle) und
+    pydantic-settings darin bereits den Alias einträgt, nicht den Feldnamen."""
+    alias = str(error["loc"][0])
+    return f"{alias} hat einen ungültigen Wert ({error['input']!r}): {error['msg']}"
+
+
+def get_settings_and_problems() -> tuple[Settings | None, list[str]]:
+    """Baut die Konfiguration und sammelt ALLE Beanstandungen in einem Durchgang — auch
+    dann, wenn `get_settings()` bereits an einem Typfehler scheitert (z. B.
+    `RETRY_MAX=abc`). Ohne diese Funktion würde ein Typfehler eine gleichzeitig leere
+    Pflichtangabe verdecken: `Settings()` scheitert mit `pydantic.ValidationError`, bevor
+    `validate_settings()` überhaupt ein Objekt zum Prüfen hat, und der Anwender sähe die
+    leere Pflichtangabe erst nach einem zweiten Neustart. Siehe das Requirement „Die
+    Startprüfung nennt alle Beanstandungen in einem Durchgang"
+    (openspec/changes/startvalidierung-und-healthcheck/specs/verarbeitungs-lebenszyklus/spec.md).
+
+    Zwei Stufen:
+    1. `get_settings()` normal versuchen. Gelingt es, laufen die inhaltlichen Prüfungen
+       über `validate_settings()` wie bisher — Verhalten für den Erfolgsfall unverändert.
+    2. Scheitert Stufe 1, wird jeder Fehler aus `err.errors()` zu einer Beanstandung
+       (`_type_error_to_problem`). Die betroffenen Felder werden danach als
+       Konstruktor-Argumente auf ihren Standardwert gesetzt — ein Konstruktor-Argument hat
+       in pydantic-settings Vorrang vor der Umgebung (geprüft: `Settings(_env_file=None,
+       RETRY_MAX=3)` mit `RETRY_MAX=abc` in `os.environ` liefert `retry_max == 3`, alle
+       übrigen Felder lesen weiter normal aus der Umgebung) — und `Settings` ein zweites
+       Mal gebaut. Gelingt das, laufen die inhaltlichen Prüfungen zusätzlich auf diesem
+       Objekt, ihre Beanstandungen werden angehängt.
+
+       Rand: Ein Feature-Schalter mit Typfehler (z. B. `FEATURE_PAPERLESS_SYNC=vielleicht`)
+       fällt in diesem zweiten Bau auf seinen Standardwert (`False`) zurück; die davon
+       abhängigen Prüfungen in `validate_settings()` greifen dann nicht, obwohl der
+       Anwender den Schalter eigentlich aktivieren wollte. Das führt nicht in die Irre,
+       weil der Typfehler selbst gemeldet wird (der Schalter steht als Beanstandung in der
+       Meldung) und der nächste Start nach dessen Behebung den Rest zeigt — es ist aber
+       bewusst kein Versuch, den *gemeinten* Wert zu erraten.
+
+    Scheitert auch der zweite Bau (bei den aktuellen Feldern nicht beobachtet — jedes Feld
+    trägt einen zum eigenen Typ passenden Standardwert, und es gibt keine
+    modellübergreifenden Validatoren, die einen für sich genommen gültigen Standardwert
+    nachträglich verwerfen könnten), bleibt es bei den Typfehlern allein. Der erste
+    Rückgabewert ist dann `None` — es gibt kein gültiges `Settings`-Objekt, der Aufrufer
+    darf es folglich nicht verwenden und muss anhand der (dann garantiert nicht leeren)
+    Beanstandungsliste den Start ablehnen, bevor er `settings` anfasst.
+    """
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        errors = exc.errors()
+        type_problems = [_type_error_to_problem(e) for e in errors]
+        overrides: dict[str, object] = {}
+        for error in errors:
+            alias = str(error["loc"][0])
+            field_name = _ALIAS_TO_FIELD_NAME.get(alias)
+            if field_name is not None:
+                overrides[alias] = Settings.model_fields[field_name].default
+        try:
+            fallback = Settings(**overrides)
+        except ValidationError:
+            return None, type_problems
+        return fallback, type_problems + validate_settings(fallback)
+    return settings, validate_settings(settings)
 
 
 def _is_readable_file(path: Path) -> bool:

@@ -1292,20 +1292,44 @@ def test_abgelehnter_start_protokolliert_beanstandungen_als_block_vor_der_ausnah
 
 def test_startup_wird_bei_falschem_typ_abgelehnt(tmp_path, monkeypatch):
     """Spec-Szenario 'Eine Angabe ist gesetzt, aber unbrauchbar', Typfehler-Hälfte:
-    RETRY_MAX=abc lässt bereits get_settings() mit einer pydantic-ValidationError
-    scheitern, VOR validate_settings() — der Start scheitert trotzdem, und die Meldung
-    nennt den ENV-Alias RETRY_MAX (nicht den Feldnamen retry_max), wie von pydantic
-    aufgelöst. Siehe feature-documentation/startvalidierung-und-healthcheck.md."""
-    import pydantic
+    RETRY_MAX=abc lässt get_settings() zunächst mit einer pydantic-ValidationError
+    scheitern; get_settings_and_problems() (app/config.py) fängt sie ab, baut die
+    Konfiguration mit RETRY_MAX auf seinem Standardwert ein zweites Mal und meldet den
+    Typfehler als ConfigurationRejectedError — nicht mehr als durchgereichte
+    ValidationError. Die Meldung nennt weiterhin den ENV-Alias RETRY_MAX (nicht den
+    Feldnamen retry_max), wie von pydantic aufgelöst. Siehe
+    feature-documentation/startvalidierung-und-healthcheck.md."""
+    from app.config import ConfigurationRejectedError
 
     _setup_test_environment(monkeypatch, tmp_path)
     monkeypatch.setenv("RETRY_MAX", "abc")
 
-    with pytest.raises(pydantic.ValidationError) as exc_info:
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
         with TestClient(_reload_app_main().app):
             pass
 
-    assert "RETRY_MAX" in str(exc_info.value)
+    assert any("RETRY_MAX" in p for p in exc_info.value.problems)
+
+
+def test_startup_meldet_typfehler_und_leere_pflichtangabe_gemeinsam(tmp_path, monkeypatch):
+    """Schließt die Lücke des Requirements 'Die Startprüfung nennt alle Beanstandungen in
+    einem Durchgang' (openspec/changes/startvalidierung-und-healthcheck/specs/
+    verarbeitungs-lebenszyklus/spec.md): Ein Typfehler (RETRY_MAX=abc) UND eine
+    gleichzeitig leere Pflichtangabe (GCP_PROJECT_ID="") dürfen nicht über zwei
+    Neustarts sichtbar werden, sondern müssen in EINER Meldung erscheinen."""
+    from app.config import ConfigurationRejectedError
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("RETRY_MAX", "abc")
+    monkeypatch.setenv("GCP_PROJECT_ID", "")
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    problems = exc_info.value.problems
+    assert any("RETRY_MAX" in p for p in problems)
+    assert any("GCP_PROJECT_ID" in p for p in problems)
 
 
 def test_abgelehnter_start_wegen_schreibprobe_hinterlaesst_keine_wirkung(tmp_path, monkeypatch):

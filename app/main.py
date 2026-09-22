@@ -27,7 +27,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config import ConfigurationRejectedError, Settings, get_settings, validate_settings
+from .config import ConfigurationRejectedError, Settings, get_settings_and_problems
 from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .girocode import PaymentData, qr_svg
@@ -211,10 +211,14 @@ def _check_writable_paths(settings: Settings) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-    problems = validate_settings(settings)
+    # get_settings_and_problems() fängt auch einen Typfehler beim Konstruieren ab (z.B.
+    # RETRY_MAX=abc) und mischt dessen Beanstandung mit denen von validate_settings() in
+    # EINE Liste — sonst würde ein Typfehler eine gleichzeitig leere Pflichtangabe
+    # verdecken und erst nach einem zweiten Neustart sichtbar (app/config.py).
+    settings, problems = get_settings_and_problems()
     if problems:
         _reject_startup(problems)
+    assert settings is not None, "kein Settings-Objekt trotz leerer Beanstandungsliste"
     settings.ensure_dirs()
     problems = _check_writable_paths(settings)
     if problems:
