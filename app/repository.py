@@ -12,7 +12,9 @@ import logging
 import sqlite3
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 
 from .db import connect, init_db
@@ -33,6 +35,42 @@ from .models import (
 )
 
 log = logging.getLogger("lector.repository")
+
+# Kurze Frist für `check_health`: Alle Zugriffe teilen eine Verbindung hinter `self._lock`
+# (Pipeline im Thread-Pool wie asyncio-Requests). Die Prüfung darf nicht warten — sonst
+# meldete ein Container unter Last sich selbst als ungesund, genau dann, wenn man den
+# Zustand liest (design.md D5). Bruchteil einer Sekunde: kurz genug, um unter Last nicht
+# selbst zu blockieren, lang genug, um eine kurze, reguläre Transaktion nicht fälschlich
+# als "beschäftigt" auszuweisen.
+_HEALTH_CHECK_LOCK_TIMEOUT_SECONDS = 0.2
+
+
+class DatabaseHealthState(StrEnum):
+    """Ausgang der Zustandsprüfung der Datenbank (siehe `Repository.check_health`)."""
+
+    USABLE = "usable"
+    # Lock in der Frist nicht erhalten — die Datenbank wird benutzt, sie ist nicht kaputt.
+    BUSY = "busy"
+    UNUSABLE = "unusable"
+
+    @property
+    def healthy(self) -> bool:
+        """`USABLE` und `BUSY` gelten beide als gesund — nur `BUSY` unterlassen zu
+        werten würde jeden Container unter Last als ungesund melden, genau in dem
+        Moment, in dem man den Zustand liest (design.md D5). Als Eigenschaft am Enum
+        statt als Vergleich beim Aufrufer, damit diese Bewertung nicht an jeder
+        Verbrauchsstelle erneut abgeleitet werden muss.
+        """
+        return self in (DatabaseHealthState.USABLE, DatabaseHealthState.BUSY)
+
+
+@dataclass
+class DatabaseHealth:
+    """Zustandsauskunft der Datenbank — rein lesend ermittelt, keine Selbstheilung."""
+
+    state: DatabaseHealthState
+    error: str | None = None
+
 
 _INVOICE_COLUMNS = (
     "id, paperless_id, title, correspondent, creditor_name, iban, bic, amount, currency, "
@@ -156,6 +194,33 @@ class Repository:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def check_health(
+        self, timeout: float = _HEALTH_CHECK_LOCK_TIMEOUT_SECONDS
+    ) -> DatabaseHealth:
+        """Prüft, ob die Datenbank benutzbar ist — wartet dabei höchstens `timeout`
+        Sekunden auf den geteilten Lock, statt unbegrenzt zu blockieren.
+
+        Nimmt `self._lock` nur mit kurzer Frist. Läuft sie ab, gilt die Datenbank als
+        *beschäftigt* — nicht als kaputt, denn ein anderer Zugriff (Pipeline im
+        Thread-Pool oder ein anderer Request) hält den Lock gerade. Erst wenn der Lock
+        erhalten wird und die anschließende, rein lesende Testabfrage fehlschlägt, gilt
+        die Datenbank als *nicht benutzbar*.
+
+        Legt keinen Vorgang an, schreibt keinen Verlaufseintrag und verändert keinen
+        Zustand.
+        """
+        if not self._lock.acquire(timeout=timeout):
+            return DatabaseHealth(DatabaseHealthState.BUSY)
+        try:
+            self._conn.execute("SELECT 1").fetchone()
+        except sqlite3.Error as exc:
+            return DatabaseHealth(
+                DatabaseHealthState.UNUSABLE, error=f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            self._lock.release()
+        return DatabaseHealth(DatabaseHealthState.USABLE)
 
     # ---- documents -------------------------------------------------------
 

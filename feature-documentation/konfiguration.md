@@ -32,3 +32,48 @@ Entwicklung wird optional eine `.env` gelesen (`.env.example` als Vorlage).
   wenn ENV zur Laufzeit geändert wird.
 - `Settings.ensure_dirs()` legt alle Arbeitsordner und das DB-Verzeichnis an.
 - `partial_suffix_list` parst `PARTIAL_SUFFIXES` zu einer normalisierten Liste.
+
+## Startvalidierung: was beim Start Pflicht ist
+
+`validate_settings(settings) -> list[str]` (`app/config.py`) prüft ein bereits aufgebautes
+`Settings`-Objekt und gibt alle Beanstandungen zurück (leere Liste = gültig). Sie wirft
+selbst nicht und bricht nicht beim ersten Fund ab — Details zum Ablauf, zur Begründung und
+zum Health-Endpunkt stehen in
+[startvalidierung-und-healthcheck.md](startvalidierung-und-healthcheck.md); hier nur die
+Tabelle, welche Angabe unter welcher Bedingung Pflicht ist.
+
+| Prüfung | Bedingung |
+|---|---|
+| `OCR_PROVIDER` ist ein bekannter Wert | immer |
+| `GCP_PROJECT_ID`, `DOCAI_PROCESSOR_ID`, `DOCAI_LOCATION` nicht leer | wenn die gewählte Engine sie braucht (deklariert in `_ENGINE_REQUIRED_FIELDS`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` gesetzt **und** lesbare Datei | wenn die gewählte Engine sie braucht |
+| `RETRY_DELAY_MINUTES` mindestens 1 | wenn `RETRY_MAX` > 0 (sonst wird nie wiederholt, der Wert bliebe folgenlos) |
+| `PAPERLESS_URL`, `PAPERLESS_TOKEN` nicht leer | wenn `FEATURE_PAPERLESS_SYNC` gesetzt |
+| `SEVDESK_API_TOKEN` nicht leer, `FEATURE_PAPERLESS_SYNC` aktiv | wenn `FEATURE_SEVDESK_EXPORT` gesetzt (exportierbare Rechnungen entstehen ausschließlich im Paperless-Sync) |
+| `ANTHROPIC_API_KEY`, `PAPERLESS_URL`, `PAPERLESS_TOKEN` nicht leer | wenn `FEATURE_RECIPIENT_LLM` gesetzt (die Empfänger-Verwaltung braucht die Paperless-Anbindung unabhängig von `FEATURE_PAPERLESS_SYNC`) |
+| Arbeitsordner (`WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`) und Verzeichnis von `DB_PATH` beschreibbar | immer (eigene Schreibprobe, siehe unten) |
+
+Der Provider-Vergleich ist **case-insensitiv**, konsistent zu `get_adapter()`
+(`app/ocr/__init__.py`), das `OCR_PROVIDER` ebenfalls über `.lower()` auflöst.
+
+### Was bewusst nicht geprüft wird
+
+- **`CHUNK_SIZE_PAGES`:** `DocumentAiAdapter.page_limit` (`app/ocr/documentai.py:94-98`)
+  klemmt den Wert per `min()` auf das Engine-Limit (`DOCAI_ONLINE_PAGE_LIMIT = 15`) und
+  behandelt jeden Wert **≤ 0** als „nimm das Engine-Limit". Ein Wert von `0` heißt also
+  **nicht** „kein Block wird verarbeitet", und ein Wert über 15 wird **nicht** von der
+  Engine abgelehnt — es gibt nichts abzuwenden, deshalb keine Startprüfung dafür.
+- **`MAX_PAGES_PER_DOCUMENT`, `PROCESSED_RETENTION_DAYS`, `CHUNK_CACHE_RETENTION_DAYS`,
+  `DOCAI_MAX_PAGES_PER_MINUTE`:** Für alle vier bedeutet **≤ 0** vereinbart „abgeschaltet",
+  kein Fehler.
+- **`RETRY_MAX` ≤ 0** heißt faktisch „kein Wiederholversuch" — eine zulässige Einstellung.
+  Genau deshalb ist `RETRY_DELAY_MINUTES` dann auch selbst nicht mehr Pflicht (siehe oben).
+- **Keine Gültigkeitsprüfung.** Kein Netzwerkzugriff, kein Parsen der Credentials-Datei.
+  Geprüft wird Vorhandensein, Typ, Wertebereich, Lesbarkeit — nicht, ob ein Token gilt.
+
+`RETRY_DELAY_MINUTES` ist der einzige geprüfte Zähler — und auch nur, solange `RETRY_MAX`
+> 0 ist: Bei ≤ 0 liegt `retry_at` (`app/repository.py`) im Jetzt oder in der Vergangenheit,
+die Pause zwischen den Versuchen entfällt vollständig, und ein dauerhaft scheiterndes
+Dokument verbraucht alle Versuche in Sekunden — jeden mit einem vollen, bezahlten
+OCR-Aufruf. Findet mangels `RETRY_MAX` > 0 ohnehin kein Wiederholversuch statt, kostet ein
+zu kurzes `RETRY_DELAY_MINUTES` nichts, und die Prüfung entfällt.

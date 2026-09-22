@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,11 +17,17 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config import get_settings
+from .config import ConfigurationRejectedError, Settings, get_settings, validate_settings
 from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .girocode import PaymentData, qr_svg
@@ -156,10 +163,62 @@ templates.env.globals["recipient_status_labels"] = RECIPIENT_STATUS_LABELS
 templates.env.globals["static_url"] = static_url
 
 
+def _reject_startup(problems: list[str]) -> None:
+    """Bricht den Start ab: protokolliert alle Beanstandungen zuerst als zusammenhängenden
+    Block über `log.error`, wirft danach die Ausnahme. Trüge nur die Ausnahme die Meldung,
+    erschiene sie lediglich als Teil eines Tracebacks zwischen Starlette- und
+    uvicorn-Rahmen — die eigene Protokollzeile steht davor und ist die erste Zeile, die man
+    beim Lesen von `docker logs` findet (design.md D3).
+
+    Formatiert den Block nicht selbst — `ConfigurationRejectedError` trägt Kopfzeile und
+    Block bereits in ihrer Nachricht, `log.error("%s", err)` gibt sie byte-identisch aus."""
+    err = ConfigurationRejectedError(problems)
+    log.error("%s", err)
+    raise err
+
+
+def _check_writable_paths(settings: Settings) -> list[str]:
+    """Schreibprobe für die vier Arbeitsordner und das Verzeichnis von `DB_PATH`: legt in
+    jedem tatsächlich eine Datei an und entfernt sie wieder, statt `os.access` zu befragen.
+
+    Der Prozess läuft im Container als root, und `os.access` beantwortet die Frage für
+    root fast immer mit 'ja' — auch auf einem schreibgeschützt eingehängten Volume. Gegen
+    falsche Berechtigungen hilft das als root ohnehin nicht; der Fall, den diese Probe
+    fängt, ist der falsch eingehängte Ordner (`:ro`, fehlendes Volume, vollgelaufenes
+    Volume) — und das ist der Fall, der im Compose-Stack passiert (design.md D4)."""
+    directories = {
+        "WATCH_DIR": settings.watch_dir,
+        "CONSUME_DIR": settings.consume_dir,
+        "PROCESSED_DIR": settings.processed_dir,
+        "ERROR_DIR": settings.error_dir,
+        "Verzeichnis von DB_PATH": settings.db_path.parent,
+    }
+    problems: list[str] = []
+    for env_name, directory in directories.items():
+        try:
+            # Präfix bewusst "._" statt nur ".": CONSUME_DIR ist der Ordner, den
+            # Paperless überwacht, und dessen Standard-CONSUMER_IGNORE_PATTERNS enthält
+            # "._*", aber nicht ".lector-*". Die Probedatei ist zwar nach Mikrosekunden
+            # wieder weg, aber dieses Präfix hält sie auch dann aus Paperless' Wahr-
+            # nehmung heraus, falls ihr Verschwinden je verzögert wird — nicht
+            # zurückkürzen.
+            with tempfile.NamedTemporaryFile(dir=directory, prefix="._lector-schreibprobe-"):
+                pass
+        except OSError as exc:
+            problems.append(f"{env_name} ({directory}) ist nicht beschreibbar: {exc}")
+    return problems
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    problems = validate_settings(settings)
+    if problems:
+        _reject_startup(problems)
     settings.ensure_dirs()
+    problems = _check_writable_paths(settings)
+    if problems:
+        _reject_startup(problems)
     bus = EventBus()
     repo = Repository(settings.db_path, notifier=bus.publish_threadsafe)
     stale = repo.reset_stale_exports()
@@ -175,6 +234,7 @@ async def lifespan(app: FastAPI):
     app.state.repo = repo
     app.state.bus = bus
     app.state.sync = sync
+    app.state.worker = worker
     await worker.start()
     try:
         yield
@@ -234,9 +294,43 @@ def _filters(status: str | None, q: str | None, period: str | None):
     return status_enum, (q or None), _parse_since(period)
 
 
+def _health_status(
+    worker: Worker, repo: Repository
+) -> tuple[bool, dict[str, dict[str, str | None]]]:
+    """Baut die Prüfungen des Health-Endpunkts aus den fertigen Zustandsauskünften von
+    `Worker` (fünf Hintergrundarbeiten + Watchdog-Observer) und `Repository` (Datenbank)
+    zusammen — rein lesend, keine der aufgerufenen Methoden verändert einen Zustand.
+
+    Bewertet jede Prüfung über deren `state.healthy`-Eigenschaft, nicht durch einen
+    eigenen Vergleich gegen einzelne Enum-Werte: `NOT_STARTED` (abgeschaltete
+    Paperless-Schleife, Standardfall) und `BUSY` (benutzte, nicht kaputte Datenbank)
+    gelten beide als gesund — die Bewertung liegt bewusst am Enum, nicht hier.
+    """
+    checks: dict[str, dict[str, str | None]] = {}
+    healthy = True
+    for status in (*worker.background_task_states(), worker.observer_state()):
+        checks[status.name] = {"state": status.state.value, "error": status.error}
+        healthy = healthy and status.state.healthy
+    db_health = repo.check_health()
+    checks["database"] = {"state": db_health.state.value, "error": db_health.error}
+    healthy = healthy and db_health.state.healthy
+    return healthy, checks
+
+
 @app.get("/healthz")
-async def healthz():
-    return {"status": "ok"}
+async def healthz(request: Request) -> JSONResponse:
+    """Meldet die tatsächliche Betriebsbereitschaft: je Hintergrundarbeit, Observer und
+    Datenbank ein Eintrag in der Antwort. `200` nur wenn alle Prüfungen gesund sind,
+    sonst `503` — nicht `500`, weil keine fehlerhafte Anfrage vorliegt, sondern eine
+    vorübergehend fehlende Bereitschaft, und weil ein Container-Zustandstest ohnehin nur
+    den Statuscode auswertet.
+
+    Rein lesend: startet keine beendete Arbeit neu, stößt keinen Vorgang an und schreibt
+    keinen Zustand. Prüft ausdrücklich nicht die Erreichbarkeit fremder Dienste
+    (Texterkennung, Paperless, SevDesk) — nur die eigene Betriebsbereitschaft.
+    """
+    healthy, checks = _health_status(request.app.state.worker, request.app.state.repo)
+    return JSONResponse(checks, status_code=200 if healthy else 503)
 
 
 @app.get("/", response_class=HTMLResponse)

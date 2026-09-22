@@ -337,6 +337,75 @@ abgedeckt).
 `feature-documentation/chunk-teilergebnisse.md`; `ocr-adapter.md` beschreibt den erweiterten
 Vertrag fuer kuenftige Engines.
 
+## Zusatz-Feature: Startvalidierung und Health-Check (2026-09-21)
+
+Die vierte und fünfte der acht Lücken in `baseline-specs-kernpipeline` sind geschlossen:
+**Eine fehlende oder falsche Pflichtangabe wird beim Start abgewiesen, nicht erst beim
+ersten Dokument als Google-API-Fehler sichtbar**, und **`/healthz` meldet die tatsächliche
+Betriebsbereitschaft**, nicht mehr unbedingt `ok`. Dazu ein `HEALTHCHECK` in `Dockerfile`
+und `docker-compose.example.yml`.
+
+Drei Befunde haben das Design gegenüber der ursprünglichen Absicht verschoben:
+
+**Eine Design-Annahme war sachlich falsch.** Die erste Fassung wollte `CHUNK_SIZE_PAGES`
+auf einen Wertebereich prüfen — mit der Begründung, `0` hieße „kein Block wird
+verarbeitet" und ein Wert über dem Limit werde von der Engine abgelehnt. Beides widerlegt:
+`DocumentAiAdapter.page_limit` klemmt jeden Wert ≤ 0 ohnehin auf das Engine-Limit. Die
+Prüfung ist auf `RETRY_DELAY_MINUTES` eingeengt worden, den einzigen Zähler, bei dem ein
+Tippfehler Geld kostet — bei ≤ 0 entfällt die Pause zwischen Wiederholversuchen
+vollständig, und ein dauerhaft scheiterndes Dokument verbraucht alle Versuche in Sekunden,
+jeden mit einem vollen, bezahlten OCR-Aufruf.
+
+**Ein case-sensitiver Vergleich hätte funktionierende Installationen lahmgelegt.**
+`get_adapter()` normalisiert `OCR_PROVIDER` seit immer mit `.lower()`, die neue Prüfung
+zunächst nicht. Ein Anwender mit `OCR_PROVIDER=DocumentAI` hätte nach dieser Change einen
+Dienst gehabt, der nicht mehr startet — dazu hätte der übersprungene Zweig die echten
+Lücken verschluckt. Im Review gefunden und behoben.
+
+**Die Gesundheitsbewertung stand nur in Prosa.** Dass eine abgeschaltete
+Paperless-Schleife (`not_started`) und eine unter Last kurzzeitig nicht erreichbare
+Datenbank (`busy`) als gesund gelten, war Kommentar, nicht Typ. Die naheliegende
+Implementierung (`alle == running and db == usable`) hätte jede Standardinstallation
+(Standardkonfiguration läuft mit `FEATURE_PAPERLESS_SYNC=false`) dauerhaft mit `503`
+antworten lassen — der Fehler wäre erst am NAS aufgefallen. Als `healthy`-Eigenschaft an
+`TaskState` bzw. `DatabaseHealthState` ist er jetzt nicht mehr machbar.
+
+**Die offene Design-Annahme wurde am echten Container geprüft:** Ob uvicorn bei einer
+Ausnahme in `lifespan` den Prozess wirklich beendet, statt lauschend hängen zu bleiben.
+Ein Abbild wurde ohne Restart-Policy mit absichtlich unvollständiger ENV gestartet: Der
+Prozess endete tatsächlich, mit Exit-Code `3`, `State.Running=false` — kein lauschendes
+Hängenbleiben. Ein härterer Abbruch war damit nicht nötig.
+
+Weiteres:
+
+- Die Ablehnung erscheint zweimal: als zusammenhängender Block über `log.error`, dann als
+  Ausnahme — sonst stünde die Begründung nur im Traceback zwischen Starlette- und
+  uvicorn-Rahmen.
+- Die Schreibprobe der vier Arbeitsordner und des Datenbank-Verzeichnisses schreibt
+  tatsächlich (`tempfile.NamedTemporaryFile`), statt `os.access` zu befragen — der Prozess
+  läuft als root, und `os.access` antwortet für root fast immer mit „ja", auch auf einem
+  schreibgeschützt eingehängten Volume. Sie fängt den in der Praxis relevanten Fall (falsch
+  eingehängter Ordner), nicht falsche Berechtigungen als root.
+- Der Container erreicht `healthy` bereits nach rund 20 Sekunden, nicht erst nach Ablauf
+  der 120-Sekunden-Anlaufzeit — korrektes Docker-Verhalten (`start_period` schont nur die
+  Zählung der Fehlversuche, verzögert aber keinen Erfolg), belegt am echten Container.
+
+Für den Rollout festgehalten: **Vor dem `pull` ist die laufende `.env` vollständig gegen
+die Tabelle in
+[`feature-documentation/konfiguration.md`](../feature-documentation/konfiguration.md#startvalidierung-was-beim-start-pflicht-ist)
+abzugleichen** — nicht nur die Feature-Schalter. Ein gesetzter Schalter ohne die
+zugehörigen Angaben war bisher lautlos wirkungslos und ist nach dieser Change ein
+**Startfehler**, ebenso ein als `:ro` eingehängter Arbeitsordner (bisher folgenlos, weil
+nur beim endgültigen Scheitern beschrieben) oder ein zu kurzes `RETRY_DELAY_MINUTES` bei
+aktivem Retry.
+
+**Ein Rollback ist folgenlos:** keine neue Spalte, kein neuer Zustandswert, keine
+Datenmigration.
+
+373 Tests grün (vorher 320), `ruff` sauber. Feature-Doku unter
+`feature-documentation/startvalidierung-und-healthcheck.md`; ergänzt in
+`konfiguration.md` (Pflichttabelle) und `docker-deployment.md` (`HEALTHCHECK`).
+
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 
 - UI ohne HTMX/Tailwind-Laufzeit: serverseitiges Jinja2 + offline-CSS + Vanilla-JS-SSE

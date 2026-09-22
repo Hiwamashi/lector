@@ -1,5 +1,8 @@
+import asyncio
 import importlib
 import logging
+import os
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,11 +13,7 @@ import app.main
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("WATCH_DIR", str(tmp_path / "scan-in"))
-    monkeypatch.setenv("CONSUME_DIR", str(tmp_path / "consume"))
-    monkeypatch.setenv("PROCESSED_DIR", str(tmp_path / "processed"))
-    monkeypatch.setenv("ERROR_DIR", str(tmp_path / "error"))
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "lector.db"))
+    _setup_test_environment(monkeypatch, tmp_path)
 
     import app.config
     import app.main
@@ -26,8 +25,200 @@ def client(tmp_path, monkeypatch):
 
 
 def test_healthz(client):
+    """5.2: Bei gesundem Dienst liefert `/healthz` `200` und schlüsselt jede der sieben
+    Prüfungen (vier Kern-Tasks, Paperless-Schleife, Observer, Datenbank) einzeln auf —
+    das ist zugleich der Nachweis für 5.1."""
     c, _ = client
-    assert c.get("/healthz").json() == {"status": "ok"}
+    from app.repository import DatabaseHealthState
+    from app.worker import TaskState
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    laufend = {"state": TaskState.RUNNING.value, "error": None}
+    assert body["scan"] == laufend
+    assert body["process"] == laufend
+    assert body["retry"] == laufend
+    assert body["retention"] == laufend
+    assert body["watch-folder-observer"] == laufend
+    # FEATURE_PAPERLESS_SYNC steht in der Test-Umgebung auf dem Standardwert (aus).
+    assert body["paperless-sync"] == {"state": TaskState.NOT_STARTED.value, "error": None}
+    assert body["database"] == {"state": DatabaseHealthState.USABLE.value, "error": None}
+
+
+def _cancel_worker_task(application, name: str) -> None:
+    """Bricht eine laufende Hintergrund-Task des Workers wirklich ab und wartet, bis sie
+    beendet ist — threadsicher über den an `EventBus` gebundenen Loop, mit Zeitlimit statt
+    unbegrenztem Warten (der Test läuft synchron, die Task aber im Loop der Fixture)."""
+    worker = application.state.worker
+    loop = application.state.bus._loop
+    task = next(t for t in worker._tasks if t.get_name() == name)
+
+    async def _cancel_and_wait() -> None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    future = asyncio.run_coroutine_threadsafe(_cancel_and_wait(), loop)
+    future.result(timeout=5)
+
+
+def test_healthz_meldet_beendete_hintergrundarbeit(client):
+    """5.3: Eine wirklich beendete Hintergrundarbeit (nicht vorgetäuscht) lässt den
+    Endpunkt `503` liefern und benennt in der Antwort, welche Arbeit betroffen ist —
+    samt Ursache, statt eines pauschalen 'ungesund'."""
+    c, application = client
+    _cancel_worker_task(application, "retention")
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["retention"]["state"] == "stopped"
+    assert body["retention"]["error"] is not None
+
+
+def test_healthz_meldet_nicht_benutzbare_datenbank(client):
+    """5.4: Eine nicht benutzbare Datenbank lässt den Endpunkt `503` liefern und benennt
+    in der Antwort die Datenbank samt Ursache."""
+    c, application = client
+    application.state.repo.close()
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["database"]["state"] == "unusable"
+    assert body["database"]["error"] is not None
+
+
+def test_healthz_meldet_beendeten_observer(client):
+    """5.5: Ein wirklich beendeter Watchdog-Observer-Thread lässt `/healthz` `503`
+    liefern. `_observer = None` deckt diesen Pfad nicht ab — hier stirbt der echte
+    Thread, mit Zeitlimit statt `sleep`."""
+    c, application = client
+    worker = application.state.worker
+    worker._observer.stop()
+    worker._observer.join(timeout=5)
+    assert not worker._observer.is_alive()
+
+    resp = c.get("/healthz")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["watch-folder-observer"]["state"] == "stopped"
+    assert body["watch-folder-observer"]["error"] is not None
+
+
+def test_healthz_meldet_beschaeftigte_datenbank_als_gesund(client):
+    """5.6: Eine beschäftigte Datenbank (Lock von einem anderen Thread gehalten) bleibt
+    gesund und liefert weiter `200` — `BUSY` heißt benutzt, nicht kaputt. Synchronisiert
+    über `threading.Event` statt `sleep`, mit Zeitlimit und `finally` (Muster aus
+    `tests/test_repository.py::test_check_health_meldet_beschaeftigt_wenn_lock_von_anderem_thread_gehalten`),
+    damit ein fehlgeschlagener Test die Suite nicht aufhängt."""
+    c, application = client
+    repo = application.state.repo
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_lock() -> None:
+        with repo._lock:
+            lock_held.set()
+            release_lock.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert lock_held.wait(timeout=5)
+
+        resp = c.get("/healthz")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["database"]["state"] == "busy"
+        assert body["database"]["error"] is None
+    finally:
+        release_lock.set()
+        holder.join(timeout=5)
+
+
+def test_healthz_veraendert_nichts(client):
+    """5.7: Der Endpunkt beobachtet nur — mehrfache Abfrage bei beendeter Arbeit lässt
+    diese beendet (keine Selbstheilung), legt keinen Vorgang an und schreibt keinen
+    Verlaufseintrag."""
+    c, application = client
+    repo = application.state.repo
+    _cancel_worker_task(application, "retention")
+
+    doc_count_vorher = repo._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    event_count_vorher = repo._conn.execute("SELECT COUNT(*) FROM document_events").fetchone()[0]
+
+    for _ in range(3):
+        resp = c.get("/healthz")
+        assert resp.status_code == 503
+        assert resp.json()["retention"]["state"] == "stopped"
+
+    doc_count_nachher = repo._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    event_count_nachher = repo._conn.execute(
+        "SELECT COUNT(*) FROM document_events"
+    ).fetchone()[0]
+    assert doc_count_nachher == doc_count_vorher
+    assert event_count_nachher == event_count_vorher
+
+
+def test_healthz_ignoriert_nicht_erreichbares_paperless(tmp_path, monkeypatch):
+    """5.8: Ein nicht erreichbares Paperless darf `/healthz` nicht auf `503` bringen —
+    der Endpunkt prüft die Erreichbarkeit fremder Dienste nicht und macht dafür auch
+    keine eigenen HTTP-Aufrufe, die in den globalen `httpx.HTTPError`-Handler
+    (`paperless_unavailable`) laufen könnten."""
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FEATURE_PAPERLESS_SYNC", "true")
+    monkeypatch.setenv("PAPERLESS_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("PAPERLESS_TOKEN", "dummy-token")
+    application = _reload_app_main()
+
+    with TestClient(application.app) as c:
+        sync = application.app.state.sync
+        assert sync.enabled
+
+        # Erzwingt einen echten, fehlschlagenden Sync-Versuch, statt auf den nächsten
+        # Intervall-Tick der Hintergrundschleife zu warten — `sync_once` fängt den
+        # ConnectError selbst ab und wirft nicht weiter.
+        loop = application.app.state.bus._loop
+        future = asyncio.run_coroutine_threadsafe(sync.sync_once(), loop)
+        future.result(timeout=5)
+
+        resp = c.get("/healthz")
+
+        assert resp.status_code == 200
+        assert resp.json()["paperless-sync"]["state"] == "running"
+
+
+def test_worker_liegt_in_app_state(client):
+    """4.5: Der Worker muss über `app.state` erreichbar sein, damit z.B. `/healthz`
+    (Gruppe 5) seine Zustandsauskunft abfragen kann."""
+    _, application = client
+    from app.worker import Worker
+
+    assert isinstance(application.state.worker, Worker)
+
+
+def test_worker_hintergrundarbeiten_laufen_nach_dem_start(client):
+    """Minor 2 (Fix-Runde 1, Gruppe 4): pinnt den Vertrag zwischen `start()` und
+    `background_task_states()`/`observer_state()`. `start()` benutzte bislang eigene
+    Namens-Literale statt der Konstanten, mit denen die Auskunft abgleicht — ein
+    Tippfehler dort hätte lautlos jede Installation dauerhaft als ungesund gemeldet,
+    ohne dass ein Test das bemerkt (alle Worker-Tests bestückten `_tasks` bislang
+    selbst mit denselben Literalen). Hier läuft der echte `lifespan` durch die
+    `client`-Fixture, mit `FEATURE_PAPERLESS_SYNC` auf dem Standardwert (aus)."""
+    _, application = client
+    from app.worker import TaskState
+
+    worker = application.state.worker
+    states = worker.background_task_states()
+    running = {s.name for s in states if s.state == TaskState.RUNNING}
+    assert running == {"scan", "process", "retry", "retention"}
+    assert worker.observer_state().state == TaskState.RUNNING
 
 
 def test_dashboard_empty(client):
@@ -674,12 +865,34 @@ def test_pages_carry_live_status_hint(client):
 # verwenden.
 
 
-def _set_env_dirs(monkeypatch, tmp_path):
+def _setup_test_environment(monkeypatch, tmp_path):
+    """Richtet die komplette Test-Umgebung ein: Verzeichnisse, GCP-Credentials,
+    Document-AI-Konfiguration."""
     monkeypatch.setenv("WATCH_DIR", str(tmp_path / "scan-in"))
     monkeypatch.setenv("CONSUME_DIR", str(tmp_path / "consume"))
     monkeypatch.setenv("PROCESSED_DIR", str(tmp_path / "processed"))
     monkeypatch.setenv("ERROR_DIR", str(tmp_path / "error"))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "lector.db"))
+
+    # Google Cloud-Authentifizierung (leere Datei, der Inhalt wird nicht gelesen).
+    creds_file = tmp_path / "gcp_credentials.json"
+    creds_file.touch()
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(creds_file))
+
+    # Document-AI-Konfiguration.
+    monkeypatch.setenv("GCP_PROJECT_ID", "test-project")
+    monkeypatch.setenv("DOCAI_PROCESSOR_ID", "test-processor")
+
+    # Feature-Schalter explizit auf "aus" — nicht nur delenv(): Settings liest neben der
+    # Prozess-ENV auch die .env aus dem Arbeitsverzeichnis (model_config env_file=".env"),
+    # und die hat gegenüber os.environ NIEDRIGERE Priorität. Ein fehlender Prozess-Eintrag
+    # legt eine dortige Angabe also nicht still, nur eine gesetzte überschreibt sie. Eine
+    # lokale .env mit z.B. FEATURE_SEVDESK_EXPORT=true ohne Token würde sonst ab dieser
+    # Change die halbe Suite mit einer Meldung rot machen, die auf die Change zeigt statt
+    # auf die Umgebung.
+    monkeypatch.setenv("FEATURE_PAPERLESS_SYNC", "false")
+    monkeypatch.setenv("FEATURE_SEVDESK_EXPORT", "false")
+    monkeypatch.setenv("FEATURE_RECIPIENT_LLM", "false")
 
 
 def _reload_app_main():
@@ -691,7 +904,7 @@ def _reload_app_main():
 def test_stale_processing_document_is_resolved_on_startup(tmp_path, monkeypatch):
     """3.1: Ein beim Absturz auf `processing` hängengebliebener Vorgang darf nach dem
     Start nicht mehr in diesem Zustand stehen."""
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -716,7 +929,7 @@ def test_stale_processing_document_is_resolved_on_startup(tmp_path, monkeypatch)
 def test_resolved_count_is_logged_only_when_positive(tmp_path, monkeypatch, caplog):
     """3.2: Die Startzeile nennt die Anzahl aufgelöster Vorgänge — aber nur, wenn es
     überhaupt welche gab (analog zu `reset_stale_exports`)."""
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -756,7 +969,7 @@ def test_recovery_runs_before_worker_starts_processing_new_files(tmp_path, monke
     im Produktionscode NACH `await worker.start()`, würde `order` mit `"worker_start"`
     beginnen und die letzte Zusicherung dieses Tests schlüge fehl.
     """
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -1003,7 +1216,7 @@ def test_blocked_document_is_not_taken_in_again_from_the_watch_folder(client):
 def test_blocked_document_survives_a_restart(tmp_path, monkeypatch):
     """6.2: Weder die Recovery noch der Watcher dürfen einen angehaltenen Vorgang
     beim Start anfassen."""
-    _set_env_dirs(monkeypatch, tmp_path)
+    _setup_test_environment(monkeypatch, tmp_path)
 
     from app.config import Settings
     from app.models import DocStatus
@@ -1025,3 +1238,156 @@ def test_blocked_document_survives_a_restart(tmp_path, monkeypatch):
         assert doc.status == DocStatus.BLOCKED
         assert doc.total_pages == 42
         assert src.exists()
+
+
+# ---------------------------------------------------------------------------
+# Gruppe 3 (startvalidierung-und-healthcheck): Einbindung in die Startsequenz
+# ---------------------------------------------------------------------------
+
+
+def test_startup_wird_bei_unvollstaendiger_konfiguration_abgelehnt(tmp_path, monkeypatch):
+    """3.2: Eine unvollständige Konfiguration lässt den `TestClient` mit der eigenen
+    Ausnahme scheitern, statt den Dienst lauffähig, aber wirkungslos zu starten. Die
+    Ausnahme trägt die Beanstandungen, damit dieser Test sie prüfen kann, ohne das
+    Protokoll abzufangen."""
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("GCP_PROJECT_ID", "")
+
+    from app.config import ConfigurationRejectedError
+
+    main = _reload_app_main()
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(main.app):
+            pass
+
+    assert any("GCP_PROJECT_ID" in p for p in exc_info.value.problems)
+
+
+def test_abgelehnter_start_protokolliert_beanstandungen_als_block_vor_der_ausnahme(
+    tmp_path, monkeypatch, caplog
+):
+    """3.2: Die Beanstandungen erscheinen zuerst als eigener, zusammenhängender
+    Protokollblock (design.md D3) — sonst stünden sie nur als Teil des Tracebacks
+    zwischen Starlette- und uvicorn-Rahmen, statt als erste Zeile in `docker logs`."""
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("GCP_PROJECT_ID", "")
+
+    from app.config import ConfigurationRejectedError
+
+    main = _reload_app_main()
+
+    with caplog.at_level(logging.ERROR, logger="lector.main"):
+        with pytest.raises(ConfigurationRejectedError) as exc_info:
+            with TestClient(main.app):
+                pass
+
+    assert "Konfiguration unvollständig" in caplog.text
+    assert "GCP_PROJECT_ID" in caplog.text
+    # _reject_startup() formatiert den Block nicht mehr selbst, sondern protokolliert die
+    # Ausnahme direkt (log.error("%s", err)) — Protokoll und Ausnahme müssen deshalb
+    # byte-identisch sein, nicht nur beide dieselben Stichworte enthalten.
+    assert str(exc_info.value) in caplog.text
+
+
+def test_startup_wird_bei_falschem_typ_abgelehnt(tmp_path, monkeypatch):
+    """Spec-Szenario 'Eine Angabe ist gesetzt, aber unbrauchbar', Typfehler-Hälfte:
+    RETRY_MAX=abc lässt bereits get_settings() mit einer pydantic-ValidationError
+    scheitern, VOR validate_settings() — der Start scheitert trotzdem, und die Meldung
+    nennt den ENV-Alias RETRY_MAX (nicht den Feldnamen retry_max), wie von pydantic
+    aufgelöst. Siehe feature-documentation/startvalidierung-und-healthcheck.md."""
+    import pydantic
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("RETRY_MAX", "abc")
+
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    assert "RETRY_MAX" in str(exc_info.value)
+
+
+def test_abgelehnter_start_wegen_schreibprobe_hinterlaesst_keine_wirkung(tmp_path, monkeypatch):
+    """3.3: Scheitert die Schreibprobe (Stufe 2, design.md D4), ist `ensure_dirs()`
+    zwar bereits gelaufen, aber es entsteht keine Datenbankdatei am Ort von `DB_PATH`,
+    kein Vorgang und keine bewegte Datei — die Schreibprobe sitzt zwischen
+    `ensure_dirs()` und dem Bau des `Repository`. Genau diese Reihenfolge sichert die
+    Gegenprobe (3.6) ab."""
+    if os.geteuid() == 0:
+        pytest.skip(
+            "läuft als root — chmod schützt den Ordner dann nicht wirklich, "
+            "der Test würde falsch grün"
+        )
+
+    _setup_test_environment(monkeypatch, tmp_path)
+
+    from app.config import ConfigurationRejectedError, Settings
+
+    settings = Settings()
+    settings.consume_dir.mkdir(parents=True)
+    settings.consume_dir.chmod(0o500)  # lesbar, nicht beschreibbar
+
+    settings.watch_dir.mkdir(parents=True, exist_ok=True)
+    eingang = settings.watch_dir / "eingang.pdf"
+    eingang.write_bytes(b"%PDF-1.4 inhalt")
+
+    main = _reload_app_main()
+    try:
+        with pytest.raises(ConfigurationRejectedError):
+            with TestClient(main.app):
+                pass
+    finally:
+        settings.consume_dir.chmod(0o700)
+
+    assert not settings.db_path.exists()
+    assert eingang.exists()
+    assert list(settings.processed_dir.iterdir()) == []
+    assert list(settings.error_dir.iterdir()) == []
+
+
+def test_schreibprobe_lehnt_start_bei_schreibgeschuetztem_ordner_ab(tmp_path, monkeypatch):
+    """3.4: Die Schreibprobe fängt einen echten Berechtigungsfehler ab, weil sie
+    tatsächlich schreibt statt `os.access` zu befragen (design.md D4): Der Prozess läuft
+    im Container als root, für den `os.access` die Frage fast immer mit 'ja'
+    beantwortet — auch auf einem schreibgeschützt eingehängten Volume."""
+    if os.geteuid() == 0:
+        pytest.skip(
+            "läuft als root — chmod schützt den Ordner dann nicht wirklich, "
+            "der Test würde falsch grün"
+        )
+
+    _setup_test_environment(monkeypatch, tmp_path)
+
+    from app.config import ConfigurationRejectedError, Settings
+
+    settings = Settings()
+    settings.consume_dir.mkdir(parents=True)
+    settings.consume_dir.chmod(0o500)  # lesbar, nicht beschreibbar
+
+    main = _reload_app_main()
+    try:
+        with pytest.raises(ConfigurationRejectedError) as exc_info:
+            with TestClient(main.app):
+                pass
+    finally:
+        settings.consume_dir.chmod(0o700)
+
+    assert any("CONSUME_DIR" in p for p in exc_info.value.problems)
+
+
+def test_noch_nicht_vorhandener_arbeitsordner_wird_angelegt_und_start_laeuft_weiter(
+    tmp_path, monkeypatch
+):
+    """3.5: Ein beim Start noch fehlender Arbeitsordner wird von `ensure_dirs()`
+    angelegt und ist damit vorhanden, wenn die Schreibprobe ihn erreicht — der Start
+    scheitert nicht daran, dass ein Ordner beim ersten Aufruf noch fehlt."""
+    _setup_test_environment(monkeypatch, tmp_path)
+
+    watch_dir = tmp_path / "scan-in"
+    assert not watch_dir.exists()
+
+    main = _reload_app_main()
+    with TestClient(main.app) as c:
+        assert watch_dir.is_dir()
+        assert c.get("/healthz").status_code == 200

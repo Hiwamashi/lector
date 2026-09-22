@@ -137,3 +137,138 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# Zulässige Werte für OCR_PROVIDER und ihr Pflichtbedarf je Engine (Feldnamen, nicht Alias).
+# Bewusst hier statt in app/ocr/__init__.py: app/ocr/__init__.py importiert Settings aus
+# diesem Modul (from ..config import Settings), ein Import in Gegenrichtung würde einen
+# Zyklus erzeugen. Damit der Bedarf trotzdem an genau einer Stelle steht, lebt er hier;
+# eine zweite Engine ergänzt nur diesen Dict-Eintrag.
+_ENGINE_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "documentai": (
+        "gcp_project_id",
+        "docai_processor_id",
+        "docai_location",
+        "google_application_credentials",
+    ),
+}
+
+
+def _env_name(field_name: str) -> str:
+    """Liest den ENV-Namen (Alias) zu einem Feld aus dem Modell, statt ihn zu wiederholen."""
+    alias = Settings.model_fields[field_name].alias
+    return alias if alias is not None else field_name
+
+
+def _is_readable_file(path: Path) -> bool:
+    """Einziger I/O-Zugriff dieser Prüfung: Vorhandensein und Lesbarkeit, kein Parsen."""
+    try:
+        with path.open("rb"):
+            return True
+    except OSError:
+        return False
+
+
+class ConfigurationRejectedError(RuntimeError):
+    """Wird beim Start geworfen, wenn `validate_settings` oder die Schreibprobe in
+    `lifespan` (app/main.py) Beanstandungen findet. Trägt die gesammelten Beanstandungen
+    zusätzlich als `problems`, damit ein Test sie prüfen kann, ohne das Protokoll
+    abzufangen — die Ausnahme selbst ist der maßgebliche Träger der Information, das
+    `log.error` davor (design.md D3) dient nur der Lesbarkeit in `docker logs`."""
+
+    def __init__(self, problems: list[str]) -> None:
+        self.problems = problems
+        block = "\n".join(f"  {p}" for p in problems)
+        super().__init__(f"Konfiguration unvollständig — der Dienst startet nicht:\n{block}")
+
+
+def validate_settings(settings: Settings) -> list[str]:
+    """Prüft ein bereits aufgebautes Settings-Objekt auf Angaben, die sonst erst beim
+    ersten Dokument als Google-API-Fehler auffallen würden (fehlende Engine-Angaben,
+    unlesbare Credentials-Datei, ein zu kurzes Retry-Intervall, ein gesetzter
+    Feature-Schalter ohne die dazugehörigen Angaben).
+
+    Gibt die Liste aller Beanstandungen zurück (leere Liste = gültige Konfiguration).
+    Wirft selbst nicht und bricht nicht bei der ersten Beanstandung ab — sie werden
+    gesammelt, damit der Aufrufer sie in einem Durchgang meldet."""
+    problems: list[str] = []
+
+    provider = settings.ocr_provider
+    # Case-insensitiv, konsistent zu get_adapter() (app/ocr/__init__.py:10), das den
+    # Provider ebenfalls über .lower() auflöst — sonst würde eine Schreibweise, die zur
+    # Laufzeit anstandslos die Engine auflöst, hier als unbekannt zurückgewiesen.
+    normalized_provider = provider.lower()
+    if normalized_provider not in _ENGINE_REQUIRED_FIELDS:
+        zulaessig = ", ".join(sorted(_ENGINE_REQUIRED_FIELDS))
+        problems.append(
+            f"{_env_name('ocr_provider')} hat einen unbekannten Wert {provider!r} "
+            f"(zulässig: {zulaessig})"
+        )
+    else:
+        for field_name in _ENGINE_REQUIRED_FIELDS[normalized_provider]:
+            value = getattr(settings, field_name)
+            if field_name == "google_application_credentials":
+                if not value:
+                    problems.append(
+                        f"{_env_name(field_name)} ist leer (Pflicht bei OCR_PROVIDER={provider})"
+                    )
+                elif not _is_readable_file(Path(value)):
+                    problems.append(
+                        f"{_env_name(field_name)} zeigt auf keine lesbare Datei: {value}"
+                    )
+            elif not value:
+                problems.append(
+                    f"{_env_name(field_name)} ist leer (Pflicht bei OCR_PROVIDER={provider})"
+                )
+
+    # Nur relevant, wenn überhaupt wiederholt wird — bei RETRY_MAX<=0 wird
+    # schedule_retry() (app/pipeline.py:188) nie erreicht, und der Wert bliebe folgenlos.
+    if settings.retry_max > 0 and settings.retry_delay_minutes < 1:
+        problems.append(
+            f"{_env_name('retry_delay_minutes')} muss mindestens 1 sein, "
+            f"ist {settings.retry_delay_minutes}"
+        )
+
+    if settings.feature_paperless_sync:
+        schalter = _env_name("feature_paperless_sync")
+        if not settings.paperless_url:
+            problems.append(f"{_env_name('paperless_url')} ist leer (Pflicht bei {schalter}=true)")
+        if not settings.paperless_token:
+            problems.append(
+                f"{_env_name('paperless_token')} ist leer (Pflicht bei {schalter}=true)"
+            )
+
+    if settings.feature_sevdesk_export:
+        schalter = _env_name("feature_sevdesk_export")
+        if not settings.sevdesk_api_token:
+            problems.append(
+                f"{_env_name('sevdesk_api_token')} ist leer (Pflicht bei {schalter}=true)"
+            )
+        # Exportierbare Rechnungen entstehen ausschließlich im Paperless-Sync
+        # (PaperlessSync._sync_invoices/_sync_sevdesk_tag, nur erreichbar über
+        # sync_once() bei PaperlessSync.enabled) — ohne FEATURE_PAPERLESS_SYNC bleibt der
+        # Export dauerhaft ohne Rechnung, also lautlos wirkungslos.
+        if not settings.feature_paperless_sync:
+            problems.append(
+                f"{_env_name('feature_paperless_sync')} ist nicht aktiv (Pflicht bei "
+                f"{schalter}=true — exportierbare Rechnungen entstehen ausschließlich im "
+                "Paperless-Sync)"
+            )
+
+    if settings.feature_recipient_llm:
+        schalter = _env_name("feature_recipient_llm")
+        if not settings.anthropic_api_key:
+            problems.append(
+                f"{_env_name('anthropic_api_key')} ist leer (Pflicht bei {schalter}=true)"
+            )
+        # PaperlessSync.recipient_llm_enabled (app/paperless_sync.py:130-133) verlangt
+        # zusätzlich recipient_enabled, also PAPERLESS_URL und PAPERLESS_TOKEN —
+        # ausdrücklich unabhängig von FEATURE_PAPERLESS_SYNC.
+        if not settings.paperless_url:
+            problems.append(f"{_env_name('paperless_url')} ist leer (Pflicht bei {schalter}=true)")
+        if not settings.paperless_token:
+            problems.append(
+                f"{_env_name('paperless_token')} ist leer (Pflicht bei {schalter}=true)"
+            )
+
+    return problems
