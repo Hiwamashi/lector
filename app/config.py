@@ -212,11 +212,16 @@ def get_settings_and_problems() -> tuple[Settings | None, list[str]]:
        Gegenrichtung (Erfindungsrichtung), behoben statt nur dokumentiert: Der
        Standardwert eines Felds mit Typfehler kann umgekehrt auch eine Prüfung
        *aktivieren*, die beim tatsächlich gemeinten Wert gar nicht gälte — `RETRY_MAX`
-       fällt z. B. auf `3` (> 0) zurück, unabhängig davon, ob der Anwender `0` meinte.
-       Deshalb übergibt diese Funktion die Namen aller Felder mit Typfehler als
-       `unzuverlaessige_felder` an `validate_settings()`; dort überspringt sich die
-       einzige Prüfung, deren Bedingung an einem solchen Feld hängt
-       (`retry_max`/`retry_delay_minutes`), statt eine Beanstandung zu erfinden.
+       fällt z. B. auf `3` (> 0) zurück, unabhängig davon, ob der Anwender `0` meinte;
+       `FEATURE_PAPERLESS_SYNC` fällt auf `False` zurück, unabhängig davon, ob der
+       Anwender `true` meinte, und eine andere, gültig aktivierte Prüfung (der
+       `feature_sevdesk_export`-Block) liest diesen Wert mit. Deshalb übergibt diese
+       Funktion die Namen aller Felder mit Typfehler als `unzuverlaessige_felder` an
+       `validate_settings()`; dort überspringen sich die beiden Prüfungen, deren
+       Bedingung an einem *anderen* Feld als ihrem eigenen Schalter hängt
+       (`retry_max`/`retry_delay_minutes` und `feature_paperless_sync` im
+       `feature_sevdesk_export`-Block — siehe dort für die vollständige Durchsicht aller
+       bedingten Prüfungen), statt eine Beanstandung zu erfinden.
 
     Scheitert auch der zweite Bau (bei den aktuellen Feldern nicht beobachtet — jedes Feld
     trägt einen zum eigenen Typ passenden Standardwert, und es gibt keine
@@ -287,12 +292,25 @@ def validate_settings(
     (siehe `get_settings_and_problems()` in diesem Modul, das dieses Argument beim
     Fallback-Bau füllt). Eine Prüfung, deren BEDINGUNG an einem solchen Feld hängt, darf
     daraus keine abgeleitete Beanstandung erzeugen — wir wissen schlicht nicht, ob die
-    Bedingung zuträfe: `RETRY_MAX=drei` (Typfehler, gemeint war z.B. `0`) zusammen mit
-    `RETRY_DELAY_MINUTES=0` fiele ohne diese Ausnahme auf den Standardwert `retry_max=3`
-    zurück, und die Prüfung unten würde `RETRY_DELAY_MINUTES muss mindestens 1 sein`
-    erfinden — eine Beanstandung an etwas, das beim eigentlich gemeinten `retry_max<=0`
-    gar nicht gälte. Der Standardfall (kein Typfehler) übergibt `None`/eine leere Menge
-    und bleibt dadurch unverändert."""
+    Bedingung zuträfe. Zwei Stellen betrifft das (die einzigen beiden im Modell, in denen
+    eine Prüfung ein anderes Feld als ihren eigenen Schalter liest — geprüft, nicht nur
+    angenommen: alle übrigen gelesenen Felder sind uneingeschränkte `str`-Felder, die bei
+    der Konstruktion aus der Umgebung nie einen Typfehler haben können):
+
+    - `RETRY_MAX=drei` (Typfehler, gemeint war z.B. `0`) zusammen mit
+      `RETRY_DELAY_MINUTES=0` fiele ohne diese Ausnahme auf den Standardwert
+      `retry_max=3` zurück, und die Prüfung würde `RETRY_DELAY_MINUTES muss mindestens 1
+      sein` erfinden — eine Beanstandung an etwas, das beim eigentlich gemeinten
+      `retry_max<=0` gar nicht gälte.
+    - `FEATURE_PAPERLESS_SYNC=vielleicht` (Typfehler, gemeint war z.B. `true`) zusammen
+      mit `FEATURE_SEVDESK_EXPORT=true` fiele ohne diese Ausnahme auf den Standardwert
+      `feature_paperless_sync=False` zurück, und die Prüfung im
+      `feature_sevdesk_export`-Block würde `FEATURE_PAPERLESS_SYNC ist nicht aktiv`
+      erfinden — der Anwender würde aufgefordert, etwas zu aktivieren, das er sich nur
+      beim Wert vertippt hat.
+
+    Der Standardfall (kein Typfehler) übergibt `None`/eine leere Menge und bleibt dadurch
+    unverändert."""
     unreliable = unzuverlaessige_felder or set()
     problems: list[str] = []
 
@@ -359,7 +377,12 @@ def validate_settings(
         # (PaperlessSync._sync_invoices/_sync_sevdesk_tag, nur erreichbar über
         # sync_once() bei PaperlessSync.enabled) — ohne FEATURE_PAPERLESS_SYNC bleibt der
         # Export dauerhaft ohne Rechnung, also lautlos wirkungslos.
-        if not settings.feature_paperless_sync:
+        # Bedingung hängt an feature_paperless_sync, nicht am Schalter dieses Blocks
+        # (feature_sevdesk_export): Hatte FEATURE_PAPERLESS_SYNC selbst einen Typfehler,
+        # steht der hier gelesene Wert nur als Standard (False) da — ob der Anwender ihn
+        # aktivieren wollte, ist unbekannt. Ohne den Skip würde diese Prüfung eine
+        # Aktivierung fordern, die der Anwender sich möglicherweise nur vertippt hat.
+        if "feature_paperless_sync" not in unreliable and not settings.feature_paperless_sync:
             problems.append(
                 f"{_env_name('feature_paperless_sync')} ist nicht aktiv (Pflicht bei "
                 f"{schalter}=true — exportierbare Rechnungen entstehen ausschließlich im "

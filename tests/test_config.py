@@ -197,6 +197,39 @@ def test_validate_settings_retry_delay_pruefung_greift_trotz_anderer_unzuverlaes
     assert "RETRY_DELAY_MINUTES" in problems[0]
 
 
+def test_validate_settings_ueberspringt_paperless_sync_pruefung_bei_unzuverlaessigem_feld(
+    tmp_path,
+):
+    """Zweite Stelle mit demselben Fehlerbild (Nachtrag zur Fix-Runde, app/config.py:362):
+    Hätte FEATURE_PAPERLESS_SYNC selbst einen Typfehler, steht der hier gelesene Wert
+    (im Fallback-Bau der Standardwert `False`) nur als Platzhalter da — ob der Anwender
+    ihn aktivieren wollte, ist unbekannt. Die Prüfung im feature_sevdesk_export-Block
+    darf dann keine Aktivierungsforderung erfinden."""
+    s = _vollstaendige_documentai_settings(
+        tmp_path,
+        FEATURE_SEVDESK_EXPORT=True,
+        SEVDESK_API_TOKEN="tok-123",
+        FEATURE_PAPERLESS_SYNC=False,
+    )
+    assert validate_settings(s, unzuverlaessige_felder={"feature_paperless_sync"}) == []
+
+
+def test_validate_settings_paperless_sync_pruefung_greift_trotz_anderer_unzuverlaessiger_felder(
+    tmp_path,
+):
+    """Gegenstück: Ein Typfehler an einem ANDEREN Feld darf die
+    FEATURE_PAPERLESS_SYNC-Prüfung im feature_sevdesk_export-Block nicht mit abschalten."""
+    s = _vollstaendige_documentai_settings(
+        tmp_path,
+        FEATURE_SEVDESK_EXPORT=True,
+        SEVDESK_API_TOKEN="tok-123",
+        FEATURE_PAPERLESS_SYNC=False,
+    )
+    problems = validate_settings(s, unzuverlaessige_felder={"gcp_project_id"})
+    assert len(problems) == 1
+    assert "FEATURE_PAPERLESS_SYNC" in problems[0]
+
+
 def test_validate_settings_chunk_size_null_verhindert_start_nicht(tmp_path):
     s = _vollstaendige_documentai_settings(tmp_path, CHUNK_SIZE_PAGES=0)
     assert validate_settings(s) == []

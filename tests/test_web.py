@@ -1376,6 +1376,56 @@ def test_startup_meldet_retry_delay_weiterhin_bei_gueltigem_retry_max(tmp_path, 
     assert any("RETRY_DELAY_MINUTES" in p for p in exc_info.value.problems)
 
 
+def test_startup_erfindet_keine_paperless_sync_forderung_bei_unzuverlaessigem_feature_schalter(
+    tmp_path, monkeypatch
+):
+    """Fix-Runde, Nachtrag (zweite Stelle mit demselben Fehlerbild, app/config.py:362):
+    FEATURE_PAPERLESS_SYNC=vielleicht (Typfehler, gemeint war z.B. true) zusammen mit
+    aktivem SevDesk-Export (FEATURE_SEVDESK_EXPORT=true, gültiges Token) darf keine
+    abgeleitete Forderung nach aktivem Paperless-Sync erfinden. Der zweite Bau in
+    get_settings_and_problems() fällt auf feature_paperless_sync=False zurück; ob der
+    Anwender ihn aktivieren wollte, ist unbekannt — die Prüfung im
+    feature_sevdesk_export-Block übergeht feature_paperless_sync deshalb als
+    unzuverlässig. Nur der Typfehler selbst erscheint, nicht die abgeleitete
+    'ist nicht aktiv'-Forderung."""
+    from app.config import ConfigurationRejectedError
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FEATURE_PAPERLESS_SYNC", "vielleicht")
+    monkeypatch.setenv("FEATURE_SEVDESK_EXPORT", "true")
+    monkeypatch.setenv("SEVDESK_API_TOKEN", "tok-123")
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    problems = exc_info.value.problems
+    assert any("FEATURE_PAPERLESS_SYNC" in p and "ungültigen Wert" in p for p in problems)
+    assert not any("ist nicht aktiv" in p for p in problems)
+
+
+def test_startup_meldet_paperless_sync_weiterhin_bei_gueltigem_aber_abgeschaltetem_schalter(
+    tmp_path, monkeypatch
+):
+    """Gegenstück zum vorigen Test: Ohne Typfehler an FEATURE_PAPERLESS_SYNC (gültig,
+    aber bewusst false) greift die Prüfung im feature_sevdesk_export-Block unverändert —
+    der Skip schaltet sie nicht generell ab, sondern nur, wenn ihr gelesenes Feld selbst
+    unzuverlässig ist."""
+    from app.config import ConfigurationRejectedError
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FEATURE_PAPERLESS_SYNC", "false")
+    monkeypatch.setenv("FEATURE_SEVDESK_EXPORT", "true")
+    monkeypatch.setenv("SEVDESK_API_TOKEN", "tok-123")
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    problems = exc_info.value.problems
+    assert any("FEATURE_PAPERLESS_SYNC" in p and "ist nicht aktiv" in p for p in problems)
+
+
 def test_abgelehnter_start_wegen_schreibprobe_hinterlaesst_keine_wirkung(tmp_path, monkeypatch):
     """3.3: Scheitert die Schreibprobe (Stufe 2, design.md D4), ist `ensure_dirs()`
     zwar bereits gelaufen, aber es entsteht keine Datenbankdatei am Ort von `DB_PATH`,

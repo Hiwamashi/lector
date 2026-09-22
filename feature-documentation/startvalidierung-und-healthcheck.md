@@ -101,16 +101,34 @@ kein Versuch, den *gemeinten* Wert des Schalters zu erraten.
 
 **Die Gegenrichtung ist dagegen behoben, nicht nur dokumentiert:** Der Standardwert eines
 Felds mit Typfehler kann umgekehrt auch eine Prüfung *aktivieren*, die beim tatsächlich
-gemeinten Wert gar nicht gälte — `RETRY_MAX=drei` (Typfehler, gemeint war z. B. `0`)
-zusammen mit `RETRY_DELAY_MINUTES=0` fiele im zweiten Bau auf den Standardwert
-`retry_max=3` zurück, und die Prüfung „`RETRY_DELAY_MINUTES` muss mindestens 1 sein"
-würde eine Beanstandung erfinden, die beim eigentlich gemeinten `retry_max<=0` gar nicht
-gälte. Deshalb übergibt `get_settings_and_problems()` die Namen aller Felder mit
-Typfehler als `unzuverlaessige_felder` an `validate_settings()` (zweiter, optionaler
-Parameter — im Erfolgsfall ohne Typfehler unverändert `None`); die einzige Prüfung, deren
-Bedingung an einem solchen Feld hängt (`retry_max`/`retry_delay_minutes`, die einzige
-zahlenbasierte Abhängigkeit zwischen zwei Feldern im Modell), überspringt sich dann statt
-zu erfinden.
+gemeinten Wert gar nicht gälte. Zwei Stellen im Modell lesen in einer bedingten Prüfung
+ein *anderes* Feld als ihren eigenen Schalter — nur dort ist das möglich:
+
+- `RETRY_MAX=drei` (Typfehler, gemeint war z. B. `0`) zusammen mit
+  `RETRY_DELAY_MINUTES=0` fiele im zweiten Bau auf den Standardwert `retry_max=3` zurück,
+  und die Prüfung „`RETRY_DELAY_MINUTES` muss mindestens 1 sein" würde eine
+  Beanstandung erfinden, die beim eigentlich gemeinten `retry_max<=0` gar nicht gälte.
+- `FEATURE_PAPERLESS_SYNC=vielleicht` (Typfehler, gemeint war z. B. `true`) zusammen mit
+  `FEATURE_SEVDESK_EXPORT=true` fiele im zweiten Bau auf den Standardwert
+  `feature_paperless_sync=False` zurück, und die Prüfung im
+  `feature_sevdesk_export`-Block würde „`FEATURE_PAPERLESS_SYNC` ist nicht aktiv"
+  erfinden — der Anwender würde aufgefordert, etwas zu aktivieren, das er sich nur beim
+  Wert vertippt hat.
+
+Deshalb übergibt `get_settings_and_problems()` die Namen aller Felder mit Typfehler als
+`unzuverlaessige_felder` an `validate_settings()` (zweiter, optionaler Parameter — im
+Erfolgsfall ohne Typfehler unverändert `None`); beide Prüfungen überspringen sich dann,
+statt zu erfinden.
+
+**Warum es bei diesen beiden Stellen bleibt:** Alle übrigen bedingten Prüfungen im Modell
+lesen entweder nur ihren eigenen Schalter (`FEATURE_PAPERLESS_SYNC` → `PAPERLESS_URL`/
+`PAPERLESS_TOKEN`, `FEATURE_RECIPIENT_LLM` → `ANTHROPIC_API_KEY`/`PAPERLESS_URL`/
+`PAPERLESS_TOKEN`) oder ein uneingeschränktes `str`-Feld ohne Längen-/Muster-Vorgabe
+(`Field(max_length=…)` o. ä. kommt in `Settings` nicht vor) — ein `str`-Feld kann beim
+Einlesen aus der Umgebung nie einen Typfehler haben, weil Umgebungsvariablen immer
+bereits Zeichenketten sind. Nur `retry_max` (int) und `feature_paperless_sync` (bool)
+werden an einer fremden Bedingung gelesen UND können selbst einen Typfehler haben —
+geprüft, nicht nur angenommen.
 
 ### Die Ablehnung wird zweimal sichtbar
 
