@@ -218,7 +218,15 @@ async def lifespan(app: FastAPI):
     settings, problems = get_settings_and_problems()
     if problems:
         _reject_startup(problems)
-    assert settings is not None, "kein Settings-Objekt trotz leerer Beanstandungsliste"
+    if settings is None:
+        # Laut Vertrag von get_settings_and_problems() (app/config.py) unerreichbar: eine
+        # leere Beanstandungsliste bedingt dort in jedem Zweig ein echtes Settings-Objekt.
+        # Ein `assert` wäre unter `python -O` wirkungslos — dieser Zweig muss auch dann
+        # greifen, sollte der Vertrag künftig doch einmal brechen.
+        raise AssertionError(
+            "get_settings_and_problems() lieferte kein Settings-Objekt trotz leerer "
+            "Beanstandungsliste"
+        )
     settings.ensure_dirs()
     problems = _check_writable_paths(settings)
     if problems:

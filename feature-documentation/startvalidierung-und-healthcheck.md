@@ -90,14 +90,27 @@ Feld trägt einen zum eigenen Typ passenden Standardwert, keine modellübergreif
 Validatoren) tritt dieser Fall nicht ein, ist aber als Absicherung vorgesehen, falls das
 künftig nicht mehr gilt.
 
-**Der ehrlich zu benennende Rand:** Ein Feature-Schalter mit Typfehler (z. B.
-`FEATURE_PAPERLESS_SYNC=vielleicht`) fällt im zweiten Bau auf seinen Standardwert (`False`)
-zurück; die davon abhängigen Prüfungen in `validate_settings()` (z. B. Pflicht auf
-`PAPERLESS_URL`/`PAPERLESS_TOKEN`) greifen dann nicht, obwohl der Anwender den Schalter
-eigentlich aktivieren wollte. Das führt nicht in die Irre, weil der Typfehler selbst
-gemeldet wird — der Schalter steht als eigene Beanstandung in derselben Meldung — und der
-nächste Start nach dessen Behebung den Rest zeigt. Es ist aber bewusst kein Versuch, den
-*gemeinten* Wert des Schalters zu erraten.
+**Der ehrlich zu benennende Rand (Maskierungsrichtung):** Ein Feature-Schalter mit
+Typfehler (z. B. `FEATURE_PAPERLESS_SYNC=vielleicht`) fällt im zweiten Bau auf seinen
+Standardwert (`False`) zurück; die davon abhängigen Prüfungen in `validate_settings()`
+(z. B. Pflicht auf `PAPERLESS_URL`/`PAPERLESS_TOKEN`) greifen dann nicht, obwohl der
+Anwender den Schalter eigentlich aktivieren wollte. Das führt nicht in die Irre, weil der
+Typfehler selbst gemeldet wird — der Schalter steht als eigene Beanstandung in derselben
+Meldung — und der nächste Start nach dessen Behebung den Rest zeigt. Es ist aber bewusst
+kein Versuch, den *gemeinten* Wert des Schalters zu erraten.
+
+**Die Gegenrichtung ist dagegen behoben, nicht nur dokumentiert:** Der Standardwert eines
+Felds mit Typfehler kann umgekehrt auch eine Prüfung *aktivieren*, die beim tatsächlich
+gemeinten Wert gar nicht gälte — `RETRY_MAX=drei` (Typfehler, gemeint war z. B. `0`)
+zusammen mit `RETRY_DELAY_MINUTES=0` fiele im zweiten Bau auf den Standardwert
+`retry_max=3` zurück, und die Prüfung „`RETRY_DELAY_MINUTES` muss mindestens 1 sein"
+würde eine Beanstandung erfinden, die beim eigentlich gemeinten `retry_max<=0` gar nicht
+gälte. Deshalb übergibt `get_settings_and_problems()` die Namen aller Felder mit
+Typfehler als `unzuverlaessige_felder` an `validate_settings()` (zweiter, optionaler
+Parameter — im Erfolgsfall ohne Typfehler unverändert `None`); die einzige Prüfung, deren
+Bedingung an einem solchen Feld hängt (`retry_max`/`retry_delay_minutes`, die einzige
+zahlenbasierte Abhängigkeit zwischen zwei Feldern im Modell), überspringt sich dann statt
+zu erfinden.
 
 ### Die Ablehnung wird zweimal sichtbar
 

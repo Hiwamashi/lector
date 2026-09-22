@@ -200,13 +200,23 @@ def get_settings_and_problems() -> tuple[Settings | None, list[str]]:
        Mal gebaut. Gelingt das, laufen die inhaltlichen Prüfungen zusätzlich auf diesem
        Objekt, ihre Beanstandungen werden angehängt.
 
-       Rand: Ein Feature-Schalter mit Typfehler (z. B. `FEATURE_PAPERLESS_SYNC=vielleicht`)
-       fällt in diesem zweiten Bau auf seinen Standardwert (`False`) zurück; die davon
-       abhängigen Prüfungen in `validate_settings()` greifen dann nicht, obwohl der
-       Anwender den Schalter eigentlich aktivieren wollte. Das führt nicht in die Irre,
-       weil der Typfehler selbst gemeldet wird (der Schalter steht als Beanstandung in der
-       Meldung) und der nächste Start nach dessen Behebung den Rest zeigt — es ist aber
-       bewusst kein Versuch, den *gemeinten* Wert zu erraten.
+       Rand (Maskierungsrichtung): Ein Feature-Schalter mit Typfehler (z. B.
+       `FEATURE_PAPERLESS_SYNC=vielleicht`) fällt in diesem zweiten Bau auf seinen
+       Standardwert (`False`) zurück; die davon abhängigen Prüfungen in
+       `validate_settings()` greifen dann nicht, obwohl der Anwender den Schalter
+       eigentlich aktivieren wollte. Das führt nicht in die Irre, weil der Typfehler
+       selbst gemeldet wird (der Schalter steht als Beanstandung in der Meldung) und der
+       nächste Start nach dessen Behebung den Rest zeigt — es ist aber bewusst kein
+       Versuch, den *gemeinten* Wert zu erraten.
+
+       Gegenrichtung (Erfindungsrichtung), behoben statt nur dokumentiert: Der
+       Standardwert eines Felds mit Typfehler kann umgekehrt auch eine Prüfung
+       *aktivieren*, die beim tatsächlich gemeinten Wert gar nicht gälte — `RETRY_MAX`
+       fällt z. B. auf `3` (> 0) zurück, unabhängig davon, ob der Anwender `0` meinte.
+       Deshalb übergibt diese Funktion die Namen aller Felder mit Typfehler als
+       `unzuverlaessige_felder` an `validate_settings()`; dort überspringt sich die
+       einzige Prüfung, deren Bedingung an einem solchen Feld hängt
+       (`retry_max`/`retry_delay_minutes`), statt eine Beanstandung zu erfinden.
 
     Scheitert auch der zweite Bau (bei den aktuellen Feldern nicht beobachtet — jedes Feld
     trägt einen zum eigenen Typ passenden Standardwert, und es gibt keine
@@ -222,16 +232,18 @@ def get_settings_and_problems() -> tuple[Settings | None, list[str]]:
         errors = exc.errors()
         type_problems = [_type_error_to_problem(e) for e in errors]
         overrides: dict[str, object] = {}
+        unreliable_fields: set[str] = set()
         for error in errors:
             alias = str(error["loc"][0])
             field_name = _ALIAS_TO_FIELD_NAME.get(alias)
             if field_name is not None:
                 overrides[alias] = Settings.model_fields[field_name].default
+                unreliable_fields.add(field_name)
         try:
             fallback = Settings(**overrides)
         except ValidationError:
             return None, type_problems
-        return fallback, type_problems + validate_settings(fallback)
+        return fallback, type_problems + validate_settings(fallback, unreliable_fields)
     return settings, validate_settings(settings)
 
 
@@ -257,7 +269,9 @@ class ConfigurationRejectedError(RuntimeError):
         super().__init__(f"Konfiguration unvollständig — der Dienst startet nicht:\n{block}")
 
 
-def validate_settings(settings: Settings) -> list[str]:
+def validate_settings(
+    settings: Settings, unzuverlaessige_felder: set[str] | None = None
+) -> list[str]:
     """Prüft ein bereits aufgebautes Settings-Objekt auf Angaben, die sonst erst beim
     ersten Dokument als Google-API-Fehler auffallen würden (fehlende Engine-Angaben,
     unlesbare Credentials-Datei, ein zu kurzes Retry-Intervall, ein gesetzter
@@ -265,7 +279,21 @@ def validate_settings(settings: Settings) -> list[str]:
 
     Gibt die Liste aller Beanstandungen zurück (leere Liste = gültige Konfiguration).
     Wirft selbst nicht und bricht nicht bei der ersten Beanstandung ab — sie werden
-    gesammelt, damit der Aufrufer sie in einem Durchgang meldet."""
+    gesammelt, damit der Aufrufer sie in einem Durchgang meldet.
+
+    `unzuverlaessige_felder` nennt Feldnamen (nicht ENV-Namen), deren Wert in `settings`
+    NICHT der vom Anwender gemeinte ist, weil das Feld selbst schon bei der Konstruktion
+    einen Typfehler hatte und deshalb im übergebenen Objekt auf seinem Standardwert liegt
+    (siehe `get_settings_and_problems()` in diesem Modul, das dieses Argument beim
+    Fallback-Bau füllt). Eine Prüfung, deren BEDINGUNG an einem solchen Feld hängt, darf
+    daraus keine abgeleitete Beanstandung erzeugen — wir wissen schlicht nicht, ob die
+    Bedingung zuträfe: `RETRY_MAX=drei` (Typfehler, gemeint war z.B. `0`) zusammen mit
+    `RETRY_DELAY_MINUTES=0` fiele ohne diese Ausnahme auf den Standardwert `retry_max=3`
+    zurück, und die Prüfung unten würde `RETRY_DELAY_MINUTES muss mindestens 1 sein`
+    erfinden — eine Beanstandung an etwas, das beim eigentlich gemeinten `retry_max<=0`
+    gar nicht gälte. Der Standardfall (kein Typfehler) übergibt `None`/eine leere Menge
+    und bleibt dadurch unverändert."""
+    unreliable = unzuverlaessige_felder or set()
     problems: list[str] = []
 
     provider = settings.ocr_provider
@@ -298,7 +326,15 @@ def validate_settings(settings: Settings) -> list[str]:
 
     # Nur relevant, wenn überhaupt wiederholt wird — bei RETRY_MAX<=0 wird
     # schedule_retry() (app/pipeline.py:188) nie erreicht, und der Wert bliebe folgenlos.
-    if settings.retry_max > 0 and settings.retry_delay_minutes < 1:
+    # Die Bedingung hängt an retry_max — hatte RETRY_MAX selbst einen Typfehler, steht der
+    # hier gelesene Wert nur als Standard da (siehe unzuverlaessige_felder oben) und die
+    # Prüfung überspringt sich, statt eine Beanstandung zu erfinden, die beim tatsächlich
+    # gemeinten Wert gar nicht gälte.
+    if (
+        "retry_max" not in unreliable
+        and settings.retry_max > 0
+        and settings.retry_delay_minutes < 1
+    ):
         problems.append(
             f"{_env_name('retry_delay_minutes')} muss mindestens 1 sein, "
             f"ist {settings.retry_delay_minutes}"

@@ -1332,6 +1332,50 @@ def test_startup_meldet_typfehler_und_leere_pflichtangabe_gemeinsam(tmp_path, mo
     assert any("GCP_PROJECT_ID" in p for p in problems)
 
 
+def test_startup_erfindet_keine_retry_delay_forderung_bei_unzuverlaessigem_retry_max(
+    tmp_path, monkeypatch
+):
+    """Fix-Runde, Befund 'Der Fallback kann eine Beanstandung erfinden': RETRY_MAX=drei
+    (Typfehler, gemeint war z.B. 0) zusammen mit RETRY_DELAY_MINUTES=0 darf keine
+    abgeleitete Forderung an RETRY_DELAY_MINUTES erfinden. Der zweite Bau in
+    get_settings_and_problems() (app/config.py) fällt auf retry_max=3 (Standardwert)
+    zurück; ob der Anwender tatsächlich retry_max<=0 meinte, ist unbekannt — die
+    RETRY_DELAY_MINUTES-Prüfung übergeht retry_max deshalb als unzuverlässig und schweigt
+    dazu. Nur der Typfehler selbst erscheint."""
+    from app.config import ConfigurationRejectedError
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("RETRY_MAX", "drei")
+    monkeypatch.setenv("RETRY_DELAY_MINUTES", "0")
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    problems = exc_info.value.problems
+    assert any("RETRY_MAX" in p for p in problems)
+    assert not any("RETRY_DELAY_MINUTES" in p for p in problems)
+
+
+def test_startup_meldet_retry_delay_weiterhin_bei_gueltigem_retry_max(tmp_path, monkeypatch):
+    """Gegenstück zum vorigen Test: Ohne Typfehler an RETRY_MAX greift die
+    RETRY_DELAY_MINUTES-Prüfung unverändert — der neue Skip-Mechanismus schaltet die
+    Prüfung nicht generell ab, sondern nur, wenn ihr eigenes Bedingungsfeld (retry_max)
+    selbst unzuverlässig ist. Ohne diesen Test wäre der vorige Test nur ein Beleg dafür,
+    dass die Prüfung abgeschaltet wurde, nicht dafür, dass sie gezielt abgeschaltet wurde."""
+    from app.config import ConfigurationRejectedError
+
+    _setup_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("RETRY_MAX", "3")
+    monkeypatch.setenv("RETRY_DELAY_MINUTES", "0")
+
+    with pytest.raises(ConfigurationRejectedError) as exc_info:
+        with TestClient(_reload_app_main().app):
+            pass
+
+    assert any("RETRY_DELAY_MINUTES" in p for p in exc_info.value.problems)
+
+
 def test_abgelehnter_start_wegen_schreibprobe_hinterlaesst_keine_wirkung(tmp_path, monkeypatch):
     """3.3: Scheitert die Schreibprobe (Stufe 2, design.md D4), ist `ensure_dirs()`
     zwar bereits gelaufen, aber es entsteht keine Datenbankdatei am Ort von `DB_PATH`,

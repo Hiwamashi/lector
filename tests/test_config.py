@@ -171,6 +171,32 @@ def test_validate_settings_retry_delay_null_ohne_wiederholversuch_bleibt_folgenl
     assert validate_settings(s) == []
 
 
+# ---- Fix-Runde: unzuverlaessige_felder darf keine Beanstandung erfinden --------------
+
+
+def test_validate_settings_ueberspringt_retry_delay_pruefung_bei_unzuverlaessigem_retry_max(
+    tmp_path,
+):
+    """Befund 'Der Fallback kann eine Beanstandung erfinden': Hätte RETRY_MAX selbst einen
+    Typfehler, steht der hier gelesene retry_max (im Fallback-Bau der Standardwert `3`)
+    nur als Platzhalter da — ob der Anwender tatsächlich retry_max<=0 meinte, ist
+    unbekannt. Die Prüfung darf dann keine Forderung an RETRY_DELAY_MINUTES erfinden."""
+    s = _vollstaendige_documentai_settings(tmp_path, RETRY_DELAY_MINUTES=0)
+    assert validate_settings(s, unzuverlaessige_felder={"retry_max"}) == []
+
+
+def test_validate_settings_retry_delay_pruefung_greift_trotz_anderer_unzuverlaessiger_felder(
+    tmp_path,
+):
+    """unzuverlaessige_felder wirkt gezielt auf sein Bedingungsfeld: Ein Typfehler an
+    einem ANDEREN Feld darf die RETRY_DELAY_MINUTES-Prüfung nicht mit abschalten — sonst
+    wäre der Skip ein genereller Schalter statt einer gezielten Ausnahme."""
+    s = _vollstaendige_documentai_settings(tmp_path, RETRY_DELAY_MINUTES=0)
+    problems = validate_settings(s, unzuverlaessige_felder={"gcp_project_id"})
+    assert len(problems) == 1
+    assert "RETRY_DELAY_MINUTES" in problems[0]
+
+
 def test_validate_settings_chunk_size_null_verhindert_start_nicht(tmp_path):
     s = _vollstaendige_documentai_settings(tmp_path, CHUNK_SIZE_PAGES=0)
     assert validate_settings(s) == []
