@@ -245,6 +245,12 @@ class _WriteCapturingClient:
     async def set_custom_fields(self, doc_id, values):
         self.writes.append((doc_id, values))
 
+    async def correspondent_map(self):
+        # In diesen Tests hat kein Dokument einen Korrespondenten — die leere Karte
+        # genügt, damit der Batch-Lauf (der sie einmal je Lauf holt) nicht an einer
+        # fehlenden Methode scheitert.
+        return {}
+
 
 class _StubSuggester:
     def __init__(self, label, confidence):

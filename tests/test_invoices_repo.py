@@ -337,6 +337,204 @@ def test_server_error_savevoucher_is_not_retryable(tmp_path):
     assert saves["n"] == 1  # saveVoucher wurde NICHT erneut aufgerufen
 
 
+# ---- Korrespondenten-Karte je Lauf statt Einzelabruf je Dokument --------
+#
+# Produktiv rief `_correspondent_name` für jedes Rechnungsdokument einzeln
+# `/api/correspondents/<id>/` auf — bei geteilten Korrespondenten mehrere hundert
+# Anfragen je Sync-Lauf. Die folgenden Tests belegen die Anfragenzahl direkt (nicht
+# nur das Ergebnis), damit ein späterer Umbau die Einzelabrufe nicht ungesehen
+# zurückbringt.
+
+
+def _corr_doc(doc_id, correspondent_id=173):
+    from app.paperless import PaperlessDocument
+
+    return PaperlessDocument(
+        id=doc_id, title=f"Rechnung {doc_id}", content="", correspondent_id=correspondent_id,
+        document_type_id=1, tag_ids=[], custom_fields=[], original_file_name=None,
+    )
+
+
+class _CorrCountingClient:
+    """Stub, der Aufrufe an correspondent_map() und den Einzelabruf mitzählt."""
+
+    def __init__(self, docs, corr_map):
+        self._docs = docs
+        self._corr_map = corr_map
+        self.correspondent_map_calls = 0
+        self.single_lookup_calls: list[int] = []
+
+    async def list_documents(self, *, document_type_id=None, tag_ids=None):
+        return self._docs
+
+    async def correspondent_map(self):
+        self.correspondent_map_calls += 1
+        return dict(self._corr_map)
+
+    async def get_correspondent_name(self, correspondent_id):
+        self.single_lookup_calls.append(correspondent_id)
+        return self._corr_map.get(correspondent_id)
+
+
+async def test_sync_invoices_resolves_shared_correspondent_from_one_map(tmp_path, monkeypatch):
+    """Mehrere Rechnungen mit DEMSELBEN Korrespondenten lösen den Namen ausschließlich
+    über die einmal je Lauf gebaute Karte auf — kein Einzelabruf je Dokument."""
+    repo = make_repo(tmp_path)
+    sync = PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo)
+    # GiroCode-Extraktion ist hier nicht Testgegenstand — isoliert stubben.
+    monkeypatch.setattr(sync, "_extract_and_store", lambda *_a, **_k: _noop())
+
+    docs = [_corr_doc(i) for i in range(1, 6)]  # 5 Rechnungen, ein Korrespondent
+    client = _CorrCountingClient(docs, {173: "Stadtwerke"})
+    corr_map = await client.correspondent_map()
+    client.correspondent_map_calls = 0  # nur der eigentliche Lauf soll gezählt werden
+
+    await sync._sync_invoices(client, {"doctype": 1}, corr_map)
+
+    assert client.correspondent_map_calls == 0  # _sync_invoices baut selbst keine Karte
+    assert client.single_lookup_calls == []  # alle 5 Treffer kamen aus der Karte
+    for doc_id in range(1, 6):
+        assert repo.get_invoice_by_paperless(doc_id).correspondent == "Stadtwerke"
+
+
+async def _noop(*_a, **_k):
+    return None
+
+
+async def test_sync_once_fetches_correspondents_map_exactly_once(tmp_path, monkeypatch):
+    """Der entscheidende Test: Ein voller Sync-Lauf (`sync_once`) über mehrere
+    Rechnungen mit geteiltem Korrespondenten fragt /api/correspondents/ genau EINMAL
+    ab — vormals einmal je Dokument (bei 5 Dokumenten also 5 statt 1 Anfragen)."""
+    from contextlib import asynccontextmanager
+
+    class _FullFakeClient(_CorrCountingClient):
+        async def resolve_document_type_id(self, name):
+            return 1
+
+        async def list_tags(self):
+            return []
+
+        async def ensure_tag(self, name):
+            return 99
+
+        async def ensure_custom_field(self, name, data_type):
+            return 1
+
+    docs = [_corr_doc(i) for i in range(1, 6)]
+    client = _FullFakeClient(docs, {173: "Stadtwerke"})
+
+    repo = make_repo(tmp_path)
+    settings = Settings(
+        PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t", FEATURE_PAPERLESS_SYNC="true"
+    )
+    sync = PaperlessSync(settings, repo)
+
+    @asynccontextmanager
+    async def fake_paperless():
+        yield client
+
+    monkeypatch.setattr(sync, "_paperless", fake_paperless)
+    monkeypatch.setattr(sync, "_extract_and_store", lambda *_a, **_k: _noop())
+
+    await sync.sync_once()
+
+    assert client.correspondent_map_calls == 1
+    assert client.single_lookup_calls == []
+    for doc_id in range(1, 6):
+        assert repo.get_invoice_by_paperless(doc_id).correspondent == "Stadtwerke"
+
+
+async def test_sync_once_rebuilds_map_fresh_each_run(tmp_path, monkeypatch):
+    """Bindende Bedingung 1: Die Karte ist je Lauf frisch, nicht prozessweit gecacht —
+    ein zwischenzeitlich in Paperless umbenannter Korrespondent muss im nächsten Lauf
+    sofort ankommen, nicht erst nach einem Neustart."""
+    from contextlib import asynccontextmanager
+
+    class _RenamingClient(_CorrCountingClient):
+        async def resolve_document_type_id(self, name):
+            return 1
+
+        async def list_tags(self):
+            return []
+
+        async def ensure_tag(self, name):
+            return 99
+
+        async def ensure_custom_field(self, name, data_type):
+            return 1
+
+    docs = [_corr_doc(1)]
+    client = _RenamingClient(docs, {173: "Alter Name"})
+
+    repo = make_repo(tmp_path)
+    settings = Settings(
+        PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t", FEATURE_PAPERLESS_SYNC="true"
+    )
+    sync = PaperlessSync(settings, repo)
+
+    @asynccontextmanager
+    async def fake_paperless():
+        yield client
+
+    monkeypatch.setattr(sync, "_paperless", fake_paperless)
+    monkeypatch.setattr(sync, "_extract_and_store", lambda *_a, **_k: _noop())
+
+    await sync.sync_once()
+    assert repo.get_invoice_by_paperless(1).correspondent == "Alter Name"
+
+    # Korrespondent wurde in Paperless zwischen den Läufen umbenannt.
+    client._corr_map = {173: "Neuer Name"}
+    await sync.sync_once()
+    assert repo.get_invoice_by_paperless(1).correspondent == "Neuer Name"
+    assert client.correspondent_map_calls == 2  # je Lauf eine frische Karte
+
+
+async def test_correspondent_name_falls_back_to_single_lookup_for_unmapped_id(tmp_path):
+    """Bindende Bedingung 3: Ein Korrespondent, der nach dem Bau der Karte angelegt
+    wurde (also nicht in der Karte steht), darf nicht als 'kein Korrespondent'
+    verloren gehen — der Einzelabruf greift als Rückfall."""
+    repo = make_repo(tmp_path)
+    sync = PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo)
+    doc = _corr_doc(1, correspondent_id=999)
+    client = _CorrCountingClient([doc], {173: "Stadtwerke"})  # 999 fehlt in der Karte
+    corr_map = {173: "Stadtwerke"}
+
+    name = await sync._correspondent_name(client, doc, corr_map)
+
+    assert name is None  # get_correspondent_name liefert hier nichts für 999 zurück
+    assert client.single_lookup_calls == [999]  # Rückfall wurde tatsächlich ausgelöst
+
+
+async def test_correspondent_name_fallback_resolves_name_for_unmapped_id(tmp_path):
+    """Gegenprobe: Liefert der Rückfall einen Namen, kommt er auch tatsächlich an."""
+    repo = make_repo(tmp_path)
+    sync = PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo)
+    doc = _corr_doc(1, correspondent_id=999)
+    client = _CorrCountingClient([doc], {173: "Stadtwerke", 999: "Ganz neu"})
+    corr_map = {173: "Stadtwerke"}  # 999 absichtlich NICHT in der übergebenen Karte
+
+    name = await sync._correspondent_name(client, doc, corr_map)
+
+    assert name == "Ganz neu"
+    assert client.single_lookup_calls == [999]
+
+
+async def test_single_document_suggestion_path_does_not_fetch_full_map(tmp_path):
+    """Bindende Bedingung 2: Der Einzelvorschlagspfad für EIN Dokument darf nicht die
+    vollständige Korrespondenten-Karte holen, um einen Namen aufzulösen."""
+    repo = make_repo(tmp_path)
+    sync = PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo)
+    doc = _corr_doc(1)
+    client = _CorrCountingClient([doc], {173: "Stadtwerke"})
+
+    # _correspondent_name ohne übergebene Karte — wie beim Einzelvorschlag (suggest_recipient).
+    name = await sync._correspondent_name(client, doc)
+
+    assert name == "Stadtwerke"
+    assert client.correspondent_map_calls == 0  # keine vollständige Karte geholt
+    assert client.single_lookup_calls == [173]  # stattdessen der gezielte Einzelabruf
+
+
 def test_reset_stale_exports_recovers_interrupted_claim(tmp_path):
     """Ein durch Neustart verwaister 'exporting'-Claim wäre sonst dauerhaft blockiert."""
     repo = make_repo(tmp_path)

@@ -24,6 +24,36 @@ URL + Token). Per `asyncio.Lock` gegen Überlappung gesichert.
 2. `_sync_sevdesk_tag` — Dokumente mit `SEVDESK_TAG` listen, als `queued` vormerken. Bei
    `SEVDESK_AUTO_EXPORT=true` direkt exportieren.
 
+### Korrespondenten-Auflösung: eine Karte je Lauf, nicht je Dokument
+
+`_correspondent_name(client, doc, corr_map=None)` löst den Korrespondentennamen eines
+Dokuments auf. `sync_once()` holt dafür **zu Beginn jedes Laufs** einmal die vollständige
+Karte über `client.correspondent_map()` (eine paginierte Abfrage von `/api/correspondents/`)
+und reicht sie durch `_sync_invoices` → `_extract_and_store` → `_extract_payment` sowie
+`_sync_sevdesk_tag`. Aus vormals einem HTTP-Aufruf **je Dokument** (bei geteilten
+Korrespondenten mehrere hundert Anfragen je Lauf, siehe Produktivlog) wird so **eine**
+Anfrage je Lauf.
+
+Zwei bewusste Entscheidungen dabei:
+
+- **Nicht prozessweit gecacht.** Es gibt bereits `_corr_map_cached` (Instanzvariable
+  `_corr_map`, für die Empfänger-Zuordnung/`list_recipient_documents`) — die bleibt für die
+  gesamte Prozesslaufzeit bestehen. Für den Sync-Lauf ist das **nicht** verwendet: Die Karte
+  aus `sync_once()` ist eine lokale Variable, die mit dem Lauf endet. Ein in Paperless
+  umbenannter Korrespondent muss im **nächsten** Lauf ankommen, nicht erst nach einem
+  Prozess-Neustart — bei einem prozessweiten Cache wäre er das nicht. Nicht "optimieren",
+  indem man hier auf `_corr_map_cached` umstellt.
+- **Rückfall auf den Einzelabruf.** Steht eine `correspondent_id` nicht in der Karte (z.B.
+  weil der Korrespondent in Paperless erst NACH dem Bau der Karte angelegt wurde), holt
+  `_correspondent_name` den Namen trotzdem per Einzelabruf (`get_correspondent_name`) — sonst
+  würde der Name still als „kein Korrespondent" in der Rechnung landen.
+- **Der Einzelvorschlagspfad bleibt einzeln.** `suggest_recipient(paperless_id)` (Vorschlag
+  für genau EIN Dokument) ruft `_correspondent_name` ohne Karte auf — die vollständige Karte
+  für ein einzelnes Dokument zu holen wäre teurer als der direkte Einzelabruf. Der
+  KI-Batch-Lauf (`suggest_recipients_batch`) dagegen holt — analog zu `sync_once()` — seine
+  eigene, unabhängige Karte einmal für den gesamten Batch (nur wenn tatsächlich Dokumente
+  anstehen); Sync-Lauf und Batch-Lauf sind getrennte Läufe mit je eigener Karte.
+
 ### UI-Aktionen
 
 - `save_giro_edits(...)` — manuell korrigierte Zahldaten speichern (`giro_status=edited`),

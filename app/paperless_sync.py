@@ -209,8 +209,15 @@ class PaperlessSync:
             try:
                 async with self._paperless() as client:
                     ids = await self._resolve(client)
-                    await self._sync_invoices(client, ids)
-                    await self._sync_sevdesk_tag(client, ids)
+                    # Korrespondenten-Karte EINMAL je Lauf holen statt je Dokument einzeln
+                    # abzufragen (vormals ein HTTP-Aufruf pro Dokument — bei geteilten
+                    # Korrespondenten mehrere hundert Anfragen je Lauf). Bewusst NICHT
+                    # prozessweit gecacht wie ``_corr_map_cached``: ein in Paperless
+                    # umbenannter Korrespondent soll sofort im nächsten Lauf stimmen,
+                    # nicht erst nach einem Neustart.
+                    corr_map = await client.correspondent_map()
+                    await self._sync_invoices(client, ids, corr_map)
+                    await self._sync_sevdesk_tag(client, ids, corr_map)
             except httpx.ConnectError as exc:
                 # Paperless (noch) nicht erreichbar — typisch beim Start, wenn der
                 # webserver-Container später hochfährt. Nächster Lauf greift erneut.
@@ -218,7 +225,12 @@ class PaperlessSync:
             except Exception:
                 log.exception("Paperless-Sync fehlgeschlagen")
 
-    async def _sync_invoices(self, client: PaperlessClient, ids: dict[str, int | None]) -> None:
+    async def _sync_invoices(
+        self,
+        client: PaperlessClient,
+        ids: dict[str, int | None],
+        corr_map: dict[int, str],
+    ) -> None:
         doctype_id = ids.get("doctype")
         if doctype_id is None:
             log.warning(
@@ -227,7 +239,7 @@ class PaperlessSync:
             )
             return
         for doc in await client.list_documents(document_type_id=doctype_id):
-            correspondent = await self._correspondent_name(client, doc)
+            correspondent = await self._correspondent_name(client, doc, corr_map)
             # Stammdaten vor dem Upsert lesen, damit ein SYNCED-Event nur bei echter
             # Änderung (Neuanlage/geänderter Titel/Korrespondent) entsteht — sonst würde
             # invoice_events bei jedem Idle-Sync unbegrenzt wachsen.
@@ -242,9 +254,14 @@ class PaperlessSync:
             if is_new or before.title != doc.title or before.correspondent != correspondent:
                 self.repo.add_invoice_event(invoice_id, InvoiceEventType.SYNCED)
             if is_new or before.giro_status == GiroStatus.NONE:
-                await self._extract_and_store(client, ids, invoice_id, doc)
+                await self._extract_and_store(client, ids, invoice_id, doc, corr_map)
 
-    async def _sync_sevdesk_tag(self, client: PaperlessClient, ids: dict[str, int | None]) -> None:
+    async def _sync_sevdesk_tag(
+        self,
+        client: PaperlessClient,
+        ids: dict[str, int | None],
+        corr_map: dict[int, str],
+    ) -> None:
         tag_id = ids.get("sevdesk_tag")
         if tag_id is None:
             return
@@ -252,7 +269,7 @@ class PaperlessSync:
             invoice_id = self.repo.upsert_invoice(
                 paperless_id=doc.id,
                 title=doc.title,
-                correspondent=await self._correspondent_name(client, doc),
+                correspondent=await self._correspondent_name(client, doc, corr_map),
                 document_date=doc.created,
             )
             inv = self.repo.get_invoice(invoice_id)
@@ -263,10 +280,23 @@ class PaperlessSync:
                     await self.export_invoice(invoice_id)
 
     async def _correspondent_name(
-        self, client: PaperlessClient, doc: PaperlessDocument
+        self,
+        client: PaperlessClient,
+        doc: PaperlessDocument,
+        corr_map: dict[int, str] | None = None,
     ) -> str | None:
+        """Löst den Korrespondentennamen eines Dokuments auf.
+
+        ``corr_map`` ist optional: Ist eine (je Lauf gebaute) Karte übergeben und enthält
+        sie die ID, wird sie ohne HTTP-Aufruf benutzt. Fehlt die ID in der Karte (z.B. ein
+        Korrespondent, der nach dem Bau der Karte angelegt wurde) oder wird gar keine Karte
+        übergeben — wie beim Einzelvorschlag für genau ein Dokument —, greift der bisherige
+        Einzelabruf als Rückfall, damit der Name nicht stillschweigend verloren geht.
+        """
         if not doc.correspondent_id:
             return None
+        if corr_map is not None and doc.correspondent_id in corr_map:
+            return corr_map[doc.correspondent_id]
         try:
             return await client.get_correspondent_name(doc.correspondent_id)
         except Exception:
@@ -278,9 +308,10 @@ class PaperlessSync:
         ids: dict[str, int | None],
         invoice_id: int,
         doc: PaperlessDocument,
+        corr_map: dict[int, str],
     ) -> None:
         try:
-            pdata, source = await self._extract_payment(client, doc)
+            pdata, source = await self._extract_payment(client, doc, corr_map)
         except Exception:
             log.exception("GiroCode-Extraktion für Dokument %s fehlgeschlagen", doc.id)
             self.repo.set_giro_data(
@@ -309,7 +340,7 @@ class PaperlessSync:
             await self._write_back_giro(client, ids, doc.id, pdata)
 
     async def _extract_payment(
-        self, client: PaperlessClient, doc: PaperlessDocument
+        self, client: PaperlessClient, doc: PaperlessDocument, corr_map: dict[int, str]
     ) -> tuple[PaymentData, str]:
         content, filename = await client.download_original(doc.id)
         pdata: PaymentData | None = None
@@ -325,7 +356,7 @@ class PaperlessSync:
 
         creditor = None
         if self.settings.girocode_creditor_from_correspondent and doc.correspondent_id:
-            creditor = await self._correspondent_name(client, doc)
+            creditor = await self._correspondent_name(client, doc, corr_map)
 
         if pdata is None or not pdata.iban:
             ocr = extract_from_ocr_text(doc.content, fallback_creditor=creditor)
@@ -615,6 +646,9 @@ class PaperlessSync:
             if field is None or not field.labels:
                 return None
             doc = await client.get_document(paperless_id)
+            # Bewusst OHNE Karte: Dies ist der Einzelvorschlag für genau EIN Dokument — die
+            # vollständige Korrespondenten-Karte zu holen wäre hier teurer als der direkte
+            # Einzelabruf, den _correspondent_name ohne übergebene Karte ohnehin nutzt.
             correspondent = await self._correspondent_name(client, doc)
             async with self._suggester() as suggester:
                 return await self._suggest_for_doc(client, suggester, field, doc, correspondent)
@@ -677,6 +711,11 @@ class PaperlessSync:
                 self._progress.total = len(doc_ids)
                 self._progress.remaining = rest
                 publish(force=True)
+                # Korrespondenten-Karte einmal für DIESEN Batch-Lauf holen (eigener Lauf,
+                # unabhängig vom periodischen Sync — siehe sync_once). Nur bei tatsächlich
+                # anstehenden Dokumenten abrufen, damit ein leerer Lauf keine unnötige
+                # Anfrage auslöst.
+                corr_map = await client.correspondent_map() if doc_ids else {}
                 async with self._suggester() as suggester:
                     for doc_id in doc_ids:
                         if self._batch_stop:
@@ -692,7 +731,9 @@ class PaperlessSync:
                         else:
                             try:
                                 doc = await client.get_document(doc_id)
-                                correspondent = await self._correspondent_name(client, doc)
+                                correspondent = await self._correspondent_name(
+                                    client, doc, corr_map
+                                )
                                 await self._suggest_for_doc(
                                     client, suggester, field, doc, correspondent,
                                     guard_concurrent=True,
