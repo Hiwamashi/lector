@@ -418,6 +418,50 @@ Datenmigration.
   den Kopf). Schritt entfernt; Orientierung übernimmt Document AI. `PREPROCESS_AUTOROTATE`
   entfällt. Siehe `feature-documentation/bildvorverarbeitung.md`.
 
+## Behoben aus dem Produktivbetrieb: Korrespondenten je Lauf statt je Dokument (2026-09-23)
+
+Nach dem Rollout der Startvalidierung fiel im NAS-Log ein Muster auf, das nichts mit jener
+Change zu tun hatte: rund 130 Anfragen an `/api/correspondents/<id>/` in 15 Sekunden, viele
+davon **derselbe** Korrespondent — 173, 28, 87 und 191 je fünf- bis achtmal.
+
+Ursache war ein Abruf je Dokument ohne jede Wiederverwendung. `_sync_invoices` läuft über
+**alle** Dokumente des Rechnungs-Dokumententyps und löste für jedes den Korrespondenten
+einzeln auf — bei **jedem** Sync-Lauf erneut, also dauerhaft alle
+`PAPERLESS_SYNC_INTERVAL_SECONDS`. Dasselbe in `_sync_sevdesk_tag` und im
+KI-Empfänger-Batch.
+
+Bemerkenswert daran: Unmittelbar unter dem Aufruf schützt sich der Code sorgfältig gegen
+unnötige **Events** („damit ein SYNCED-Event nur bei echter Änderung entsteht — sonst würde
+`invoice_events` bei jedem Idle-Sync unbegrenzt wachsen"). Genau dieselbe Überlegung fehlte
+beim HTTP-Aufruf: Der lag **vor** dieser Prüfung und geschah immer. Die Sammelabfrage, die
+das löst (`PaperlessClient.correspondent_map()`), lag die ganze Zeit in derselben Datei —
+sie wurde nur an diesen Stellen nicht benutzt.
+
+**Die Karte wird je Lauf gebaut, nicht je Prozess.** Es gibt bereits ein prozessweites
+`_corr_map_cached` für die Empfänger-Übersicht; das mitzubenutzen wäre die naheliegende
+Abkürzung und der falsche Tausch gewesen — ein in Paperless umbenannter Korrespondent
+stünde dann bis zum Neustart falsch in den Rechnungen. Eine Karte je Lauf drückt die Last
+genauso, ohne Frische aufzugeben. Sync-Lauf und KI-Batch bauen getrennte Karten.
+
+Zwei Ränder sind bewusst behandelt: Der Einzelvorschlag für **ein** Dokument holt weiterhin
+nur diesen einen Namen (die volle Karte zu laden wäre dort teurer als vorher), und eine ID,
+die nicht in der Karte steht — ein nach dem Kartenbau angelegter Korrespondent — wird über
+die Einzelabfrage nachgeschlagen, statt still als „kein Korrespondent" in der Rechnung zu
+landen.
+
+**Was der Fix nicht beseitigt:** `correspondent_map()` ist paginiert. Die
+*dokumentenabhängige* Last — ein Abruf je Rechnung, der eigentliche Befund — ist weg; eine
+*korrespondentenabhängige* Restzahl (eine Anfrage je API-Seite) bleibt und war nie das
+Problem.
+
+Der entscheidende Test zählt **Anfragen**, nicht Ergebnisse, und wird rot, sobald jemand die
+Einzelabrufe zurückbringt. 387 → 393 Tests.
+
+Nicht in die Lückentabelle von `baseline-specs-kernpipeline` aufgenommen: Die führt die
+fünf Kern-Capabilities und hat eine Spalte „Betroffene Capability" — die Paperless-Integration
+ist dort ausdrücklich nicht aufgenommen (Phase 2), eine Zeile ohne Capability wäre ein
+Fremdkörper.
+
 ## Nice-to-have (später)
 
 - Weitere OCR-Adapter (Cloud Vision, AWS Textract) — Interface vorbereitet.
