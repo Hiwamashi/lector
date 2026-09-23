@@ -9,7 +9,10 @@
 - `resolve_document_type_id(name)` — Dokumententyp-Name → ID (`/api/document_types/`).
 - `list_documents(document_type_id=…, tag_ids=…)` — gefilterte, paginierte Dokumentliste
   (`/api/documents/?document_type__id=…&tags__id__all=…`). Folgt `next`-Links automatisch.
-- `get_document(id)` / `get_correspondent_name(id)`.
+- `get_document(id)` / `get_correspondent_name(id)` — Einzelabruf eines Korrespondenten.
+- `correspondent_map()` — liefert `{id: name}` **aller** Korrespondenten über eine einzige
+  paginierte Abfrage (`/api/correspondents/`). Von `PaperlessSync` einmal je Lauf genutzt
+  (Details: `sync-und-aktionen.md`), statt `get_correspondent_name` je Dokument aufzurufen.
 - `download_original(id)` — Originaldatei + Dateiname (`/api/documents/{id}/download/?original=true`).
 
 `PaperlessDocument` bündelt `id, title, content (OCR-Text), correspondent_id,
