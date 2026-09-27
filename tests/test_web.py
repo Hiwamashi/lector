@@ -209,15 +209,75 @@ def test_upload_lehnt_nicht_unterstuetztes_format_ab_und_meldet_es_im_redirect(c
     assert [d.name for d in dateien] == ["rechnung.pdf"]
 
 
-def test_upload_ohne_dateien_leitet_ohne_query_parameter_um(client):
-    """2.2: Eine leere Auswahl (keine Datei im Formular) leitet ohne Query-Parameter auf
-    `/` um."""
+def test_upload_ganz_ohne_files_teil_leitet_ohne_query_parameter_um(client):
+    """2.2: Ein Request ganz ohne `files`-Teil (kein Browser erzeugt das so — eine
+    reale leere Auswahl sendet trotzdem einen Part, siehe
+    `test_upload_leere_auswahl_ohne_datei_leitet_ohne_query_parameter_um`) leitet
+    ebenfalls ohne Query-Parameter auf `/` um."""
     c, _ = client
 
     resp = c.post("/upload", files=[], follow_redirects=False)
 
     assert resp.status_code == 303
     assert resp.headers["location"] == "/"
+
+
+def test_upload_leere_auswahl_ohne_datei_leitet_ohne_query_parameter_um(client):
+    """2.2 (Fund 2 der Schlussreview): Klickt der Nutzer "Hochladen" ohne eine Datei
+    gewählt zu haben, sendet der Browser laut HTML-Spec trotzdem einen `files`-Part
+    mit `filename=""` und leerem Body — `httpx`s `files=`-Kurzform lässt das
+    `filename`-Attribut bei leerem Namen weg, deshalb wird der Multipart-Body hier von
+    Hand gebaut, um genau diesen Browser-Fall zu treffen. Starlette erzeugt daraus eine
+    `UploadFile`; der Endpunkt muss das als Nicht-Auswahl überspringen, statt es als
+    Formatablehnung zu melden."""
+    c, _ = client
+    boundary = "testboundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="files"; filename=""\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+        "\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+
+    resp = c.post(
+        "/upload",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+
+
+def test_upload_leerer_name_mit_inhalt_bleibt_formatablehnung(client):
+    """Abgrenzung zu Fund 2: Ein Part mit leerem Dateinamen, der aber Inhalt hat, ist
+    keine Nicht-Auswahl — dafür müsste ein Browser einen Namen unterschlagen, obwohl er
+    Daten mitschickt, was `sanitize_upload_filename("")` weiterhin als unbrauchbar
+    einstuft. Das bleibt eine Formatablehnung, damit die neue Ausnahme für die leere
+    Auswahl nicht versehentlich echte Fehlfälle mitverschluckt."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    boundary = "testboundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="files"; filename=""\r\n'
+        "Content-Type: application/pdf\r\n\r\n"
+        "%PDF-1.4 x\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+
+    resp = c.post(
+        "/upload",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert "upload_format=" in resp.headers["location"]
+    assert list(watch_dir.iterdir()) == []
 
 
 def test_upload_benutzt_konfiguriertes_teil_suffix_statt_hart_verdrahtetem(

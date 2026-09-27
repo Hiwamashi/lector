@@ -115,15 +115,28 @@ def store_upload(
     außerhalb des Locks und damit parallel; serialisiert wird nur die kurze
     Namensentscheidung. Gegen einen gleichzeitigen *externen* Schreiber auf demselben
     Verzeichnis schützt der Lock nicht (siehe Modul-Kommentar zu `_replace_lock`).
+
+    Der Zwischenpfad selbst wird exklusiv angelegt (`open(..., "xb")`), nicht per
+    getrenntem `exists()`-Check gefolgt von `open("wb")`: Zwischen Prüfung und Öffnen
+    läge sonst ein Fenster, in dem zwei gleichzeitige Uploads mit demselben Namen
+    denselben Zwischenpfad beide als frei sehen und dieselbe Datei parallel und ab
+    Offset 0 beschreiben — inhaltlich vermischt. `open("xb")` schlägt atomar mit
+    `FileExistsError` fehl, wenn die Datei bereits existiert; dieser Fall treibt die
+    Schleife auf den nächsten Namen weiter, ohne dass je zwei Schreiber dieselbe Datei
+    öffnen.
     """
     provisional_target = unique_target(directory, filename)
     partial = provisional_target.with_name(provisional_target.name + partial_suffix)
     n = 1
-    while partial.exists():
-        partial = provisional_target.with_name(f"{provisional_target.name}_{n}{partial_suffix}")
-        n += 1
+    while True:
+        try:
+            out = partial.open("xb")
+            break
+        except FileExistsError:
+            partial = provisional_target.with_name(f"{provisional_target.name}_{n}{partial_suffix}")
+            n += 1
     try:
-        with partial.open("wb") as out:
+        with out:
             while block := source.read(chunk_size):
                 out.write(block)
         with _replace_lock:

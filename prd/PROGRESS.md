@@ -484,7 +484,9 @@ Zwei kritische Details:
 
 Endpunkt: `POST /upload` in `app/main.py`. Funktionen: `sanitize_upload_filename()`, `store_upload()` in `app/fileops.py`. UI: Formular + Rückmeldungen in `app/templates/dashboard.html`.
 
-373 Tests grün (keine Regression), `ruff` sauber. Feature-Doku: `feature-documentation/datei-upload.md`.
+421 Tests grün (Ausgangspunkt 393, davon 25 aus dem ursprünglichen Feature plus 3 aus
+der anschließenden Fix-Welle der Schlussreview), `ruff` sauber. Feature-Doku:
+`feature-documentation/datei-upload.md`.
 
 PRD §3.3 aktualisiert: „Kein manueller Datei-Upload" entfernt, Einschränkung ersetzt durch „Der Upload endet im Eingangsordner."
 

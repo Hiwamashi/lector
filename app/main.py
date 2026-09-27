@@ -422,9 +422,13 @@ async def upload(request: Request, files: Annotated[list[UploadFile] | None, Fil
 
     Ein gelieferter Name durchläuft zuerst `sanitize_upload_filename()` — erst dadurch
     kann er den Eingangsordner nicht verlassen, `store_upload()` selbst prüft das nicht.
-    Das Schreiben blockiert und läuft deshalb in einem eigenen Thread-Pool, nicht über
-    den seriellen Executor des Workers (`app.state.worker`), den die Verarbeitungs-Queue
-    braucht.
+    Das Schreiben blockiert und läuft deshalb über `run_in_executor(None, …)` — dem
+    Default-Executor von asyncio, keinem eigenen Thread-Pool. Genau diesen
+    Default-Executor benutzt auch `Worker._scan_loop` für `scan_dir`/`_intake_file`
+    (`app/worker.py`); entkoppelt ist damit nur der serielle Verarbeitungs-Pool des
+    Workers von der Aufnahme, nicht die Aufnahme von dessen eigenem Executor. Auf
+    Geräten mit wenigen Kernen können parallele Uploads den Default-Executor belegen
+    und dadurch den Scan-Lauf verzögern.
 
     Es gibt keine Session-Middleware und damit keinen Flash-Speicher — die Rückmeldung
     wandert als Query-Parameter im Redirect-Ziel mit. Deren Auswertung übernimmt die
@@ -443,6 +447,13 @@ async def upload(request: Request, files: Annotated[list[UploadFile] | None, Fil
     fehler: list[str] = []
 
     for file in files or []:
+        if not file.filename and not file.size:
+            # Klickt der Nutzer "Hochladen" ohne Auswahl, sendet der Browser trotzdem
+            # einen Part mit filename="" und leerem Body (HTML-Spec) — Starlette
+            # erzeugt daraus eine UploadFile. Das ist eine Nicht-Auswahl, keine
+            # Formatablehnung. Ein Part mit leerem Namen, aber mit Inhalt, bleibt
+            # unten eine Formatablehnung wie bisher.
+            continue
         anzeige_name = file.filename or "(ohne Namen)"
         name = sanitize_upload_filename(file.filename or "")
         if not name or not detection.is_supported(Path(name)):

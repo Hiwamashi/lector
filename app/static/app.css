@@ -265,7 +265,11 @@ body {
    Verwerfen ist der stillere, aber umkehrbare Weg (das Original bleibt im Fehlerordner). */
 .notice { border-radius: 8px; padding: 0.8rem 0.9rem; margin: 1rem 0; }
 .notice--blocked { background: var(--violet-bg); color: var(--violet); border: 1px solid var(--violet); }
+.notice--success { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
 .notice-text { margin: 0 0 0.7rem; }
+/* Letzter (oder einziger) Absatz im Block: kein Abstand nach unten ohne folgenden
+   Inhalt — betrifft z.B. .notice--success, das nur aus einem Absatz besteht. */
+.notice-text:last-child { margin-bottom: 0; }
 .notice-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 .notice-actions form { margin: 0; }
 .notice-actions button {

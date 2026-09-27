@@ -18,7 +18,7 @@ Vier Schritte:
 
 2. **Format-Prüfung** via `detection.is_supported(Path(name))` — nur unterstützte Formate werden akzeptiert. Im Gegensatz zur stillen Übergängnis im Watch-Folder wird ein abgelehntes Format im Dashboard als Rückmeldung angezeigt.
 
-3. **Ablage im Eingangsordner** via `store_upload()` in einem eigenen Thread-Pool (`loop.run_in_executor`, nicht im seriellen Worker). Das ist nötig, weil das Schreiben blockiert und den Event-Loop (UI, SSE) nicht aufhalten darf.
+3. **Ablage im Eingangsordner** via `store_upload()` über `loop.run_in_executor(None, …)` — das ist asyncios **Default-Executor**, kein eigener Thread-Pool, und genau der Executor, den auch `Worker._scan_loop` für `scan_dir`/`_intake_file` benutzt (`app/worker.py`). Entkoppelt ist damit nur der serielle **Verarbeitungs-Pool** des Workers von der Aufnahme, nicht die Aufnahme von dessen Executor — auf Geräten mit wenigen Kernen können parallele Uploads den Default-Executor belegen und den Scan-Lauf verzögern. Das ist trotzdem nötig, weil das Schreiben blockiert und den Event-Loop (UI, SSE) nicht aufhalten darf.
 
 4. **Rückmeldung** über Query-Parameter des Redirect-Ziels (s. u. „Rückmeldung").
 
@@ -76,7 +76,7 @@ Nach dem Upload wird zum Dashboard (`GET /`) mit Query-Parametern umgeleitet:
 - `?upload_format=name1&upload_format=name2` — abgelehnte Dateien (nicht unterstütztes Format)
 - `?upload_fehler=name1&upload_fehler=name2` — Fehler beim Speichern
 
-Das Dashboard (Route `GET /`) in `app/main.py` wertet diese Parameter aus und zeigt Erfolgs-, Info- und Fehlermeldungen. Sie verschwinden nach dem nächsten Laden.
+Das Dashboard (Route `GET /`) in `app/main.py` wertet diese Parameter aus und zeigt Erfolgs-, Info- und Fehlermeldungen. Sie stehen im Query-String und bleiben deshalb bei einem einfachen Neuladen der Seite (F5) sichtbar — sie verschwinden erst bei einer Navigation, die die Parameter fallen lässt (z. B. Klick auf eine Kachel oder das Filter-Formular).
 
 **Warum kein Flash-Speicher?**
 
@@ -137,4 +137,4 @@ Das Dashboard zeigt nach Upload:
 {% endif %}
 ```
 
-Die Meldungen sind **nicht persistent** — sie verschwinden beim nächsten Laden der Seite.
+Die Meldungen sind **nicht persistent** im Sinne eines serverseitigen Zustands — sie stecken im Query-String des Redirect-Ziels. Ein Neuladen der Seite zeigt sie deshalb erneut; sie verschwinden erst, wenn eine Navigation die Parameter fallen lässt (Filter-Formular, Klick auf eine Kachel).

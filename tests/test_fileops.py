@@ -1,5 +1,6 @@
 import io
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -170,6 +171,69 @@ def test_store_upload_gleichzeitige_uploads_gleichen_namens_ueberschreiben_sich_
     thread_b.join(timeout=5)
     release_a.set()
     thread_a.join(timeout=5)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+
+    namen = {ergebnisse["a"].name, ergebnisse["b"].name}
+    assert namen == {"beleg.pdf", "beleg_1.pdf"}
+    inhalte = {ergebnisse["a"].read_bytes(), ergebnisse["b"].read_bytes()}
+    assert inhalte == {b"inhalt a", b"inhalt b"}
+
+
+def test_store_upload_gleichzeitiges_anlegen_des_zwischenpfads_vermischt_nicht(
+    tmp_path, monkeypatch
+):
+    """Fund 1 der Schlussreview: Vor der Behebung prüfte `store_upload()` im
+    Schleifenkopf nur `partial.exists()` und öffnete die Zwischendatei erst danach mit
+    `open("wb")` — ein klassisches TOCTOU-Fenster. Zwei gleichzeitige Uploads desselben
+    Namens, deren `exists()`-Prüfung sich überlappt, hätten dieselbe Zwischendatei
+    beide mit `"wb"` (nicht-exklusiv, ab Offset 0) geöffnet und ihre Inhalte
+    vermischt — nicht nur verzögert wie beim bereits getesteten `_replace_lock`.
+
+    Dieser Test erzwingt das Überlappen nicht über Timing, sondern über eine
+    `threading.Barrier`: beide Threads rufen den echten `Path.open("xb", ...)`-Syscall
+    für denselben Zwischenpfad exakt gleichzeitig auf. Die Behebung ersetzt den
+    Check-dann-Öffnen durch ein exklusives `open(..., "xb")`; das Betriebssystem
+    garantiert, dass davon höchstens einer gewinnt — der andere bekommt sofort
+    `FileExistsError` und weicht deterministisch auf einen neuen Zwischenpfad aus,
+    statt in denselben Dateideskriptor zu schreiben."""
+    barrier = threading.Barrier(2, timeout=5)
+    original_open = Path.open
+    gate_lock = threading.Lock()
+    gate_count = 0
+
+    def gate_open(self, mode="r", *args, **kwargs):
+        nonlocal gate_count
+        anlegen_versuch = mode == "xb" and self.name.startswith("beleg.pdf")
+        if anlegen_versuch:
+            with gate_lock:
+                erste_zwei = gate_count < 2
+                gate_count += 1
+            if erste_zwei:
+                # Nur die jeweils ERSTE Anlegen-Versuch je Thread wird synchronisiert —
+                # ein Nachschlag mit ausweichendem Namen (z.B. "beleg.pdf_1.part") nach
+                # FileExistsError soll nicht erneut auf einen (nie kommenden) zweiten
+                # Partner warten.
+                barrier.wait()
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", gate_open)
+
+    ergebnisse: dict[str, Path] = {}
+
+    def worker(schluessel, inhalt):
+        quelle = io.BytesIO(inhalt)
+        ergebnisse[schluessel] = store_upload(
+            quelle, tmp_path, "beleg.pdf", partial_suffix=".part"
+        )
+
+    thread_a = threading.Thread(target=worker, args=("a", b"inhalt a"))
+    thread_b = threading.Thread(target=worker, args=("b", b"inhalt b"))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
 
     assert not thread_a.is_alive()
     assert not thread_b.is_alive()
