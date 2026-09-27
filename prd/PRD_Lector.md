@@ -50,9 +50,10 @@
 
 - Keine Authentifizierung (Betrieb ausschließlich im LAN).
 - Keine inhaltliche Datenextraktion, Klassifizierung, Verschlagwortung oder Korrespondenten-Logik — das ist Aufgabe von Paperless-ngx.
-- Kein manueller Datei-Upload über das Web-UI.
 - Kein eigenes Scannen / keine Scanner-Anbindung.
 - Keine Cloud-Anbindung außer der reinen OCR-Engine.
+
+Ein Datei-Upload über das Web-UI existiert; er legt die hochgeladene Datei im Eingangsordner ab und endet dort. Die Verarbeitung folgt dann dem bestehenden Watch-Folder-Weg unverändert. Authentifizierung bleibt ausgeschlossen.
 
 ---
 

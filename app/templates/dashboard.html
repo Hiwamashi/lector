@@ -12,6 +12,43 @@
   {% endfor %}
 </section>
 
+{% if upload_ok %}
+<div class="notice notice--success">
+  <p class="notice-text">
+    {{ upload_ok }} Datei(en) übernommen. Der Vorgang erscheint erst nach einigen Sekunden in
+    der Übersicht — der Eingangsordner nimmt eine Datei erst auf, wenn ihre Größe über das
+    Stabilitätsfenster unverändert bleibt.
+  </p>
+</div>
+{% endif %}
+
+{% if upload_format %}
+<div class="alert">
+  <p class="notice-text">Nicht übernommen:</p>
+  <ul>
+    {% for name in upload_format %}
+    <li>{{ name }} — nicht unterstütztes Format</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if upload_fehler %}
+<div class="alert">
+  <p class="notice-text">Nicht übernommen:</p>
+  <ul>
+    {% for name in upload_fehler %}
+    <li>{{ name }} — konnte nicht gespeichert werden</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<form class="upload-form" method="post" action="/upload" enctype="multipart/form-data">
+  <input type="file" name="files" multiple accept="{{ upload_accept }}" />
+  <button type="submit">Hochladen</button>
+</form>
+
 <form class="filters" method="get" action="/">
   <input type="search" name="q" value="{{ filters.q }}" placeholder="Dateiname suchen…" />
   <select name="status">

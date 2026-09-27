@@ -166,6 +166,250 @@ def test_healthz_veraendert_nichts(client):
     assert event_count_nachher == event_count_vorher
 
 
+def test_upload_legt_pdf_im_eingangsordner_ab(client):
+    """2.1: Ein hochgeladenes PDF landet unverändert im Eingangsordner — ab dort läuft
+    der bestehende Watch-Folder-Weg unverändert weiter."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    inhalt = b"%PDF-1.4 testinhalt"
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", inhalt, "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    dateien = list(watch_dir.iterdir())
+    assert len(dateien) == 1
+    assert dateien[0].read_bytes() == inhalt
+
+
+def test_upload_lehnt_nicht_unterstuetztes_format_ab_und_meldet_es_im_redirect(client):
+    """2.2: Eine `.zip`-Datei wird als Format abgelehnt (nicht geschrieben) und im
+    Redirect-Ziel unter `upload_format` gemeldet; das danebenliegende PDF wird trotzdem
+    übernommen und unter `upload_ok` gezählt."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+
+    resp = c.post(
+        "/upload",
+        files=[
+            ("files", ("rechnung.pdf", b"%PDF-1.4 x", "application/pdf")),
+            ("files", ("archiv.zip", b"PK\x03\x04", "application/zip")),
+        ],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "upload_ok=1" in location
+    assert "upload_format=archiv.zip" in location
+    dateien = list(watch_dir.iterdir())
+    assert [d.name for d in dateien] == ["rechnung.pdf"]
+
+
+def test_upload_ganz_ohne_files_teil_leitet_ohne_query_parameter_um(client):
+    """2.2: Ein Request ganz ohne `files`-Teil (kein Browser erzeugt das so — eine
+    reale leere Auswahl sendet trotzdem einen Part, siehe
+    `test_upload_leere_auswahl_ohne_datei_leitet_ohne_query_parameter_um`) leitet
+    ebenfalls ohne Query-Parameter auf `/` um."""
+    c, _ = client
+
+    resp = c.post("/upload", files=[], follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+
+
+def test_upload_leere_auswahl_ohne_datei_leitet_ohne_query_parameter_um(client):
+    """2.2 (Fund 2 der Schlussreview): Klickt der Nutzer "Hochladen" ohne eine Datei
+    gewählt zu haben, sendet der Browser laut HTML-Spec trotzdem einen `files`-Part
+    mit `filename=""` und leerem Body — `httpx`s `files=`-Kurzform lässt das
+    `filename`-Attribut bei leerem Namen weg, deshalb wird der Multipart-Body hier von
+    Hand gebaut, um genau diesen Browser-Fall zu treffen. Starlette erzeugt daraus eine
+    `UploadFile`; der Endpunkt muss das als Nicht-Auswahl überspringen, statt es als
+    Formatablehnung zu melden."""
+    c, _ = client
+    boundary = "testboundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="files"; filename=""\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+        "\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+
+    resp = c.post(
+        "/upload",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+
+
+def test_upload_leerer_name_mit_inhalt_bleibt_formatablehnung(client):
+    """Abgrenzung zu Fund 2: Ein Part mit leerem Dateinamen, der aber Inhalt hat, ist
+    keine Nicht-Auswahl — dafür müsste ein Browser einen Namen unterschlagen, obwohl er
+    Daten mitschickt, was `sanitize_upload_filename("")` weiterhin als unbrauchbar
+    einstuft. Das bleibt eine Formatablehnung, damit die neue Ausnahme für die leere
+    Auswahl nicht versehentlich echte Fehlfälle mitverschluckt."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    boundary = "testboundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="files"; filename=""\r\n'
+        "Content-Type: application/pdf\r\n\r\n"
+        "%PDF-1.4 x\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+
+    resp = c.post(
+        "/upload",
+        content=body,
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert "upload_format=" in resp.headers["location"]
+    assert list(watch_dir.iterdir()) == []
+
+
+def test_upload_benutzt_konfiguriertes_teil_suffix_statt_hart_verdrahtetem(
+    client, monkeypatch
+):
+    """2.1: Das beim Schreiben verwendete Teil-Suffix stammt aus
+    `settings.partial_suffix_list[0]`, nicht aus einem fest verdrahteten `.part` —
+    nachgewiesen, indem eine abweichende Konfiguration greift."""
+    c, application = client
+    application.state.settings.partial_suffixes = ".zwischenablage"
+    aufrufe: list[str] = []
+    original = app.main.store_upload
+
+    def spion(source, directory, filename, *, partial_suffix, chunk_size=1 << 20):
+        aufrufe.append(partial_suffix)
+        return original(
+            source, directory, filename, partial_suffix=partial_suffix, chunk_size=chunk_size
+        )
+
+    monkeypatch.setattr(app.main, "store_upload", spion)
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert aufrufe == [".zwischenablage"]
+
+
+def test_upload_fehler_beim_schreiben_wird_gemeldet_statt_500(client, monkeypatch):
+    """2.3: Scheitert das Schreiben, endet die Anfrage trotzdem mit `303` und meldet die
+    betroffene Datei unter `upload_fehler` — statt mit `500` abzubrechen."""
+    c, _ = client
+
+    def kaputt(*args, **kwargs):
+        raise OSError("Platte voll")
+
+    monkeypatch.setattr(app.main, "store_upload", kaputt)
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert "upload_fehler=rechnung.pdf" in resp.headers["location"]
+
+
+def test_upload_name_mit_verzeichnisanteilen_verlaesst_eingangsordner_nicht(client):
+    """2.4: Ein gelieferter Name mit Verzeichnisanteilen (`../../…`) landet trotzdem im
+    Eingangsordner, statt dessen Elternverzeichnis zu erreichen — `store_upload()`
+    validiert den Namen selbst nicht, das übernimmt `sanitize_upload_filename()` vor
+    dem Aufruf."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    eltern_vorher = set(watch_dir.parent.iterdir())
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("../../lector.db.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert (watch_dir / "lector.db.pdf").read_bytes() == b"%PDF-1.4 x"
+    assert set(watch_dir.parent.iterdir()) == eltern_vorher
+
+
+def test_upload_nimmt_denselben_weg_wie_eine_kopierte_datei(client):
+    """4.1: Eine über `POST /upload` abgelegte Datei durchläuft ab dem Eingangsordner
+    exakt denselben Weg wie eine dort hineinkopierte — keinen Sonderweg. Nachgewiesen
+    ohne echtes Warten: der `StabilityTracker` nimmt die Zeit als Parameter entgegen,
+    zwei Polls (vor und nach dem Stabilitätsfenster) reichen, um die Datei als fertig
+    zu melden. Der Vorgang, den `_intake_file` daraus anlegt, trägt keinerlei Merkmal,
+    das ihn als Upload kennzeichnet — das Datenmodell (`app.models.Document`) hat
+    bewusst kein solches Feld.
+
+    Fix-Runde 1: Der Worker aus der `client`-Fixture läuft bereits — sein `_scan_loop`
+    pollt denselben `tracker` mit echter Zeit und wird vom Watchdog-Observer beim Upload
+    nahezu sofort geweckt, und sein `_process_loop` würde einen frisch angelegten Vorgang
+    aus der Queue heraus sofort weiterbewegen. Beide liefen dem manuellen Nachstellen
+    sonst als Wettlauf davon (heute grün, unter Last rot). Deshalb werden `"scan"` und
+    `"process"` vorab über `_cancel_worker_task` stillgelegt — der Eingangsordner gehört
+    danach dem Test allein. Es bleibt bewusst der echte `application.state.worker` (statt
+    eines frisch gebauten, nie gestarteten Workers wie im Präzedenzfall
+    `test_blocked_document_is_not_taken_in_again_from_the_watch_folder`): das zeigt der
+    Leserin, dass hier der reguläre Aufnahmeweg der Anwendung läuft, keine Nachbildung."""
+    import dataclasses
+
+    from app.models import DocStatus
+    from app.watcher import scan_dir
+    from app.worker import TaskState
+
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    worker = application.state.worker
+    repo = application.state.repo
+
+    _cancel_worker_task(application, "scan")
+    _cancel_worker_task(application, "process")
+    stillgelegt = {s.name: s.state for s in worker.background_task_states()}
+    assert stillgelegt["scan"] == TaskState.STOPPED
+    assert stillgelegt["process"] == TaskState.STOPPED
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", b"%PDF-1.4 testinhalt", "application/pdf"))],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    candidates = scan_dir(watch_dir)
+    window = application.state.settings.stability_window_seconds
+
+    assert worker.tracker.poll(candidates, now=0.0) == []
+    ready = worker.tracker.poll(candidates, now=window + 1)
+    assert len(ready) == 1
+
+    worker._intake_file(ready[0])
+
+    dokumente = repo.list_documents()
+    assert len(dokumente) == 1
+    dokument = dokumente[0]
+    assert dokument.status == DocStatus.PENDING
+    assert dokument.original_filename == "rechnung.pdf"
+    feldnamen = {f.name for f in dataclasses.fields(dokument)}
+    assert not any("upload" in name for name in feldnamen)
+
+
 def test_healthz_ignoriert_nicht_erreichbares_paperless(tmp_path, monkeypatch):
     """5.8: Ein nicht erreichbares Paperless darf `/healthz` nicht auf `503` bringen —
     der Endpunkt prüft die Erreichbarkeit fremder Dienste nicht und macht dafür auch
@@ -229,6 +473,40 @@ def test_dashboard_empty(client):
     # Der Leerzustand nennt seit der UI-Politur auch den Grund, nicht nur die Tatsache.
     assert "Noch nichts eingegangen." in resp.text
     assert "überwachten Eingangsordner" in resp.text
+
+
+def test_dashboard_zeigt_upload_formular_ohne_javascript(client):
+    """Das Formular muss auch ohne JavaScript funktionieren — daher `method="post"`,
+    `enctype="multipart/form-data"` und der vom Endpunkt vorgegebene Feldname `files`."""
+    c, _ = client
+    resp = c.get("/")
+    assert 'enctype="multipart/form-data"' in resp.text
+    assert 'name="files"' in resp.text
+    assert "multiple" in resp.text
+
+
+def test_upload_formular_filtert_dateidialog_nach_unterstuetzten_endungen(client):
+    """`accept` filtert im Dateidialog nur vor — jede unterstuetzte Endung muss dort
+    auftauchen, sonst waere die serverseitige Pruefung die einzige Huerde, die der
+    Anwender zu Gesicht bekommt."""
+    from app import detection
+
+    c, _ = client
+    resp = c.get("/")
+    for suffix in detection.SUPPORTED_SUFFIXES:
+        assert suffix in resp.text
+
+
+def test_dashboard_zeigt_upload_rueckmeldung_aus_query_parametern(client):
+    """`POST /upload` haengt die Rueckmeldung als Query-Parameter an sein Redirect-Ziel —
+    die Dashboard-Route muss sie lesen und anzeigen, inklusive des Verzoegerungshinweises
+    (Spec-Anforderung, siehe Brief Gruppe 3)."""
+    c, _ = client
+    resp = c.get("/", params={"upload_ok": 2, "upload_format": "x.zip"})
+    assert "2 Datei(en) übernommen" in resp.text
+    assert "einigen Sekunden" in resp.text
+    assert "x.zip" in resp.text
+    assert "nicht unterstütztes Format" in resp.text
 
 
 def test_dashboard_shows_document_and_detail(client):

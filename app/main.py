@@ -13,10 +13,11 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Annotated, BinaryIO
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import FastAPI, Form, Query, Request
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -27,9 +28,11 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import detection
 from .config import ConfigurationRejectedError, Settings, get_settings_and_problems
 from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
+from .fileops import sanitize_upload_filename, store_upload
 from .girocode import PaymentData, qr_svg
 from .models import DocStatus, GiroStatus, RecipientStatus, SevdeskStatus
 from .ocr import get_adapter
@@ -121,6 +124,12 @@ RECIPIENT_STATUS_LABELS = {
     RecipientStatus.APPLIED: "Gesetzt",
     RecipientStatus.UNKNOWN: "Unklar",
 }
+
+# Fuers `accept`-Attribut des Datei-Feldes im Upload-Formular: sortiert, damit das
+# gerenderte HTML stabil bleibt — `detection.SUPPORTED_SUFFIXES` ist ein `set` und seine
+# Reihenfolge schwankt zwischen Laeufen. Ersetzt nicht die serverseitige Pruefung in
+# `upload()`, filtert im Dateidialog nur vor.
+UPLOAD_ACCEPT = ",".join(sorted(detection.SUPPORTED_SUFFIXES))
 
 
 STATIC_DIR = BASE_DIR / "static"
@@ -351,6 +360,14 @@ async def dashboard(
     status: str | None = Query(None),
     q: str | None = Query(None),
     period: str | None = Query(None),
+    upload_ok: int | None = Query(None),
+    # `list[str] = Query(...)` liesse sich nicht ohne Suppressions-Kommentar schreiben:
+    # ruff (B008) lehnt bei Listen-Annotationen jeden Funktionsaufruf als Default ab, auch
+    # `Query(None)` — anders als bei `str | None` oben. Die `Annotated`-Form (bereits fuer
+    # `files` in `upload()` verwendet) traegt `Query()` in der Metadaten, der eigentliche
+    # Default bleibt das einfache `None` und loest B008 nicht aus.
+    upload_format: Annotated[list[str] | None, Query()] = None,
+    upload_fehler: Annotated[list[str] | None, Query()] = None,
 ):
     repo: Repository = request.app.state.repo
     status_enum, search, since = _filters(status, q, period)
@@ -363,6 +380,10 @@ async def dashboard(
             "documents": documents,
             "counts": counts,
             "filters": {"status": status or "", "q": q or "", "period": period or ""},
+            "upload_accept": UPLOAD_ACCEPT,
+            "upload_ok": upload_ok,
+            "upload_format": upload_format or [],
+            "upload_fehler": upload_fehler or [],
         },
     )
 
@@ -380,6 +401,84 @@ async def history_fragment(
     return templates.TemplateResponse(
         request, "partials/history_rows.html", {"documents": documents}
     )
+
+
+def _store_upload_sync(
+    source: BinaryIO, directory: Path, filename: str, partial_suffix: str
+) -> Path:
+    """Ruft `store_upload()` mit ihrem Keyword-only-Argument auf.
+
+    `run_in_executor()` reicht nur Positionsargumente durch — dieser kleine Umweg über
+    einen Modul-Funktionsnamen erlaubt es Tests trotzdem, `app.main.store_upload` zu
+    patchen (Nachschlag über den globalen Namen erfolgt erst beim Aufruf).
+    """
+    return store_upload(source, directory, filename, partial_suffix=partial_suffix)
+
+
+@app.post("/upload")
+async def upload(request: Request, files: Annotated[list[UploadFile] | None, File()] = None):
+    """Legt hochgeladene Dateien im Eingangsordner ab; ab dort läuft der bestehende
+    Watch-Folder-Weg unverändert weiter (PRD §Pipeline Schritt 1).
+
+    Ein gelieferter Name durchläuft zuerst `sanitize_upload_filename()` — erst dadurch
+    kann er den Eingangsordner nicht verlassen, `store_upload()` selbst prüft das nicht.
+    Das Schreiben blockiert und läuft deshalb über `run_in_executor(None, …)` — dem
+    Default-Executor von asyncio, keinem eigenen Thread-Pool. Genau diesen
+    Default-Executor benutzt auch `Worker._scan_loop` für `scan_dir`/`_intake_file`
+    (`app/worker.py`); entkoppelt ist damit nur der serielle Verarbeitungs-Pool des
+    Workers von der Aufnahme, nicht die Aufnahme von dessen eigenem Executor. Auf
+    Geräten mit wenigen Kernen können parallele Uploads den Default-Executor belegen
+    und dadurch den Scan-Lauf verzögern.
+
+    Es gibt keine Session-Middleware und damit keinen Flash-Speicher — die Rückmeldung
+    wandert als Query-Parameter im Redirect-Ziel mit. Deren Auswertung übernimmt die
+    Dashboard-Route (Gruppe 3); hier wird das Ziel nur gebaut.
+
+    Der Default `None` (statt einer leeren Liste als Argument-Default) vermeidet den
+    veränderlichen Default-Wert (`ruff` B006); `files or []` gleich zu Beginn der
+    Verarbeitung bildet die leere Auswahl unverändert auf eine leere Liste ab.
+    """
+    settings: Settings = request.app.state.settings
+    partial_suffix = settings.partial_suffix_list[0] if settings.partial_suffix_list else ".part"
+    loop = asyncio.get_running_loop()
+
+    ok = 0
+    format_abgelehnt: list[str] = []
+    fehler: list[str] = []
+
+    for file in files or []:
+        if not file.filename and not file.size:
+            # Klickt der Nutzer "Hochladen" ohne Auswahl, sendet der Browser trotzdem
+            # einen Part mit filename="" und leerem Body (HTML-Spec) — Starlette
+            # erzeugt daraus eine UploadFile. Das ist eine Nicht-Auswahl, keine
+            # Formatablehnung. Ein Part mit leerem Namen, aber mit Inhalt, bleibt
+            # unten eine Formatablehnung wie bisher.
+            continue
+        anzeige_name = file.filename or "(ohne Namen)"
+        name = sanitize_upload_filename(file.filename or "")
+        if not name or not detection.is_supported(Path(name)):
+            format_abgelehnt.append(anzeige_name)
+            continue
+        try:
+            await loop.run_in_executor(
+                None, _store_upload_sync, file.file, settings.watch_dir, name, partial_suffix
+            )
+        except Exception:
+            log.exception("Hochgeladene Datei %s konnte nicht gespeichert werden", anzeige_name)
+            fehler.append(anzeige_name)
+            continue
+        ok += 1
+
+    params: dict[str, object] = {}
+    if ok:
+        params["upload_ok"] = ok
+    if format_abgelehnt:
+        params["upload_format"] = format_abgelehnt
+    if fehler:
+        params["upload_fehler"] = fehler
+
+    ziel = "/" if not params else f"/?{urlencode(params, doseq=True)}"
+    return RedirectResponse(ziel, status_code=303)
 
 
 def _page_limit(request: Request) -> int:
