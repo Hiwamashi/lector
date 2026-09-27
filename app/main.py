@@ -13,7 +13,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO
+from typing import Annotated, BinaryIO
 from urllib.parse import urlencode
 
 import httpx
@@ -398,7 +398,7 @@ def _store_upload_sync(
 
 
 @app.post("/upload")
-async def upload(request: Request, files: list[UploadFile] = File(default=[])):  # noqa: B008
+async def upload(request: Request, files: Annotated[list[UploadFile] | None, File()] = None):
     """Legt hochgeladene Dateien im Eingangsordner ab; ab dort läuft der bestehende
     Watch-Folder-Weg unverändert weiter (PRD §Pipeline Schritt 1).
 
@@ -411,6 +411,10 @@ async def upload(request: Request, files: list[UploadFile] = File(default=[])): 
     Es gibt keine Session-Middleware und damit keinen Flash-Speicher — die Rückmeldung
     wandert als Query-Parameter im Redirect-Ziel mit. Deren Auswertung übernimmt die
     Dashboard-Route (Gruppe 3); hier wird das Ziel nur gebaut.
+
+    Der Default `None` (statt einer leeren Liste als Argument-Default) vermeidet den
+    veränderlichen Default-Wert (`ruff` B006); `files or []` gleich zu Beginn der
+    Verarbeitung bildet die leere Auswahl unverändert auf eine leere Liste ab.
     """
     settings: Settings = request.app.state.settings
     partial_suffix = settings.partial_suffix_list[0] if settings.partial_suffix_list else ".part"
@@ -420,7 +424,7 @@ async def upload(request: Request, files: list[UploadFile] = File(default=[])): 
     format_abgelehnt: list[str] = []
     fehler: list[str] = []
 
-    for file in files:
+    for file in files or []:
         anzeige_name = file.filename or "(ohne Namen)"
         name = sanitize_upload_filename(file.filename or "")
         if not name or not detection.is_supported(Path(name)):
