@@ -125,6 +125,12 @@ RECIPIENT_STATUS_LABELS = {
     RecipientStatus.UNKNOWN: "Unklar",
 }
 
+# Fuers `accept`-Attribut des Datei-Feldes im Upload-Formular: sortiert, damit das
+# gerenderte HTML stabil bleibt — `detection.SUPPORTED_SUFFIXES` ist ein `set` und seine
+# Reihenfolge schwankt zwischen Laeufen. Ersetzt nicht die serverseitige Pruefung in
+# `upload()`, filtert im Dateidialog nur vor.
+UPLOAD_ACCEPT = ",".join(sorted(detection.SUPPORTED_SUFFIXES))
+
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -354,6 +360,14 @@ async def dashboard(
     status: str | None = Query(None),
     q: str | None = Query(None),
     period: str | None = Query(None),
+    upload_ok: int | None = Query(None),
+    # `list[str] = Query(...)` liesse sich nicht ohne Suppressions-Kommentar schreiben:
+    # ruff (B008) lehnt bei Listen-Annotationen jeden Funktionsaufruf als Default ab, auch
+    # `Query(None)` — anders als bei `str | None` oben. Die `Annotated`-Form (bereits fuer
+    # `files` in `upload()` verwendet) traegt `Query()` in der Metadaten, der eigentliche
+    # Default bleibt das einfache `None` und loest B008 nicht aus.
+    upload_format: Annotated[list[str] | None, Query()] = None,
+    upload_fehler: Annotated[list[str] | None, Query()] = None,
 ):
     repo: Repository = request.app.state.repo
     status_enum, search, since = _filters(status, q, period)
@@ -366,6 +380,10 @@ async def dashboard(
             "documents": documents,
             "counts": counts,
             "filters": {"status": status or "", "q": q or "", "period": period or ""},
+            "upload_accept": UPLOAD_ACCEPT,
+            "upload_ok": upload_ok,
+            "upload_format": upload_format or [],
+            "upload_fehler": upload_fehler or [],
         },
     )
 

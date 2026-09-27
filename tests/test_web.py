@@ -354,6 +354,40 @@ def test_dashboard_empty(client):
     assert "überwachten Eingangsordner" in resp.text
 
 
+def test_dashboard_zeigt_upload_formular_ohne_javascript(client):
+    """Das Formular muss auch ohne JavaScript funktionieren — daher `method="post"`,
+    `enctype="multipart/form-data"` und der vom Endpunkt vorgegebene Feldname `files`."""
+    c, _ = client
+    resp = c.get("/")
+    assert 'enctype="multipart/form-data"' in resp.text
+    assert 'name="files"' in resp.text
+    assert "multiple" in resp.text
+
+
+def test_upload_formular_filtert_dateidialog_nach_unterstuetzten_endungen(client):
+    """`accept` filtert im Dateidialog nur vor — jede unterstuetzte Endung muss dort
+    auftauchen, sonst waere die serverseitige Pruefung die einzige Huerde, die der
+    Anwender zu Gesicht bekommt."""
+    from app import detection
+
+    c, _ = client
+    resp = c.get("/")
+    for suffix in detection.SUPPORTED_SUFFIXES:
+        assert suffix in resp.text
+
+
+def test_dashboard_zeigt_upload_rueckmeldung_aus_query_parametern(client):
+    """`POST /upload` haengt die Rueckmeldung als Query-Parameter an sein Redirect-Ziel —
+    die Dashboard-Route muss sie lesen und anzeigen, inklusive des Verzoegerungshinweises
+    (Spec-Anforderung, siehe Brief Gruppe 3)."""
+    c, _ = client
+    resp = c.get("/", params={"upload_ok": 2, "upload_format": "x.zip"})
+    assert "2 Datei(en) übernommen" in resp.text
+    assert "einigen Sekunden" in resp.text
+    assert "x.zip" in resp.text
+    assert "nicht unterstütztes Format" in resp.text
+
+
 def test_dashboard_shows_document_and_detail(client):
     c, application = client
     repo = application.state.repo

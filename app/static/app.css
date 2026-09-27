@@ -89,7 +89,7 @@ body {
 
 /* Taktile Rueckmeldung: das Element gibt unter dem Zeiger einen Millimeter nach.
    Nur transform — keine Layoutgroesse, also kein Reflow. */
-.tile:active, .filters button:active, .giro-form button:active,
+.tile:active, .filters button:active, .upload-form button:active, .giro-form button:active,
 .invoice-actions button:active, .recipient-toolbar button:active,
 .recipient-form button:active {
   transform: translateY(1px);
@@ -149,6 +149,16 @@ body {
 }
 .filters input { flex: 1; min-width: 180px; }
 .filters button { background: var(--accent); color: var(--on-accent); border-color: var(--accent); cursor: pointer; }
+
+/* Upload-Formular — gleicher Regelsatz wie .filters, eigene Klasse, da es keine
+   Listenfilterung ist, sondern eine Aktion (Datei-Auswahl + Absenden). */
+.upload-form { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.upload-form input, .upload-form button {
+  padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); font-size: 0.9rem; color: var(--ink);
+}
+.upload-form input { flex: 1; min-width: 180px; }
+.upload-form button { background: var(--accent); color: var(--on-accent); border-color: var(--accent); cursor: pointer; }
 
 /* Historientabelle */
 .history { width: 100%; border-collapse: collapse; background: var(--surface);
