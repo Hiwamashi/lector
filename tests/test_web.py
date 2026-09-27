@@ -166,6 +166,129 @@ def test_healthz_veraendert_nichts(client):
     assert event_count_nachher == event_count_vorher
 
 
+def test_upload_legt_pdf_im_eingangsordner_ab(client):
+    """2.1: Ein hochgeladenes PDF landet unverändert im Eingangsordner — ab dort läuft
+    der bestehende Watch-Folder-Weg unverändert weiter."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    inhalt = b"%PDF-1.4 testinhalt"
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", inhalt, "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    dateien = list(watch_dir.iterdir())
+    assert len(dateien) == 1
+    assert dateien[0].read_bytes() == inhalt
+
+
+def test_upload_lehnt_nicht_unterstuetztes_format_ab_und_meldet_es_im_redirect(client):
+    """2.2: Eine `.zip`-Datei wird als Format abgelehnt (nicht geschrieben) und im
+    Redirect-Ziel unter `upload_format` gemeldet; das danebenliegende PDF wird trotzdem
+    übernommen und unter `upload_ok` gezählt."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+
+    resp = c.post(
+        "/upload",
+        files=[
+            ("files", ("rechnung.pdf", b"%PDF-1.4 x", "application/pdf")),
+            ("files", ("archiv.zip", b"PK\x03\x04", "application/zip")),
+        ],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "upload_ok=1" in location
+    assert "upload_format=archiv.zip" in location
+    dateien = list(watch_dir.iterdir())
+    assert [d.name for d in dateien] == ["rechnung.pdf"]
+
+
+def test_upload_ohne_dateien_leitet_ohne_query_parameter_um(client):
+    """2.2: Eine leere Auswahl (keine Datei im Formular) leitet ohne Query-Parameter auf
+    `/` um."""
+    c, _ = client
+
+    resp = c.post("/upload", files=[], follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+
+
+def test_upload_benutzt_konfiguriertes_teil_suffix_statt_hart_verdrahtetem(
+    client, monkeypatch
+):
+    """2.1: Das beim Schreiben verwendete Teil-Suffix stammt aus
+    `settings.partial_suffix_list[0]`, nicht aus einem fest verdrahteten `.part` —
+    nachgewiesen, indem eine abweichende Konfiguration greift."""
+    c, application = client
+    application.state.settings.partial_suffixes = ".zwischenablage"
+    aufrufe: list[str] = []
+    original = app.main.store_upload
+
+    def spion(source, directory, filename, *, partial_suffix, chunk_size=1 << 20):
+        aufrufe.append(partial_suffix)
+        return original(
+            source, directory, filename, partial_suffix=partial_suffix, chunk_size=chunk_size
+        )
+
+    monkeypatch.setattr(app.main, "store_upload", spion)
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert aufrufe == [".zwischenablage"]
+
+
+def test_upload_fehler_beim_schreiben_wird_gemeldet_statt_500(client, monkeypatch):
+    """2.3: Scheitert das Schreiben, endet die Anfrage trotzdem mit `303` und meldet die
+    betroffene Datei unter `upload_fehler` — statt mit `500` abzubrechen."""
+    c, _ = client
+
+    def kaputt(*args, **kwargs):
+        raise OSError("Platte voll")
+
+    monkeypatch.setattr(app.main, "store_upload", kaputt)
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert "upload_fehler=rechnung.pdf" in resp.headers["location"]
+
+
+def test_upload_name_mit_verzeichnisanteilen_verlaesst_eingangsordner_nicht(client):
+    """2.4: Ein gelieferter Name mit Verzeichnisanteilen (`../../…`) landet trotzdem im
+    Eingangsordner, statt dessen Elternverzeichnis zu erreichen — `store_upload()`
+    validiert den Namen selbst nicht, das übernimmt `sanitize_upload_filename()` vor
+    dem Aufruf."""
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    eltern_vorher = set(watch_dir.parent.iterdir())
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("../../lector.db.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert (watch_dir / "lector.db.pdf").read_bytes() == b"%PDF-1.4 x"
+    assert set(watch_dir.parent.iterdir()) == eltern_vorher
+
+
 def test_healthz_ignoriert_nicht_erreichbares_paperless(tmp_path, monkeypatch):
     """5.8: Ein nicht erreichbares Paperless darf `/healthz` nicht auf `503` bringen —
     der Endpunkt prüft die Erreichbarkeit fremder Dienste nicht und macht dafür auch

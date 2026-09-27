@@ -13,10 +13,11 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import FastAPI, Form, Query, Request
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -27,9 +28,11 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import detection
 from .config import ConfigurationRejectedError, Settings, get_settings_and_problems
 from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
+from .fileops import sanitize_upload_filename, store_upload
 from .girocode import PaymentData, qr_svg
 from .models import DocStatus, GiroStatus, RecipientStatus, SevdeskStatus
 from .ocr import get_adapter
@@ -380,6 +383,69 @@ async def history_fragment(
     return templates.TemplateResponse(
         request, "partials/history_rows.html", {"documents": documents}
     )
+
+
+def _store_upload_sync(
+    source: BinaryIO, directory: Path, filename: str, partial_suffix: str
+) -> Path:
+    """Ruft `store_upload()` mit ihrem Keyword-only-Argument auf.
+
+    `run_in_executor()` reicht nur Positionsargumente durch — dieser kleine Umweg über
+    einen Modul-Funktionsnamen erlaubt es Tests trotzdem, `app.main.store_upload` zu
+    patchen (Nachschlag über den globalen Namen erfolgt erst beim Aufruf).
+    """
+    return store_upload(source, directory, filename, partial_suffix=partial_suffix)
+
+
+@app.post("/upload")
+async def upload(request: Request, files: list[UploadFile] = File(default=[])):  # noqa: B008
+    """Legt hochgeladene Dateien im Eingangsordner ab; ab dort läuft der bestehende
+    Watch-Folder-Weg unverändert weiter (PRD §Pipeline Schritt 1).
+
+    Ein gelieferter Name durchläuft zuerst `sanitize_upload_filename()` — erst dadurch
+    kann er den Eingangsordner nicht verlassen, `store_upload()` selbst prüft das nicht.
+    Das Schreiben blockiert und läuft deshalb in einem eigenen Thread-Pool, nicht über
+    den seriellen Executor des Workers (`app.state.worker`), den die Verarbeitungs-Queue
+    braucht.
+
+    Es gibt keine Session-Middleware und damit keinen Flash-Speicher — die Rückmeldung
+    wandert als Query-Parameter im Redirect-Ziel mit. Deren Auswertung übernimmt die
+    Dashboard-Route (Gruppe 3); hier wird das Ziel nur gebaut.
+    """
+    settings: Settings = request.app.state.settings
+    partial_suffix = settings.partial_suffix_list[0] if settings.partial_suffix_list else ".part"
+    loop = asyncio.get_running_loop()
+
+    ok = 0
+    format_abgelehnt: list[str] = []
+    fehler: list[str] = []
+
+    for file in files:
+        anzeige_name = file.filename or "(ohne Namen)"
+        name = sanitize_upload_filename(file.filename or "")
+        if not name or not detection.is_supported(Path(name)):
+            format_abgelehnt.append(anzeige_name)
+            continue
+        try:
+            await loop.run_in_executor(
+                None, _store_upload_sync, file.file, settings.watch_dir, name, partial_suffix
+            )
+        except Exception:
+            log.exception("Hochgeladene Datei %s konnte nicht gespeichert werden", anzeige_name)
+            fehler.append(anzeige_name)
+            continue
+        ok += 1
+
+    params: dict[str, object] = {}
+    if ok:
+        params["upload_ok"] = ok
+    if format_abgelehnt:
+        params["upload_format"] = format_abgelehnt
+    if fehler:
+        params["upload_fehler"] = fehler
+
+    ziel = "/" if not params else f"/?{urlencode(params, doseq=True)}"
+    return RedirectResponse(ziel, status_code=303)
 
 
 def _page_limit(request: Request) -> int:
