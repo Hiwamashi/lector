@@ -9,8 +9,16 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import BinaryIO
+
+# Schützt ausschließlich die Zielnamen-Neubestimmung + os.replace() in store_upload()
+# gegen gleichzeitige Uploads im eigenen Prozess (Thread-Pool). Gegen einen externen
+# Schreiber auf demselben Verzeichnis (z.B. eine SMB-Kopie, die im selben Moment
+# denselben Namen anlegt) hilft der Lock nicht — dieser Wettlauf steckt unverändert
+# bereits in unique_target() und betrifft den gesamten Code, nicht nur store_upload().
+_replace_lock = threading.Lock()
 
 
 def file_hash(path: Path, chunk_size: int = 1 << 20) -> str:
@@ -97,18 +105,30 @@ def store_upload(
     So existiert unter dem Zielnamen nie eine unvollständige Datei. Kollidiert bereits
     der Zwischenpfad (Leiche eines abgebrochenen früheren Uploads), wird auf einen
     freien Zwischenpfad ausgewichen, statt den neuen Upload scheitern zu lassen.
+
+    Der Zielname wird zunächst nur vorläufig bestimmt (Basis für den Zwischenpfad) und
+    unmittelbar vor `os.replace()` unter `_replace_lock` neu ermittelt. Ohne diesen
+    zweiten, gesperrten Blick könnten zwei gleichzeitige Uploads mit demselben Namen
+    beide denselben freien Zielnamen sehen (beide Zieldateien existieren zu Beginn
+    noch nicht) und der zweite `os.replace()` würde das gerade fertiggestellte
+    Ergebnis des ersten lautlos überschreiben. Das Schreiben der Zwischendatei bleibt
+    außerhalb des Locks und damit parallel; serialisiert wird nur die kurze
+    Namensentscheidung. Gegen einen gleichzeitigen *externen* Schreiber auf demselben
+    Verzeichnis schützt der Lock nicht (siehe Modul-Kommentar zu `_replace_lock`).
     """
-    target = unique_target(directory, filename)
-    partial = target.with_name(target.name + partial_suffix)
+    provisional_target = unique_target(directory, filename)
+    partial = provisional_target.with_name(provisional_target.name + partial_suffix)
     n = 1
     while partial.exists():
-        partial = target.with_name(f"{target.name}_{n}{partial_suffix}")
+        partial = provisional_target.with_name(f"{provisional_target.name}_{n}{partial_suffix}")
         n += 1
     try:
         with partial.open("wb") as out:
             while block := source.read(chunk_size):
                 out.write(block)
-        os.replace(partial, target)
+        with _replace_lock:
+            target = unique_target(directory, filename)
+            os.replace(partial, target)
     except BaseException:
         try:
             partial.unlink(missing_ok=True)

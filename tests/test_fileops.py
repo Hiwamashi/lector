@@ -1,4 +1,5 @@
 import io
+import threading
 
 import pytest
 
@@ -119,4 +120,62 @@ def test_store_upload_keine_kollision_bestehende_datei_bleibt_unveraendert(tmp_p
     assert result == tmp_path / "beleg_1.pdf"
     assert (tmp_path / "beleg.pdf").read_bytes() == b"vorhandener inhalt"
     assert result.read_bytes() == b"neuer inhalt"
+
+
+class _BlockierendeQuelle:
+    """Liefert genau einen Datenblock, blockiert davor aber bis `release_event`
+    gesetzt wird, und meldet über `entered_event` den Eintritt in die Blockade.
+    Damit lassen sich zwei Threads deterministisch so anhalten, dass sich ihre
+    Schreibphasen nachweislich überlappen, statt auf echtes Timing zu hoffen."""
+
+    def __init__(self, data: bytes, entered_event: threading.Event, release_event: threading.Event):
+        self._data = data
+        self._served = False
+        self._entered_event = entered_event
+        self._release_event = release_event
+
+    def read(self, size=-1):
+        if not self._served:
+            self._served = True
+            self._entered_event.set()
+            assert self._release_event.wait(timeout=5), "release_event kam nicht rechtzeitig"
+            return self._data
+        return b""
+
+
+def test_store_upload_gleichzeitige_uploads_gleichen_namens_ueberschreiben_sich_nicht(tmp_path):
+    entered_a, release_a = threading.Event(), threading.Event()
+    entered_b, release_b = threading.Event(), threading.Event()
+    quelle_a = _BlockierendeQuelle(b"inhalt a", entered_a, release_a)
+    quelle_b = _BlockierendeQuelle(b"inhalt b", entered_b, release_b)
+    ergebnisse: dict[str, object] = {}
+
+    def worker(schluessel, quelle):
+        ergebnisse[schluessel] = store_upload(quelle, tmp_path, "beleg.pdf", partial_suffix=".part")
+
+    thread_a = threading.Thread(target=worker, args=("a", quelle_a))
+    thread_b = threading.Thread(target=worker, args=("b", quelle_b))
+
+    # a schreibt bereits (Zwischendatei liegt, Ziel "beleg.pdf" existiert noch nicht),
+    # bevor b startet und ebenfalls "beleg.pdf" als freien Zielnamen sieht — die
+    # Überlappung ist damit garantiert, nicht nur wahrscheinlich.
+    thread_a.start()
+    assert entered_a.wait(timeout=5)
+    thread_b.start()
+    assert entered_b.wait(timeout=5)
+
+    # b wird zuerst fertig und belegt "beleg.pdf"; a muss danach unter Lock einen
+    # neuen freien Namen bekommen, statt bs gerade geschriebene Datei zu überschreiben.
+    release_b.set()
+    thread_b.join(timeout=5)
+    release_a.set()
+    thread_a.join(timeout=5)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+
+    namen = {ergebnisse["a"].name, ergebnisse["b"].name}
+    assert namen == {"beleg.pdf", "beleg_1.pdf"}
+    inhalte = {ergebnisse["a"].read_bytes(), ergebnisse["b"].read_bytes()}
+    assert inhalte == {b"inhalt a", b"inhalt b"}
 
