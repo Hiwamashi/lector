@@ -296,16 +296,34 @@ def test_upload_nimmt_denselben_weg_wie_eine_kopierte_datei(client):
     zwei Polls (vor und nach dem Stabilitätsfenster) reichen, um die Datei als fertig
     zu melden. Der Vorgang, den `_intake_file` daraus anlegt, trägt keinerlei Merkmal,
     das ihn als Upload kennzeichnet — das Datenmodell (`app.models.Document`) hat
-    bewusst kein solches Feld."""
+    bewusst kein solches Feld.
+
+    Fix-Runde 1: Der Worker aus der `client`-Fixture läuft bereits — sein `_scan_loop`
+    pollt denselben `tracker` mit echter Zeit und wird vom Watchdog-Observer beim Upload
+    nahezu sofort geweckt, und sein `_process_loop` würde einen frisch angelegten Vorgang
+    aus der Queue heraus sofort weiterbewegen. Beide liefen dem manuellen Nachstellen
+    sonst als Wettlauf davon (heute grün, unter Last rot). Deshalb werden `"scan"` und
+    `"process"` vorab über `_cancel_worker_task` stillgelegt — der Eingangsordner gehört
+    danach dem Test allein. Es bleibt bewusst der echte `application.state.worker` (statt
+    eines frisch gebauten, nie gestarteten Workers wie im Präzedenzfall
+    `test_blocked_document_is_not_taken_in_again_from_the_watch_folder`): das zeigt der
+    Leserin, dass hier der reguläre Aufnahmeweg der Anwendung läuft, keine Nachbildung."""
     import dataclasses
 
     from app.models import DocStatus
     from app.watcher import scan_dir
+    from app.worker import TaskState
 
     c, application = client
     watch_dir = application.state.settings.watch_dir
     worker = application.state.worker
     repo = application.state.repo
+
+    _cancel_worker_task(application, "scan")
+    _cancel_worker_task(application, "process")
+    stillgelegt = {s.name: s.state for s in worker.background_task_states()}
+    assert stillgelegt["scan"] == TaskState.STOPPED
+    assert stillgelegt["process"] == TaskState.STOPPED
 
     resp = c.post(
         "/upload",
