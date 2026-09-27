@@ -289,6 +289,49 @@ def test_upload_name_mit_verzeichnisanteilen_verlaesst_eingangsordner_nicht(clie
     assert set(watch_dir.parent.iterdir()) == eltern_vorher
 
 
+def test_upload_nimmt_denselben_weg_wie_eine_kopierte_datei(client):
+    """4.1: Eine über `POST /upload` abgelegte Datei durchläuft ab dem Eingangsordner
+    exakt denselben Weg wie eine dort hineinkopierte — keinen Sonderweg. Nachgewiesen
+    ohne echtes Warten: der `StabilityTracker` nimmt die Zeit als Parameter entgegen,
+    zwei Polls (vor und nach dem Stabilitätsfenster) reichen, um die Datei als fertig
+    zu melden. Der Vorgang, den `_intake_file` daraus anlegt, trägt keinerlei Merkmal,
+    das ihn als Upload kennzeichnet — das Datenmodell (`app.models.Document`) hat
+    bewusst kein solches Feld."""
+    import dataclasses
+
+    from app.models import DocStatus
+    from app.watcher import scan_dir
+
+    c, application = client
+    watch_dir = application.state.settings.watch_dir
+    worker = application.state.worker
+    repo = application.state.repo
+
+    resp = c.post(
+        "/upload",
+        files=[("files", ("rechnung.pdf", b"%PDF-1.4 testinhalt", "application/pdf"))],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    candidates = scan_dir(watch_dir)
+    window = application.state.settings.stability_window_seconds
+
+    assert worker.tracker.poll(candidates, now=0.0) == []
+    ready = worker.tracker.poll(candidates, now=window + 1)
+    assert len(ready) == 1
+
+    worker._intake_file(ready[0])
+
+    dokumente = repo.list_documents()
+    assert len(dokumente) == 1
+    dokument = dokumente[0]
+    assert dokument.status == DocStatus.PENDING
+    assert dokument.original_filename == "rechnung.pdf"
+    feldnamen = {f.name for f in dataclasses.fields(dokument)}
+    assert not any("upload" in name for name in feldnamen)
+
+
 def test_healthz_ignoriert_nicht_erreichbares_paperless(tmp_path, monkeypatch):
     """5.8: Ein nicht erreichbares Paperless darf `/healthz` nicht auf `503` bringen —
     der Endpunkt prüft die Erreichbarkeit fremder Dienste nicht und macht dafür auch
