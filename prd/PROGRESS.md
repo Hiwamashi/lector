@@ -462,6 +462,32 @@ fünf Kern-Capabilities und hat eine Spalte „Betroffene Capability" — die Pa
 ist dort ausdrücklich nicht aufgenommen (Phase 2), eine Zeile ohne Capability wäre ein
 Fremdkörper.
 
+## Zusatz-Feature: Datei-Upload über das Web-UI (2026-09-27)
+
+Bisher gelangten Dokumente ausschließlich über einen überwachten Eingangsordner (NAS-Freigabe) in den Dienst. Das Web-UI erlaubt jetzt auch direktes Hochladen ohne Datei-Manager-Zugriff.
+
+**Design:**
+
+Der Upload **endet an der Ablage im Eingangsordner**; ab dort läuft die bestehende Verarbeitungs-Pipeline unverändert. Das Web-UI tritt nicht in die Verarbeitung ein — es schiebt die Datei nur in die Warteschlange, wie eine NAS-Kopie das täte.
+
+Zwei kritische Details:
+
+1. **Stabilitätsfenster-Schutz:** Würde die Datei direkt unter ihrem Zielnamen geschrieben, könnte eine unterbrochene Übertragung vom Stabilitätsfenster als vollständig gewertet werden — das Fenster misst nur die Größenkonstanz der existierenden Datei, nicht die Existenz selbst. Ein halbes PDF könnte in die Verarbeitung gehen. Lösung: Schreiben unter einem Zwischenpfad mit Suffix (z. B. `scan.pdf.part`), erst nach erfolgreichem Abschluss atomares Umbenennen auf den Zielnamen via `os.replace()`. So existiert der Zielname nie unvollständig.
+
+2. **Gleichzeitige Uploads:** Zwei Uploads mit demselben Namen müssen eine Kollision vermeiden. Der Zielname wird provisorisch vor dem Schreiben bestimmt (Basis für den Zwischenpfad), dann unmittelbar vor `os.replace()` unter einem Lock (`_replace_lock`) erneut ermittelt. Ohne diesen zweiten, gesperrten Blick könnten beide dieselbe Zieldatei sehen und der zweite würde das Ergebnis des ersten lautlos überschreiben. Das Schreiben selbst bleibt parallel; serialisiert wird nur die kurze Namensentscheidung.
+
+**Rückmeldung:** Die Antwort ist ein Redirect zum Dashboard mit Query-Parametern (`upload_ok=N`, `upload_format=name1&...`, `upload_fehler=name1&...`). Das Dashboard wertet sie aus und zeigt Erfolgs-, Info- und Fehlermeldungen — transient, einmalig beim Laden. Kein Flash-Speicher nötig, da keine Session-Middleware vorhanden ist (LAN-only, keine Authentifizierung).
+
+**Verzögerte Sichtbarkeit:** Eine hochgeladene Datei erscheint nicht sofort in der Übersicht — bis zu 2 s Poll-Intervall + 6 s Stabilitätsfenster, also bis zu 8 s. Absicht: Ein Upload vom lokalen PC ist schneller als vom Netzwerk; die Verzögerung verhindert Verwirrung über stockende Übertragungen.
+
+**Bewusst ausgelassen:** Authentifizierung, Größenbegrenzung, Kamera-Aufnahme, Zusammenfassen mehrerer Bilder.
+
+Endpunkt: `POST /upload` in `app/main.py`. Funktionen: `sanitize_upload_filename()`, `store_upload()` in `app/fileops.py`. UI: Formular + Rückmeldungen in `app/templates/dashboard.html`.
+
+373 Tests grün (keine Regression), `ruff` sauber. Feature-Doku: `feature-documentation/datei-upload.md`.
+
+PRD §3.3 aktualisiert: „Kein manueller Datei-Upload" entfernt, Einschränkung ersetzt durch „Der Upload endet im Eingangsordner."
+
 ## Nice-to-have (später)
 
 - Weitere OCR-Adapter (Cloud Vision, AWS Textract) — Interface vorbereitet.

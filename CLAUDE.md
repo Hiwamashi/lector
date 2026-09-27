@@ -82,7 +82,8 @@ Vollständige Liste inkl. der Paperless-/SevDesk-Variablen: `.env.example` und
 - **Paperless muss `PAPERLESS_OCR_MODE: skip` setzen** (am `webserver`-Service), sonst überschreibt Tesseract den eingebetteten Document-AI-Textlayer.
 - **Ausgabe-Eigentümerschaft:** Ergebnis-PDFs nach `consume` mit UID/GID **1000** schreiben (geteilter Ordner mit Paperless).
 - **Keine Authentifizierung** (Betrieb ausschließlich im LAN, Einzelnutzer).
-- **Explizit ausgeschlossen:** inhaltliche Datenextraktion/Klassifizierung/Tags (Aufgabe von Paperless), manueller Datei-Upload, eigenes Scannen, Cloud-Anbindung außer der OCR-Engine.
+- **Explizit ausgeschlossen:** inhaltliche Datenextraktion/Klassifizierung/Tags (Aufgabe von Paperless), eigenes Scannen, Cloud-Anbindung außer der OCR-Engine.
+- **Datei-Upload über Web-UI:** vorhanden, aber ohne Authentifizierung und Größenbegrenzung (LAN-only). Der Upload endet im Eingangsordner; von dort läuft der bestehende Watch-Folder-Weg.
 - **E-Rechnungs-Bypass ist deterministisch** — niemals per KI/OCR raten.
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
