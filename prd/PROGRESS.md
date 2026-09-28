@@ -490,6 +490,29 @@ der anschließenden Fix-Welle der Schlussreview), `ruff` sauber. Feature-Doku:
 
 PRD §3.3 aktualisiert: „Kein manueller Datei-Upload" entfernt, Einschränkung ersetzt durch „Der Upload endet im Eingangsordner."
 
+### Offene Befunde aus der Schlussreview
+
+Die Schlussreview des Branches hat vier Punkte gefunden, die bewusst **nicht** in diesem Change
+behoben wurden. Vollständige Begründung je Punkt in
+`openspec/changes/archive/2026-09-28-datei-upload-web-ui/review-log.md`.
+
+1. **`app/watcher.py`, `_emitted` — Defekt im unveränderten Code.** Eine Datei kann dauerhaft im
+   Eingangsordner liegen bleiben, wenn sie einen gerade freigewordenen Namen wiederbelegt, bevor
+   ein Poll die Abwesenheit registriert: `self._emitted &= present` entfernt einen Pfad nur, wenn
+   ein Poll ihn abwesend sieht, und `poll` überspringt anschließend jeden Pfad in `_emitted`. Die
+   Datei bleibt ohne Vorgang und ohne Fehlermeldung liegen. Besteht unabhängig vom Upload und
+   betrifft auch SMB-Kopien; der Upload macht die Wiederbelegung desselben Namens nur
+   wahrscheinlicher. **Verdient einen eigenen Change.**
+2. **Nebenläufigkeitstest zum Zwischenpfad** (`tests/test_fileops.py`) ist an das
+   Implementierungsdetail `mode == "xb"` gekoppelt und fängt eine Rückdrehung auf
+   prüfen-und-öffnen nur in rund 90 % der Läufe (empirisch über 30 Läufe gemessen).
+3. **Sehr lange Dateinamen** scheitern im Upload mit `ENAMETOOLONG`, weil der Zwischenpfad um die
+   Länge des Teil-Suffix länger ist als der Zielname — mit Umlauten ab etwa 126 Zeichen. Dieselbe
+   Datei läuft per SMB-Kopie anstandslos durch.
+4. **Die Rückmeldung wächst unbegrenzt** mit der Zahl abgewiesener Dateien. Jenseits der
+   16-KiB-Grenze des `Location`-Headers sieht der Nutzer statt der Fehlerliste eine abgewiesene
+   Anfrage und erfährt gar nichts.
+
 ## Nice-to-have (später)
 
 - Weitere OCR-Adapter (Cloud Vision, AWS Textract) — Interface vorbereitet.
