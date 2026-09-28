@@ -101,6 +101,10 @@ ausgeliefert.
 (Token/URL/Dokumententyp-Name) und gegen ein echtes SevDesk-Konto (API-Token,
 Systemversion 2.0 für E-Rechnungs-Belege).
 
+> **Einschränkung (2026-09-28):** Für SevDesk galt das nur bis `uploadTempFile`.
+> `saveVoucher` wurde nie erfolgreich durchlaufen — siehe „Korrektur des SevDesk-Payloads"
+> weiter unten.
+
 ## Zusatz-Feature: Image-Deployment über Scaleway Container Registry
 
 Das Image wird nicht mehr auf dem NAS gebaut, sondern als Multi-Arch-Image
@@ -128,6 +132,8 @@ Alle zuvor offenen Verifikationspunkte sind vom Anwender geschlossen:
 - **Registry-Deployment:** `docker compose pull lector && docker compose up -d lector`
   auf dem NAS (`Teams/Docker/paperless-ngx-stack`) ausgeführt, Dienst auf Port 8001 erreichbar.
 - **Paperless & SevDesk:** Sync und Beleg-Upload gegen die produktiven Konten bestätigt.
+  *(Nachtrag 2026-09-28: der SevDesk-Teil betraf den Temp-Upload; die Beleganlage schlug
+  fehl — siehe „Korrektur des SevDesk-Payloads".)*
 
 ## Zusatz-Feature: UI-Politur (2026-09-19)
 
@@ -517,3 +523,35 @@ behoben wurden. Vollständige Begründung je Punkt in
 
 - Weitere OCR-Adapter (Cloud Vision, AWS Textract) — Interface vorbereitet.
 - Confidence-Score-Auswertung mit Qualitätswarnung im UI.
+
+## Korrektur des SevDesk-Payloads (2026-09-28)
+
+**Befund:** Der Export nach SevDesk hat nie funktioniert — 0 von 200 Rechnungen mit Status
+`done`, die erste exportierte Rechnung scheiterte an
+`422 Unprocessable Entity` auf `/Voucher/Factory/saveVoucher`.
+
+**Ursache:** Der Beleg-Payload war unvollständig. Ein Abgleich mit 25 real existierenden
+Belegen des Mandanten (lesend über `GET /Voucher`) zeigte, dass `voucherDate`,
+`deliveryDate`, `currency` und `taxRule` dort ausnahmslos gesetzt sind und ein Lieferant
+(`supplier` oder `supplierName`) nie fehlt — in Lectors Payload fehlten alle vier. Zusätzlich
+wurde ein Feld `type` gesendet, das es im Voucher-Modell nicht gibt.
+
+Der Fehler konnte so lange unbemerkt bleiben, weil es **keinen einzigen Test** für
+`SevdeskClient` gab: `tests/test_invoices_repo.py` prüft ausschließlich die
+Fehlerklassifizierung gegen Fakes, nie den tatsächlichen Payload.
+
+**Behoben:**
+
+- Pflichtfelder ergänzt, `type` entfernt (`app/sevdesk.py`); `taxRule` fest auf ID 10
+  („Nicht vorsteuerabziehbare Aufwendungen", entspricht den Bestandsbelegen).
+- Belegdatum, Lieferant und Währung kommen aus der Rechnung
+  (`app/paperless_sync.py:export_invoice`).
+- `_raise_for_status()` ersetzt `raise_for_status()` und hängt die SevDesk-Begründung aus
+  dem Antwortkörper an die Fehlermeldung — bisher ging sie verloren, sodass in der UI nur
+  „Client error '422 …'" stand. Der Ausnahmetyp bleibt `httpx.HTTPStatusError`, damit die
+  Retry-Klassifizierung (4xx retrybar / 5xx mehrdeutig) unverändert greift.
+- `tests/test_sevdesk.py` neu: hält Pflichtfelder und Fehlerweitergabe fest (4 Tests).
+
+**Offen:** Die Beleganlage ist noch **nicht** gegen die echte API verifiziert — der Fix
+beruht auf dem Abgleich mit den Bestandsbelegen, nicht auf einem erfolgreichen Testlauf.
+Schlägt der Export erneut fehl, nennt die UI-Fehlermeldung nun den genauen Grund.

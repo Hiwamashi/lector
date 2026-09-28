@@ -450,7 +450,12 @@ class PaperlessSync:
         try:
             async with self._sevdesk() as sev:
                 result = await sev.save_voucher_from_temp(
-                    temp_name, description=inv.title or filename
+                    temp_name,
+                    description=inv.title or filename,
+                    # Pflichtangaben des Belegs: ohne sie lehnt SevDesk mit HTTP 422 ab.
+                    voucher_date=inv.document_date,
+                    supplier_name=inv.creditor_name or inv.correspondent,
+                    currency=inv.currency,
                 )
         except httpx.HTTPStatusError as exc:
             # Nur eindeutige Client-Ablehnungen (4xx) sind retrybar — dabei wurde kein Beleg
