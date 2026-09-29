@@ -4,7 +4,7 @@
 <h1>Empfänger</h1>
 
 {% if not recipient_enabled %}
-<div class="alert">
+<div class="notice notice--info">
   Paperless-Anbindung fehlt. Setze <code>PAPERLESS_URL</code> und <code>PAPERLESS_TOKEN</code>,
   um Empfänger an Dokumenten zu pflegen.
 </div>
@@ -17,14 +17,15 @@
 {% if recipient_enabled %}
 
 {% if not field_present %}
-<div class="alert">
+<div class="notice notice--info">
   Das Custom Field „{{ "Empfänger" }}" (Typ <code>select</code>) wurde in Paperless nicht
   gefunden. Lege es dort mit den gewünschten Optionen an (Lector legt es bewusst nicht selbst an).
 </div>
 {% endif %}
 
 <form class="filters" method="get" action="/empfaenger">
-  <input type="search" name="q" value="{{ filters.q }}" placeholder="Dokument suchen (Volltext)…" />
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Dokument suchen (Volltext)…"
+         aria-label="Dokument im Volltext suchen" />
   <label class="checkbox">
     <input type="checkbox" name="missing" value="1" {% if filters.missing %}checked{% endif %} />
     nur ohne Empfänger
@@ -32,8 +33,9 @@
   <button type="submit">Filtern</button>
 </form>
 
-<p class="muted">{{ count }} Dokument(e){% if filters.missing %} ohne Empfänger{% endif %}</p>
+<p class="muted">{{ count }} {{ "Dokument" if count == 1 else "Dokumente" }}{% if filters.missing %} ohne Empfänger{% endif %}</p>
 
+<div class="table-scroll">
 <table class="history" data-fragment="/fragment/empfaenger?{{ fragment_query }}">
   <thead>
     <tr>
@@ -48,6 +50,7 @@
     {% include "partials/recipient_rows.html" %}
   </tbody>
 </table>
+</div>
 
 <nav class="pager">
   {% if page > 1 %}

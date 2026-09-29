@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import logging
 import tempfile
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,7 +35,15 @@ from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .fileops import sanitize_upload_filename, store_upload
 from .girocode import PaymentData, qr_svg
-from .models import DocStatus, GiroStatus, RecipientStatus, SevdeskStatus
+from .models import (
+    DocStatus,
+    DocType,
+    EventType,
+    GiroStatus,
+    InvoiceEventType,
+    RecipientStatus,
+    SevdeskStatus,
+)
 from .ocr import get_adapter
 from .paperless_sync import PaperlessSync
 from .recovery import resolve_stale_processing
@@ -54,8 +63,73 @@ STATUS_LABELS = {
     DocStatus.BLOCKED: "Angehalten",
     DocStatus.DONE: "Fertig",
     DocStatus.SKIPPED_ERECHNUNG: "E-Rechnung",
-    DocStatus.FAILED: "Fehler",
+    # "Fehler" las sich wie ein Zaehler von Fehlern; gemeint ist der Endzustand.
+    DocStatus.FAILED: "Fehlgeschlagen",
 }
+
+
+# Anzeigenamen fuer Werte, die sonst roh aus der Datenbank in der Oberflaeche stuenden.
+# Unbekannte Werte fallen auf den Rohwert zurueck, statt leer zu erscheinen.
+DOC_TYPE_LABELS = {
+    DocType.PDF: "PDF",
+    DocType.TIFF: "TIFF",
+    DocType.IMAGE: "Bild",
+    DocType.ERECHNUNG_XML: "E-Rechnung (XML)",
+    DocType.ERECHNUNG_PDF: "E-Rechnung (PDF)",
+}
+
+EVENT_LABELS = {
+    EventType.DETECTED: "Erkannt",
+    EventType.PREPROCESSING: "Vorverarbeitung",
+    EventType.OCR_CHUNK: "Texterkennung",
+    EventType.BUILT_PDF: "PDF erstellt",
+    EventType.MOVED_TO_CONSUME: "An Paperless übergeben",
+    EventType.RETRY_SCHEDULED: "Neuer Versuch geplant",
+    EventType.SKIPPED_ERECHNUNG: "E-Rechnung durchgereicht",
+    EventType.BLOCKED: "Angehalten",
+    EventType.RELEASED: "Freigegeben",
+    EventType.DISCARDED: "Verworfen",
+    EventType.FAILED: "Fehlgeschlagen",
+    EventType.DONE: "Fertig",
+    InvoiceEventType.SYNCED: "Synchronisiert",
+    InvoiceEventType.GIRO_EXTRACTED: "Zahldaten erkannt",
+    InvoiceEventType.GIRO_EDITED: "Zahldaten bearbeitet",
+    InvoiceEventType.SEVDESK_QUEUED: "Für SevDesk vorgemerkt",
+    InvoiceEventType.SEVDESK_EXPORTED: "Nach SevDesk exportiert",
+    InvoiceEventType.SEVDESK_FAILED: "SevDesk-Export fehlgeschlagen",
+    InvoiceEventType.WRITTEN_BACK: "Nach Paperless zurückgeschrieben",
+    InvoiceEventType.MARKED_PAID: "Überweisung",
+}
+
+PAYMENT_SOURCE_LABELS = {
+    "ocr": "Aus dem Dokumenttext",
+    "einvoice": "Aus der E-Rechnung",
+    "manual": "Von Hand eingetragen",
+    "error": "Nicht ermittelbar",
+}
+
+
+def _label(mapping: dict) -> Callable[[object], str]:
+    def lookup(value: object) -> str:
+        if value is None or value == "":
+            return "—"
+        return mapping.get(value, str(value))
+
+    return lookup
+
+
+def _fmt_amount(value: float | None, currency: str | None = None) -> str:
+    """Betrag in deutscher Schreibweise: ``1.240,50 EUR``."""
+    if value is None:
+        return "—"
+    text = f"{value:,.2f}".translate(str.maketrans(",.", ".,"))
+    return f"{text} {currency}" if currency else text
+
+
+def _fmt_amount_input(value: float | None) -> str:
+    """Betrag fuers Eingabefeld: Komma, ohne Tausenderpunkt — ``_parse_amount`` liest
+    einen Tausenderpunkt sonst als Dezimaltrenner."""
+    return "" if value is None else f"{value:.2f}".replace(".", ",")
 
 
 def _fmt_dt(value: datetime | None) -> str:
@@ -75,7 +149,7 @@ SEVDESK_LABELS = {
     SevdeskStatus.QUEUED: "Vorgemerkt",
     SevdeskStatus.EXPORTING: "Wird exportiert",
     SevdeskStatus.EXPORTED: "Exportiert",
-    SevdeskStatus.FAILED: "Fehler",
+    SevdeskStatus.FAILED: "Fehlgeschlagen",
     SevdeskStatus.UNCERTAIN: "Unklar – prüfen",
 }
 
@@ -165,6 +239,11 @@ _static_versions: dict[str, str] = {}
 
 templates.env.filters["fmt_dt"] = _fmt_dt
 templates.env.filters["fmt_date"] = _fmt_date
+templates.env.filters["fmt_amount"] = _fmt_amount
+templates.env.filters["fmt_amount_input"] = _fmt_amount_input
+templates.env.filters["doc_type_label"] = _label(DOC_TYPE_LABELS)
+templates.env.filters["event_label"] = _label(EVENT_LABELS)
+templates.env.filters["payment_source_label"] = _label(PAYMENT_SOURCE_LABELS)
 templates.env.globals["status_labels"] = STATUS_LABELS
 templates.env.globals["sevdesk_labels"] = SEVDESK_LABELS
 templates.env.globals["giro_labels"] = GIRO_LABELS
@@ -380,6 +459,8 @@ async def dashboard(
             "documents": documents,
             "counts": counts,
             "filters": {"status": status or "", "q": q or "", "period": period or ""},
+            # Unterscheidet im Leerzustand "noch nichts da" von "Filter trifft nichts".
+            "filtered": bool(status_enum or search or since),
             "upload_accept": UPLOAD_ACCEPT,
             "upload_ok": upload_ok,
             "upload_format": upload_format or [],
@@ -399,7 +480,9 @@ async def history_fragment(
     status_enum, search, since = _filters(status, q, period)
     documents = repo.list_documents(status=status_enum, search=search, since=since)
     return templates.TemplateResponse(
-        request, "partials/history_rows.html", {"documents": documents}
+        request,
+        "partials/history_rows.html",
+        {"documents": documents, "filtered": bool(status_enum or search or since)},
     )
 
 
@@ -521,7 +604,12 @@ async def document_detail(request: Request, document_id: int):
     return templates.TemplateResponse(
         request,
         "detail.html",
-        {"doc": doc, "events": events, "page_limit": _page_limit(request)},
+        {
+            "doc": doc,
+            "events": events,
+            "page_limit": _page_limit(request),
+            "retry_max": request.app.state.settings.retry_max,
+        },
     )
 
 
@@ -535,7 +623,12 @@ async def document_fragment(request: Request, document_id: int):
     return templates.TemplateResponse(
         request,
         "partials/detail_body.html",
-        {"doc": doc, "events": events, "page_limit": _page_limit(request)},
+        {
+            "doc": doc,
+            "events": events,
+            "page_limit": _page_limit(request),
+            "retry_max": request.app.state.settings.retry_max,
+        },
     )
 
 
@@ -600,6 +693,7 @@ async def invoices(
         {
             "invoices": items,
             "filters": {"sevdesk": sevdesk or "", "q": q or ""},
+            "filtered": bool(status_enum or search),
             "sort": {"key": sort_key, "dir": "desc" if descending else "asc"},
             "feature_sync": settings.feature_paperless_sync,
             "feature_sevdesk": settings.feature_sevdesk_export,
@@ -622,7 +716,9 @@ async def invoices_fragment(
         sevdesk_status=status_enum, search=search, sort=sort_key, descending=descending
     )
     return templates.TemplateResponse(
-        request, "partials/invoice_rows.html", {"invoices": items}
+        request,
+        "partials/invoice_rows.html",
+        {"invoices": items, "filtered": bool(status_enum or search)},
     )
 
 

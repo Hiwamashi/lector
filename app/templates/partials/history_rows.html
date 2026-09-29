@@ -1,10 +1,15 @@
 {% if not documents %}
 <tr class="empty"><td colspan="7">
+  {% if filtered %}
+  <span class="empty-title">Keine Dokumente für diese Filter.</span>
+  <span class="empty-hint"><a class="link" href="/">Alle Dokumente anzeigen</a></span>
+  {% else %}
   <span class="empty-title">Noch nichts eingegangen.</span>
   <span class="empty-hint">
-    Sobald eine Datei im überwachten Eingangsordner landet, erscheint sie hier und wird
-    automatisch verarbeitet.
+    Sobald eine Datei im überwachten Eingangsordner landet oder hochgeladen wird, erscheint
+    sie hier und wird automatisch verarbeitet.
   </span>
+  {% endif %}
 </td></tr>
 {% endif %}
 {# data-rev ist die Signatur der veraenderlichen Felder. app.js vergleicht sie vor und
@@ -16,7 +21,7 @@
     data-rev="{{ doc.status }}:{{ doc.processed_pages }}:{{ doc.total_pages }}:{{ doc.attempt_count }}">
   <td class="filename"><a href="/documents/{{ doc.id }}">{{ doc.original_filename }}</a></td>
   <td><span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span></td>
-  <td>{{ doc.doc_type or "—" }}</td>
+  <td>{{ doc.doc_type | doc_type_label }}</td>
   <td class="progress-cell">
     {%- if doc.total_pages -%}
       {%- if doc.status == "processing" -%}
@@ -32,6 +37,6 @@
   </td>
   <td>{{ doc.attempt_count }}</td>
   <td>{{ doc.created_at | fmt_dt }}</td>
-  <td><a class="link" href="/documents/{{ doc.id }}">Details</a></td>
+  <td><a class="link" href="/documents/{{ doc.id }}" aria-label="Details zu {{ doc.original_filename }}">Details</a></td>
 </tr>
 {% endfor %}

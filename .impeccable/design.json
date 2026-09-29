@@ -1,0 +1,398 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-29T10:11:46+00:00",
+  "title": "Design System: Lector",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Werkstatt-Petrol",
+        "canonical": "oklch(50% 0.075 228)",
+        "tonalRamp": [
+          "oklch(15% 0.075 228)",
+          "oklch(26% 0.075 228)",
+          "oklch(37% 0.075 228)",
+          "oklch(48% 0.075 228)",
+          "oklch(59% 0.075 228)",
+          "oklch(70% 0.075 228)",
+          "oklch(82% 0.075 228)",
+          "oklch(95% 0.075 228)"
+        ]
+      },
+      "primary-soft": {
+        "role": "primary",
+        "displayName": "Petrol-Hauch",
+        "canonical": "oklch(95% 0.012 228)",
+        "tonalRamp": [
+          "oklch(15% 0.012 228)",
+          "oklch(26% 0.012 228)",
+          "oklch(37% 0.012 228)",
+          "oklch(48% 0.012 228)",
+          "oklch(59% 0.012 228)",
+          "oklch(70% 0.012 228)",
+          "oklch(82% 0.012 228)",
+          "oklch(95% 0.012 228)"
+        ]
+      },
+      "neutral-bg": {
+        "role": "neutral",
+        "displayName": "Pultgrau",
+        "canonical": "oklch(97% 0.002 250)",
+        "tonalRamp": [
+          "oklch(15% 0.004 250)",
+          "oklch(26% 0.004 250)",
+          "oklch(37% 0.004 250)",
+          "oklch(48% 0.004 250)",
+          "oklch(59% 0.004 250)",
+          "oklch(70% 0.004 250)",
+          "oklch(82% 0.004 250)",
+          "oklch(95% 0.004 250)"
+        ]
+      },
+      "neutral-surface": {
+        "role": "neutral",
+        "displayName": "Tafelweiß",
+        "canonical": "oklch(100% 0 0)",
+        "tonalRamp": [
+          "oklch(15% 0 0)",
+          "oklch(26% 0 0)",
+          "oklch(37% 0 0)",
+          "oklch(48% 0 0)",
+          "oklch(59% 0 0)",
+          "oklch(70% 0 0)",
+          "oklch(82% 0 0)",
+          "oklch(95% 0 0)"
+        ]
+      },
+      "neutral-border": {
+        "role": "neutral",
+        "displayName": "Haarlinie",
+        "canonical": "oklch(92% 0.005 250)",
+        "tonalRamp": [
+          "oklch(15% 0.005 250)",
+          "oklch(26% 0.005 250)",
+          "oklch(37% 0.005 250)",
+          "oklch(48% 0.005 250)",
+          "oklch(59% 0.005 250)",
+          "oklch(70% 0.005 250)",
+          "oklch(82% 0.005 250)",
+          "oklch(95% 0.005 250)"
+        ]
+      },
+      "neutral-ink": {
+        "role": "neutral",
+        "displayName": "Tinte",
+        "canonical": "oklch(25% 0.008 260)",
+        "tonalRamp": [
+          "oklch(15% 0.008 260)",
+          "oklch(26% 0.008 260)",
+          "oklch(37% 0.008 260)",
+          "oklch(48% 0.008 260)",
+          "oklch(59% 0.008 260)",
+          "oklch(70% 0.008 260)",
+          "oklch(82% 0.008 260)",
+          "oklch(95% 0.008 260)"
+        ]
+      },
+      "neutral-ink-soft": {
+        "role": "neutral",
+        "displayName": "Bleistift",
+        "canonical": "oklch(50% 0.012 250)",
+        "tonalRamp": [
+          "oklch(15% 0.012 250)",
+          "oklch(26% 0.012 250)",
+          "oklch(37% 0.012 250)",
+          "oklch(48% 0.012 250)",
+          "oklch(59% 0.012 250)",
+          "oklch(70% 0.012 250)",
+          "oklch(82% 0.012 250)",
+          "oklch(95% 0.012 250)"
+        ]
+      },
+      "signal-green": {
+        "role": "status",
+        "displayName": "Signalgrün",
+        "canonical": "oklch(52% 0.11 152)",
+        "tonalRamp": [
+          "oklch(15% 0.11 152)",
+          "oklch(26% 0.11 152)",
+          "oklch(37% 0.11 152)",
+          "oklch(48% 0.11 152)",
+          "oklch(59% 0.11 152)",
+          "oklch(70% 0.11 152)",
+          "oklch(82% 0.11 152)",
+          "oklch(95% 0.11 152)"
+        ]
+      },
+      "signal-amber": {
+        "role": "status",
+        "displayName": "Signalamber",
+        "canonical": "oklch(62% 0.13 70)",
+        "tonalRamp": [
+          "oklch(15% 0.13 70)",
+          "oklch(26% 0.13 70)",
+          "oklch(37% 0.13 70)",
+          "oklch(48% 0.13 70)",
+          "oklch(59% 0.13 70)",
+          "oklch(70% 0.13 70)",
+          "oklch(82% 0.13 70)",
+          "oklch(95% 0.13 70)"
+        ]
+      },
+      "signal-red": {
+        "role": "status",
+        "displayName": "Signalrot",
+        "canonical": "oklch(50% 0.18 27)",
+        "tonalRamp": [
+          "oklch(15% 0.18 27)",
+          "oklch(26% 0.18 27)",
+          "oklch(37% 0.18 27)",
+          "oklch(48% 0.18 27)",
+          "oklch(59% 0.18 27)",
+          "oklch(70% 0.18 27)",
+          "oklch(82% 0.18 27)",
+          "oklch(95% 0.18 27)"
+        ]
+      },
+      "signal-violet": {
+        "role": "status",
+        "displayName": "Stellwerk-Violett",
+        "canonical": "oklch(47% 0.12 295)",
+        "tonalRamp": [
+          "oklch(15% 0.12 295)",
+          "oklch(26% 0.12 295)",
+          "oklch(37% 0.12 295)",
+          "oklch(48% 0.12 295)",
+          "oklch(59% 0.12 295)",
+          "oklch(70% 0.12 295)",
+          "oklch(82% 0.12 295)",
+          "oklch(95% 0.12 295)"
+        ]
+      },
+      "qr-white": {
+        "role": "special",
+        "displayName": "QR-Weiß",
+        "canonical": "oklch(100% 0 0)",
+        "tonalRamp": [
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)",
+          "oklch(100% 0 0)"
+        ]
+      },
+      "primary-strong": {
+        "role": "primary",
+        "displayName": "Petrol tief",
+        "canonical": "oklch(44% 0.07 228)",
+        "tonalRamp": [
+          "oklch(15% 0.075 228)",
+          "oklch(26% 0.075 228)",
+          "oklch(37% 0.075 228)",
+          "oklch(48% 0.075 228)",
+          "oklch(59% 0.075 228)",
+          "oklch(70% 0.075 228)",
+          "oklch(82% 0.075 228)",
+          "oklch(95% 0.075 228)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Nur Zählerwerte der Status-Kacheln."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Dokument-/Rechnungstitel in der Detailansicht."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Karten- und Abschnittsüberschriften."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Tabellen, Formulare, Navigation, Schaltflächen."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Kachelbeschriftungen, Metadaten, Verlaufs-Log."
+      },
+      "badge": {
+        "displayName": "Badge",
+        "purpose": "Status-Pillen."
+      }
+    },
+    "shadows": [
+      {
+        "name": "tafelkante",
+        "value": "0 1px 2px rgba(16, 24, 32, 0.06), 0 2px 8px rgba(16, 24, 32, 0.04)",
+        "purpose": "Einzige Schattenstufe: Karten, Kacheln, Tabellen. Dunkel: 0 1px 2px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.3)."
+      }
+    ],
+    "motion": [
+      {
+        "name": "progress-fill",
+        "value": "width 0.3s ease",
+        "purpose": "Fortschrittsfüllung in Detail und Listenzeile."
+      },
+      {
+        "name": "batch-segment",
+        "value": "flex-basis 0.4s ease",
+        "purpose": "Segmente des Batch-Balkens."
+      },
+      {
+        "name": "row-updated",
+        "value": "1.6s ease-out",
+        "purpose": "Aufleuchten einer live geänderten Tabellenzeile in Petrol-Hauch."
+      },
+      {
+        "name": "batch-pulse",
+        "value": "1.6s ease-in-out infinite",
+        "purpose": "Lebenszeichen an der Füllkante eines laufenden Batch-Laufs."
+      },
+      {
+        "name": "press",
+        "value": "translateY(1px)",
+        "purpose": "Taktile Rückmeldung bei :active; entfällt bei prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "720px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Gefüllte Hauptaktion in Werkstatt-Petrol.",
+      "html": "<button class=\"ds-btn-primary\">Freigeben</button>",
+      "css": ".ds-btn-primary{padding:0.5rem 0.9rem;border:1px solid var(--accent,#2f6f8f);border-radius:8px;background:var(--accent,#2f6f8f);color:var(--on-accent,#fff);font:inherit;font-size:0.9rem;cursor:pointer}.ds-btn-primary:hover{background:var(--accent-strong,#275d78);border-color:var(--accent-strong,#275d78)}.ds-btn-primary:focus-visible{outline:2px solid var(--accent,#2f6f8f);outline-offset:2px}.ds-btn-primary:active{transform:translateY(1px)}.ds-btn-primary:disabled{background:var(--ink-soft,#5b636b);border-color:var(--ink-soft,#5b636b);cursor:not-allowed}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Umkehrbare Nebenhandlung neben der Hauptaktion.",
+      "html": "<button class=\"ds-btn-quiet\">Verwerfen</button>",
+      "css": ".ds-btn-quiet{padding:0.5rem 0.9rem;border:1px solid var(--border,#e2e5e8);border-radius:8px;background:transparent;color:var(--ink,#1f2328);font:inherit;font-size:0.9rem;cursor:pointer}.ds-btn-quiet:hover{border-color:var(--ink-soft,#5b636b)}.ds-btn-quiet:focus-visible{outline:2px solid var(--accent,#2f6f8f);outline-offset:2px}.ds-btn-quiet:active{transform:translateY(1px)}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Such- und Formularfeld.",
+      "html": "<input class=\"ds-input\" type=\"search\" placeholder=\"Dateiname suchen\">",
+      "css": ".ds-input{padding:0.5rem 0.7rem;border:1px solid var(--border,#e2e5e8);border-radius:8px;background:var(--surface,#fff);color:var(--ink,#1f2328);font:inherit;font-size:0.9rem;min-width:180px}.ds-input:focus-visible{outline:2px solid var(--accent,#2f6f8f);outline-offset:2px}"
+    },
+    {
+      "name": "Top Navigation",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Kopfleiste mit Marke, Links und Untertitel.",
+      "html": "<header class=\"ds-topbar\"><a class=\"ds-brand\" href=\"#\"><span class=\"ds-brand-mark\">▤</span> Lector</a><nav class=\"ds-topnav\"><a href=\"#\">Dokumente</a><a href=\"#\">Rechnungen</a><a href=\"#\">Empfänger</a></nav><span class=\"ds-brand-sub\">OCR-Veredelung für Paperless</span></header>",
+      "css": ".ds-topbar{display:flex;align-items:baseline;gap:0.75rem;padding:0.9rem 1.5rem;background:var(--surface,#fff);border-bottom:1px solid var(--border,#e2e5e8)}.ds-brand{font-size:1.2rem;font-weight:600;color:var(--ink,#1f2328);text-decoration:none}.ds-brand-mark{color:var(--accent,#2f6f8f)}.ds-topnav{display:flex;gap:1rem}.ds-topnav a{color:var(--ink-soft,#5b636b);text-decoration:none;font-size:0.9rem;font-weight:500}.ds-topnav a:hover{color:var(--accent,#2f6f8f)}.ds-topnav a:focus-visible{outline:2px solid var(--accent,#2f6f8f);outline-offset:2px}.ds-brand-sub{margin-left:auto;color:var(--ink-soft,#5b636b);font-size:0.85rem}"
+    },
+    {
+      "name": "Status Badges",
+      "kind": "chip",
+      "refersTo": "badge-done",
+      "description": "Signalfarbe plus Beschriftung, nie Farbe allein.",
+      "html": "<span class=\"ds-badge ds-badge--done\">erledigt</span> <span class=\"ds-badge ds-badge--pending\">wartet</span> <span class=\"ds-badge ds-badge--blocked\">angehalten</span> <span class=\"ds-badge ds-badge--failed\">fehlgeschlagen</span> <span class=\"ds-badge ds-badge--processing\">in Arbeit</span>",
+      "css": ".ds-badge{display:inline-block;padding:0.15rem 0.6rem;border-radius:999px;font-size:0.78rem;font-weight:600}.ds-badge--done{background:var(--green-bg,#e6f4ec);color:var(--green,#2e7d4f)}.ds-badge--pending{background:var(--amber-bg,#fbf0db);color:var(--amber,#b9770e)}.ds-badge--blocked{background:var(--violet-bg,#efeaf8);color:var(--violet,#6b4d9e)}.ds-badge--failed{background:var(--red-bg,#fbe6e4);color:var(--red,#b3261e)}.ds-badge--processing{background:var(--accent-soft,#e8f0f4);color:var(--accent,#2f6f8f)}"
+    },
+    {
+      "name": "Status Tile",
+      "kind": "custom",
+      "refersTo": "status-tile",
+      "description": "Signallampe des Stellwerks: Zähler mit Signalkante oben; aktiv = Filter gesetzt.",
+      "html": "<div class=\"ds-tiles\"><a class=\"ds-tile ds-tile--done\" href=\"#\"><span class=\"ds-tile-count\">128</span><span class=\"ds-tile-label\">Erledigt</span></a><a class=\"ds-tile ds-tile--failed\" href=\"#\" aria-current=\"true\"><span class=\"ds-tile-count\">2</span><span class=\"ds-tile-label\">Fehlgeschlagen</span></a></div>",
+      "css": ".ds-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.75rem}.ds-tile{display:flex;flex-direction:column;gap:0.25rem;background:var(--surface,#fff);border:1px solid var(--border,#e2e5e8);border-top:3px solid var(--ink-soft,#5b636b);border-radius:10px;padding:1rem;color:var(--ink,#1f2328);text-decoration:none;box-shadow:0 1px 2px rgba(16,24,32,.06),0 2px 8px rgba(16,24,32,.04)}.ds-tile--done{border-top-color:var(--green,#2e7d4f)}.ds-tile--failed{border-top-color:var(--red,#b3261e)}.ds-tile:hover{border-color:var(--accent,#2f6f8f)}.ds-tile:focus-visible{outline:2px solid var(--accent,#2f6f8f);outline-offset:2px}.ds-tile:active{transform:translateY(1px)}.ds-tile[aria-current]{background:var(--accent-soft,#e8f0f4);border-color:var(--accent,#2f6f8f);box-shadow:none}.ds-tile-count{font-size:1.8rem;font-weight:700}.ds-tile-label{color:var(--ink-soft,#5b636b);font-size:0.85rem}.ds-tile[aria-current] .ds-tile-label{color:var(--accent,#2f6f8f);font-weight:600}"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Tafelweiße Karte mit Haarlinie und Tafelkante.",
+      "html": "<div class=\"ds-card\"><h2 class=\"ds-card-title\">Zahldaten</h2><p class=\"ds-card-muted\">IBAN, Betrag und Verwendungszweck.</p></div>",
+      "css": ".ds-card{background:var(--surface,#fff);border:1px solid var(--border,#e2e5e8);border-radius:10px;padding:1rem;box-shadow:0 1px 2px rgba(16,24,32,.06),0 2px 8px rgba(16,24,32,.04)}.ds-card-title{margin:0 0 0.8rem;font-size:1rem}.ds-card-muted{margin:0;color:var(--ink-soft,#5b636b);font-size:0.85rem}"
+    },
+    {
+      "name": "Progress Bar",
+      "kind": "custom",
+      "refersTo": "primary",
+      "description": "Fortschritt in der Detailansicht, Beschriftung zentriert.",
+      "html": "<div class=\"ds-progress\"><div class=\"ds-progress-bar\" style=\"width:60%\"></div><span class=\"ds-progress-label\">9 / 15 Seiten</span></div>",
+      "css": ".ds-progress{position:relative;height:1.4rem;background:var(--border,#e2e5e8);border-radius:999px;overflow:hidden}.ds-progress-bar{position:absolute;inset:0 auto 0 0;background:var(--accent,#2f6f8f);transition:width .3s ease}.ds-progress-label{position:relative;display:block;text-align:center;font-size:0.8rem;line-height:1.4rem;color:var(--on-accent,#fff);font-variant-numeric:tabular-nums}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Das Stellwerk",
+    "overview": "Lector ist ein Leitstand, kein Schaufenster. Die Fläche ist ruhig und neutral wie ein Stellpult im Normalbetrieb; die Signallampen — Grün, Amber, Rot, Violett — leuchten nur dort, wo ein Zustand gemeldet werden muss. Wer die Seite öffnet, soll mit einem Blick über die Status-Kacheln wissen, ob alles durchgelaufen ist, und erst bei einem Signal tiefer einsteigen: Historie, Detailansicht, Verlaufs-Log.\n\nDie Dichte ist mittel und auf den Desktop ausgelegt: Tabellen in 0,9 rem, Karten mit 1 rem Innenabstand, ein Inhaltsband von höchstens 1100 px. Es gibt genau einen Akzent, Werkstatt-Petrol, für Handlungen und „läuft gerade\". Bewegung ist knapp und trägt immer eine Information — ein Fortschrittsbalken, ein kurzes Aufleuchten einer aktualisierten Zeile, ein Puls an der Füllkante eines laufenden Batch-Laufs. Hell- und Dunkelmodus sind gleichrangig; das Betriebssystem entscheidet, es gibt keinen Umschalter.\n\nAusdrücklich abgelehnt: der SaaS-Marketing-Look (Verläufe als Dekor, Glas-Effekte, Riesen-Hero-Zahlen, bunte Illustrationen) und eine Nachbildung von Paperless-ngx. Lector ist als eigenständiger Vorschritt erkennbar, nicht als Paperless-Unterseite.",
+    "keyCharacteristics": [
+      "Ein Akzent, vier Signalfarben, sonst Graustufen.",
+      "Status wird über Farbe **und** Beschriftung transportiert, nie über Farbe allein.",
+      "Flache Karten mit Haarlinie und kaum sichtbarem Schatten.",
+      "Systemschrift, keine Webfonts, keine externen Ressourcen.",
+      "Bewegung nur als Zustandsmeldung, mit `prefers-reduced-motion`-Ersatz."
+    ],
+    "rules": [
+      {
+        "name": "The One Light Rule",
+        "body": "Werkstatt-Petrol ist das einzige Bedienlicht. Keine zweite Akzentfarbe, keine farbigen Schaltflächen außerhalb von Petrol.",
+        "section": "colors"
+      },
+      {
+        "name": "The Signal-Only Rule",
+        "body": "Grün, Amber, Rot und Violett stehen ausschließlich für Zustände. Sie schmücken nie, und „etwas ist neu\" ist keine Wertung — dafür gilt Petrol.",
+        "section": "colors"
+      },
+      {
+        "name": "The Token-Only Rule",
+        "body": "Unterhalb des `:root`-Blocks in `app/static/app.css` steht kein einziger Farbwert, nur `var(--token)`. Der Dunkelmodus tauscht ausschließlich Tokenwerte; jeder verdrahtete Hex-Wert bricht ihn unbemerkt. Einzige Ausnahme: `qr-white`.",
+        "section": "colors"
+      },
+      {
+        "name": "The One-Title Rule",
+        "body": "Es gibt genau eine Titelstufe für Seiten. `h1` und `h2` sind global auf Headline bzw. Title gesetzt; keine Seite fällt auf die Browser-Größe zurück.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular-Figures Rule",
+        "body": "Jede Zahl, die sich live ändert (Fortschritt, Batch-Zähler, Legende), setzt `font-variant-numeric: tabular-nums`, damit sie beim Hochzählen nicht zappelt.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-Pult Rule",
+        "body": "Oberflächen heben sich nicht. Zustand zeigt sich durch Rahmenfarbe (Hover → Petrol) oder Füllung (aktiv → Petrol-Hauch, Schatten entfällt), nie durch mehr Schatten.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** Farben nur als `var(--token)` verwenden und neue Farben immer paarweise für Hell und Dunkel im `:root`-Block anlegen.",
+      "**Do** jeden Zustand mit Signalfarbe **und** Text kennzeichnen (Badge-Beschriftung, Kachel-Label).",
+      "**Do** Bewegung nur einsetzen, wenn sie einen Zustand meldet, und für `prefers-reduced-motion` einen Ersatz vorsehen, der die Information erhält.",
+      "**Do** Nebenhandlungen als Quiet-Button neben die gefüllte Hauptaktion stellen.",
+      "**Do** Kontraste in beiden Modi auf WCAG AA halten (Text 13,9:1, gedämpft 6,6:1, Badges ≥ 6,2:1 als Bestandsniveau).",
+      "**Do** Live-Zahlen mit Tabellenziffern setzen; Tabellen setzen sie durchgängig.",
+      "**Do** Browser-Bausteine einfärben: `accent-color`, `::selection` im Petrol-Hauch, Dateiauswahl-Knopf im Kopfzeilengrau mit Haarlinie."
+    ],
+    "donts": [
+      "**Don't** Verläufe als Dekor, Glas-Effekte, große Hero-Zahlen oder Illustrationen einsetzen — kein SaaS-Marketing-Look.",
+      "**Don't** Paperless-ngx nachbilden (Layout, Farbwelt, Komponenten); Lector bleibt ein eigenständiger Vorschritt.",
+      "**Don't** Rot für Konfigurations- oder Einrichtungshinweise verwenden; dafür gilt Notice info.",
+      "**Don't** eine zweite Akzentfarbe oder Signalfarben als Schmuck einführen.",
+      "**Don't** Hex-Werte unterhalb des `:root`-Blocks schreiben (Ausnahme: GiroCode-Ruhezone).",
+      "**Don't** Webfonts, CDNs oder eine Node-Buildchain einführen; das Stylesheet bleibt handgeschrieben und offline.",
+      "**Don't** Karten beim Hover anheben oder zusätzliche Schattenstufen erfinden.",
+      "**Don't** einen Hell/Dunkel-Umschalter bauen — das Betriebssystem entscheidet."
+    ]
+  }
+}

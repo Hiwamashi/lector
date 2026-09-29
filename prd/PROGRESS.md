@@ -555,3 +555,15 @@ Fehlerklassifizierung gegen Fakes, nie den tatsächlichen Payload.
 **Offen:** Die Beleganlage ist noch **nicht** gegen die echte API verifiziert — der Fix
 beruht auf dem Abgleich mit den Bestandsbelegen, nicht auf einem erfolgreichen Testlauf.
 Schlägt der Export erneut fehl, nennt die UI-Fehlermeldung nun den genauen Grund.
+
+## UI-Designsystem und Texte (2026-09-29)
+
+- [x] `PRODUCT.md` und `DESIGN.md` (Leitbild „Das Stellwerk“) samt `.impeccable/design.json`
+      angelegt — Referenz für künftige UI-Arbeit.
+- [x] Politur: kein Überlaufen langer Dateinamen (Desktop/Mobil), einheitliche Titelstufen,
+      Einrichtungshinweise als `.notice--info` statt Rot, Hover-Token `--accent-strong`
+      (siehe `feature-documentation/ui-erscheinungsbild.md`).
+- [x] Texte: Rohwerte (Dokumenttyp, Ereignistyp, Zahldaten-Herkunft) mit Anzeigenamen,
+      Beträge deutsch („1.240,50 EUR“), Status „Fehlgeschlagen“ statt „Fehler“, Leerzustände
+      mit/ohne Filter, Fehlerzustände mit Wiederherstellungsweg, Retry-Meldung in Ortszeit,
+      `aria-label` an Formularfeldern (siehe `feature-documentation/ui-texte.md`).

@@ -11,8 +11,27 @@
 </div>
 {% endif %}
 
-{% if doc.status == "failed" and doc.error_message %}
-<div class="alert">{{ doc.error_message }}</div>
+{# `failed` hat mehrere Ursachen: ausgeschoepfte Versuche (Pipeline, Recovery), Verwerfen
+   eines angehaltenen Vorgangs, fehlendes Original bei der Freigabe. Nur im ersten Fall ist
+   sicher, dass das Original im Fehlerordner liegt und ein neuer Versuch sinnvoll ist. #}
+{% if doc.status == "failed" %}
+{% set discarded = events | selectattr("event_type", "equalto", "discarded") | list %}
+<div class="alert">
+  {% if discarded %}
+  <p class="notice-text">{{ doc.error_message or "Verworfen." }}</p>
+  {% else %}
+  <p class="notice-text">
+    {% if doc.attempt_count >= retry_max %}
+    <strong>Endgültig fehlgeschlagen nach {{ doc.attempt_count }} Versuchen.</strong>
+    Das Original liegt im Fehlerordner. Für einen neuen Versuch die Datei wieder in den
+    Eingangsordner legen oder erneut hochladen.
+    {% else %}
+    <strong>Verarbeitung fehlgeschlagen.</strong>
+    {% endif %}
+  </p>
+  {% if doc.error_message %}<p class="notice-text">Grund: {{ doc.error_message }}</p>{% endif %}
+  {% endif %}
+</div>
 {% endif %}
 
 {# Angehalten: Der Vorgang wartet auf eine Entscheidung. Seitenzahl und Grenze stehen
@@ -36,7 +55,7 @@
 {% endif %}
 
 <dl class="meta">
-  <dt>Typ</dt><dd>{{ doc.doc_type or "—" }}</dd>
+  <dt>Typ</dt><dd>{{ doc.doc_type | doc_type_label }}</dd>
   <dt>OCR-Engine</dt><dd>{{ doc.ocr_engine or "—" }}</dd>
   <dt>Seiten</dt><dd>{% if doc.total_pages %}{{ doc.total_pages }}{% else %}—{% endif %}</dd>
   <dt>Versuche</dt><dd>{{ doc.attempt_count }}</dd>
@@ -44,7 +63,7 @@
   <dt>Erstellt</dt><dd>{{ doc.created_at | fmt_dt }}</dd>
   <dt>Gestartet</dt><dd>{{ doc.started_at | fmt_dt }}</dd>
   <dt>Fertiggestellt</dt><dd>{{ doc.finished_at | fmt_dt }}</dd>
-  <dt>Ausgabe</dt><dd>{{ doc.output_path or "—" }}</dd>
+  <dt>Ergebnis-PDF</dt><dd>{{ doc.output_path or "—" }}</dd>
 </dl>
 
 <h2>Verlauf</h2>
@@ -52,7 +71,7 @@
   {% for ev in events %}
   <li>
     <span class="event-time">{{ ev.timestamp | fmt_dt }}</span>
-    <span class="event-type event-type--{{ ev.event_type }}">{{ ev.event_type }}</span>
+    <span class="event-type event-type--{{ ev.event_type }}">{{ ev.event_type | event_label }}</span>
     <span class="event-msg">{{ ev.message or "" }}</span>
   </li>
   {% else %}

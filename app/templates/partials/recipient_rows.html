@@ -1,5 +1,12 @@
 {% if not rows %}
-<tr class="empty"><td colspan="5">Keine Dokumente.</td></tr>
+<tr class="empty"><td colspan="5">
+  {% if filters.q or filters.missing %}
+  <span class="empty-title">Keine Dokumente für diese Filter.</span>
+  <span class="empty-hint"><a class="link" href="/empfaenger">Alle Dokumente anzeigen</a></span>
+  {% else %}
+  <span class="empty-title">Keine Dokumente in Paperless gefunden.</span>
+  {% endif %}
+</td></tr>
 {% endif %}
 {# Signatur: waehrend eines KI-Laufs aendert sich der Vorschlag, nicht die Zeile drumherum. #}
 {% for row in rows %}
@@ -13,7 +20,7 @@
       <input type="hidden" name="page" value="{{ page }}" />
       <input type="hidden" name="q" value="{{ filters.q }}" />
       <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
-      <select name="recipient">
+      <select name="recipient" aria-label="Empfänger für {{ row.title }}">
         <option value="">— kein —</option>
         {% for opt in options %}
         <option value="{{ opt }}" {% if row.current_recipient == opt %}selected{% endif %}>{{ opt }}</option>
