@@ -503,10 +503,14 @@ def test_dashboard_zeigt_upload_rueckmeldung_aus_query_parametern(client):
     (Spec-Anforderung, siehe Brief Gruppe 3)."""
     c, _ = client
     resp = c.get("/", params={"upload_ok": 2, "upload_format": "x.zip"})
-    assert "2 Datei(en) übernommen" in resp.text
-    assert "einigen Sekunden" in resp.text
+    assert "2 Dateien" in resp.text
+    assert "übernommen" in resp.text
+    assert "wenigen Sekunden" in resp.text
     assert "x.zip" in resp.text
     assert "nicht unterstütztes Format" in resp.text
+
+    einzeln = c.get("/", params={"upload_ok": 1})
+    assert "1 Datei übernommen" in einzeln.text
 
 
 def test_dashboard_shows_document_and_detail(client):
@@ -523,6 +527,49 @@ def test_dashboard_shows_document_and_detail(client):
     assert detail.status_code == 200
     assert "rechnung.pdf" in detail.text
     assert "Verlauf" in detail.text
+
+
+def test_detail_fehlerbox_unterscheidet_ursachen_von_failed(client):
+    """`failed` entsteht auf mehreren Wegen. Den Wiederholungsweg ("Original liegt im
+    Fehlerordner … erneut hochladen") darf die Box nur nennen, wenn die Versuche
+    ausgeschoepft sind — nicht beim Verwerfen und nicht bei fehlendem Original."""
+    c, application = client
+    repo = application.state.repo
+    from app.models import DocStatus, EventType
+
+    retry_max = application.state.settings.retry_max
+    hinweis = "Das Original liegt im Fehlerordner"
+
+    erschoepft = repo.create_document(original_filename="a.pdf", source_path="/x/a.pdf")
+    for _ in range(retry_max):
+        repo.increment_attempt(erschoepft)
+    repo.set_status(erschoepft, DocStatus.FAILED, error_message="Boom: kaputt")
+    text = c.get(f"/documents/{erschoepft}").text
+    assert f"Endgültig fehlgeschlagen nach {retry_max} Versuchen" in text
+    assert hinweis in text
+    assert "Grund: Boom: kaputt" in text
+
+    verworfen = repo.create_document(original_filename="b.pdf", source_path="/x/b.pdf")
+    repo.set_status(verworfen, DocStatus.FAILED, error_message="Verworfen: nicht verarbeitet")
+    repo.add_event(verworfen, EventType.DISCARDED, "Verworfen: nicht verarbeitet")
+    text = c.get(f"/documents/{verworfen}").text
+    assert "Verworfen: nicht verarbeitet" in text
+    assert hinweis not in text
+    assert "Endgültig fehlgeschlagen" not in text
+
+    ohne_original = repo.create_document(original_filename="c.pdf", source_path="/x/c.pdf")
+    repo.set_status(ohne_original, DocStatus.FAILED, error_message="Freigabe nicht möglich")
+    text = c.get(f"/fragment/documents/{ohne_original}").text
+    assert "Verarbeitung fehlgeschlagen." in text
+    assert hinweis not in text
+
+
+def test_leerzustand_ungueltiger_filter_gilt_nicht_als_filter(client):
+    """Ein Filterwert, den die Route verwirft, darf den Leerzustand nicht auf
+    "Keine Dokumente für diese Filter" kippen lassen."""
+    c, _ = client
+    assert "Noch nichts eingegangen." in c.get("/", params={"status": "bogus"}).text
+    assert "Keine Dokumente für diese Filter." in c.get("/", params={"q": "zzz"}).text
 
 
 def test_history_fragment_filter_by_status(client):

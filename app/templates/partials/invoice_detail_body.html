@@ -4,8 +4,21 @@
   <span class="badge badge--sevdesk-{{ inv.sevdesk_status }}">SevDesk: {{ sevdesk_labels[inv.sevdesk_status] }}</span>
 </header>
 
+{# error_message stammt ausschliesslich aus dem SevDesk-Export (paperless_sync.py). #}
 {% if inv.error_message %}
-<div class="alert">{{ inv.error_message }}</div>
+<div class="alert">
+  {% if not feature_sevdesk %}
+  <p class="notice-text"><strong>SevDesk-Export ist aus.</strong> Zum Aktivieren
+    <code>FEATURE_SEVDESK_EXPORT=true</code> und <code>SEVDESK_API_TOKEN</code> setzen.</p>
+  {% elif inv.sevdesk_status == "uncertain" %}
+  <p class="notice-text"><strong>Ob der Export nach SevDesk angekommen ist, ist unklar.</strong>
+    Bitte in SevDesk nachsehen, bevor erneut exportiert wird.</p>
+  {% else %}
+  <p class="notice-text"><strong>Export nach SevDesk fehlgeschlagen.</strong>
+    Daten prüfen und erneut exportieren.</p>
+  {% endif %}
+  <p class="notice-text">Grund: {{ inv.error_message }}</p>
+</div>
 {% endif %}
 
 <div class="invoice-grid">
@@ -26,13 +39,13 @@
         <input type="text" name="creditor_name" value="{{ inv.creditor_name or '' }}" />
       </label>
       <label>IBAN
-        <input type="text" name="iban" value="{{ inv.iban or '' }}" />
+        <input type="text" name="iban" value="{{ inv.iban or '' }}" autocomplete="off" spellcheck="false" />
       </label>
       <label>BIC
         <input type="text" name="bic" value="{{ inv.bic or '' }}" />
       </label>
       <label>Betrag ({{ inv.currency }})
-        <input type="text" name="amount" value="{% if inv.amount is not none %}{{ '%.2f'|format(inv.amount) }}{% endif %}" />
+        <input type="text" name="amount" inputmode="decimal" value="{{ inv.amount | fmt_amount_input }}" />
       </label>
       <label>Verwendungszweck
         <input type="text" name="purpose" value="{{ inv.purpose or '' }}" />
@@ -55,6 +68,9 @@
       {% else %}Nach SevDesk exportieren{% endif %}
     </button>
   </form>
+  {% if not feature_sevdesk and not inv.error_message %}
+  <span class="muted">SevDesk-Export ist aus (<code>FEATURE_SEVDESK_EXPORT</code>).</span>
+  {% endif %}
   {% if inv.sevdesk_voucher_id %}
   <span class="muted">Beleg-ID: {{ inv.sevdesk_voucher_id }}</span>
   {% endif %}
@@ -84,10 +100,10 @@
 <dl class="meta">
   <dt>Dokumentdatum</dt><dd>{{ inv.document_date | fmt_date }}</dd>
   <dt>Paperless-ID</dt><dd>{{ inv.paperless_id }}</dd>
-  <dt>Quelle Zahldaten</dt><dd>{{ inv.source or "—" }}</dd>
+  <dt>Herkunft der Zahldaten</dt><dd>{{ inv.source | payment_source_label }}</dd>
   <dt>Überwiesen</dt><dd>{{ "Ja" if inv.paid else "Nein" }}</dd>
   <dt>SevDesk-Export</dt><dd>{{ inv.exported_at | fmt_dt }}</dd>
-  <dt>Rückschrieb</dt><dd>{{ inv.written_back_at | fmt_dt }}</dd>
+  <dt>Nach Paperless zurückgeschrieben</dt><dd>{{ inv.written_back_at | fmt_dt }}</dd>
   <dt>Zuletzt synchronisiert</dt><dd>{{ inv.last_synced_at | fmt_dt }}</dd>
 </dl>
 
@@ -96,7 +112,7 @@
   {% for ev in events %}
   <li>
     <span class="event-time">{{ ev.timestamp | fmt_dt }}</span>
-    <span class="event-type">{{ ev.event_type }}</span>
+    <span class="event-type">{{ ev.event_type | event_label }}</span>
     <span class="event-msg">{{ ev.message or "" }}</span>
   </li>
   {% else %}

@@ -205,7 +205,8 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
             EventType.RETRY_SCHEDULED,
             "Verarbeitung wurde durch einen Neustart unterbrochen, bevor eine Ablage "
             f"erkennbar war — Vorgang wird erneut eingereiht (Versuch "
-            f"{attempt}/{settings.retry_max}, erneut um {retry_at:%Y-%m-%d %H:%M} UTC).",
+            f"{attempt} von {settings.retry_max}, nächster Versuch am "
+            f"{retry_at.astimezone():%d.%m.%Y um %H:%M}).",
         )
         return
     message = (

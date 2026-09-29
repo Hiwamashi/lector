@@ -16,6 +16,8 @@
   --ink: #1f2328;
   --ink-soft: #5b636b;
   --accent: #2f6f8f;
+  /* Gedrueckter/ueberfahrener Akzent: gleicher Farbton, eine Stufe tiefer. */
+  --accent-strong: #275d78;
   --accent-soft: #e8f0f4;
   /* Halbtransparenter Akzent (identischer Farbton) fuer Ueberlagerungen. */
   --accent-ghost: rgba(47, 111, 143, 0.5);
@@ -54,6 +56,7 @@
     --ink: #e6e9ec;
     --ink-soft: #9aa3ab;
     --accent: #6cb2d0;
+    --accent-strong: #86c2dc;
     --accent-soft: #16303c;
     --accent-ghost: rgba(108, 178, 208, 0.45);
     --on-accent: #0f1417;
@@ -76,7 +79,16 @@ body {
   background: var(--bg);
   color: var(--ink);
   line-height: 1.5;
+  /* Kontrollkaestchen und Co. im Akzent statt im Browser-Blau. */
+  accent-color: var(--accent);
 }
+
+::selection { background: var(--accent-soft); color: var(--ink); }
+
+/* Eine Titelstufe fuer alle Seiten. Ohne diese Regel liefen die Listen-Seiten mit der
+   Browser-Groesse (2em) und waren lauter als der Titel der Detailansicht. */
+h1 { font-size: 1.3rem; line-height: 1.3; margin: 0 0 1rem; }
+h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 
 /* Sichtbarer Fokus fuer Tastaturbedienung. :focus-visible statt :focus, damit ein
    Mausklick auf eine Kachel keinen Rahmen stehen laesst. Der Ring liegt AUSSERHALB des
@@ -99,6 +111,7 @@ body {
   display: flex;
   align-items: baseline;
   gap: 0.75rem;
+  flex-wrap: wrap;
   padding: 0.9rem 1.5rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -159,14 +172,41 @@ body {
 }
 .upload-form input { flex: 1; min-width: 180px; }
 .upload-form button { background: var(--accent); color: var(--on-accent); border-color: var(--accent); cursor: pointer; }
+/* Die Dateiauswahl ist ein Browser-Baustein und kaeme sonst im Systemgrau daher. */
+.upload-form input::file-selector-button {
+  margin-right: 0.6rem; padding: 0.25rem 0.6rem; font: inherit; font-size: 0.85rem;
+  color: var(--ink); background: var(--surface-alt);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.upload-form input::file-selector-button:hover { border-color: var(--accent); }
+
+/* Hover fuer alle gefuellten Akzent-Schaltflaechen — vorher reagierten sie nur auf
+   Druck, nicht auf den Zeiger. Stille und deaktivierte Varianten sind ausgenommen. */
+.filters button, .upload-form button, .giro-form button, .invoice-actions button,
+.notice-actions button, .recipient-toolbar button { transition: background-color 0.15s ease, border-color 0.15s ease; }
+.filters button:hover, .upload-form button:hover, .giro-form button:hover,
+.invoice-actions button:not(:disabled):hover,
+.notice-actions button:not(.button--quiet):hover,
+.recipient-toolbar button:not(.batch-run-stop):not(:disabled):hover {
+  background: var(--accent-strong); border-color: var(--accent-strong);
+}
 
 /* Historientabelle */
+/* Was trotz ausgeblendeter Spalten nicht passt, scrollt im Wrapper statt die Seite zu
+   verbreitern. Wrapper statt `display: block` an der Tabelle: so bleibt sie eine echte
+   Tabelle und fuellt auch mit wenigen Zeilen die volle Breite. */
+.table-scroll { overflow-x: auto; }
 .history { width: 100%; border-collapse: collapse; background: var(--surface);
-  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+  font-variant-numeric: tabular-nums; }
 .history th, .history td { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
 .history th { background: var(--surface-alt); color: var(--ink-soft); font-weight: 600; }
 .history tr:last-child td { border-bottom: none; }
 .history .filename a { color: var(--ink); font-weight: 500; text-decoration: none; }
+.history .filename a:hover { color: var(--accent); }
+/* Dateinamen aus Scannern haben keine Leerzeichen. Ohne Umbruchfreigabe sprengt ein
+   einziger langer Name die Tabelle und mit ihr die ganze Seite. */
+.history .filename, .detail-head h1 { overflow-wrap: anywhere; }
 .history .empty td { color: var(--ink-soft); text-align: center; padding: 2.2rem 1.5rem; }
 .empty-title { display: block; color: var(--ink); font-weight: 600; margin-bottom: 0.25rem; }
 .empty-hint { display: block; font-size: 0.85rem; max-width: 46ch; margin: 0 auto; }
@@ -178,6 +218,8 @@ body {
 .history .sort-arrow { font-size: 0.7rem; opacity: 0.4; }
 .history th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
 .history .invoice-date { white-space: nowrap; color: var(--ink-soft); }
+/* "1.240,50 EUR" gehoert zusammen — kein Umbruch zwischen Zahl und Waehrung. */
+.history .amount { white-space: nowrap; }
 
 /* Fortschritt in der Listenzeile. Bewusst NUR fuer laufende Dokumente: die Leiste ist
    das Zeichen dafuer, dass gerade etwas passiert. Hinge sie an jeder Zeile, bliebe von
@@ -206,7 +248,8 @@ body {
 .row-updated td { animation: row-updated 1.6s ease-out; }
 
 /* Status-Badges (Ampelfarben) */
-.badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+.badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600;
+  white-space: nowrap; }
 .badge--processing { background: var(--accent-soft); color: var(--accent); }
 .badge--pending { background: var(--amber-bg); color: var(--amber); }
 .badge--blocked { background: var(--violet-bg); color: var(--violet); }
@@ -266,6 +309,10 @@ body {
 .notice { border-radius: 8px; padding: 0.8rem 0.9rem; margin: 1rem 0; }
 .notice--blocked { background: var(--violet-bg); color: var(--violet); border: 1px solid var(--violet); }
 .notice--success { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+/* Einrichtungshinweis: nichts ist kaputt, es fehlt nur Konfiguration. Rot waere eine
+   Fehlermeldung, die keine ist — deshalb der Akzent-Hauch mit Tinte. */
+.notice--info { background: var(--accent-soft); color: var(--ink); border: 1px solid var(--accent-ghost); }
+.notice code { font-size: 0.85em; }
 .notice-text { margin: 0 0 0.7rem; }
 /* Letzter (oder einziger) Absatz im Block: kein Abstand nach unten ohne folgenden
    Inhalt — betrifft z.B. .notice--success, das nur aus einem Absatz besteht. */
@@ -322,7 +369,12 @@ body {
 .pager { display: flex; align-items: center; gap: 1rem; margin: 1rem 0; }
 
 @media (max-width: 720px) {
+  .topbar { padding: 0.75rem 1rem; gap: 0.4rem 1rem; }
+  .brand-sub { display: none; }
+  .container { padding: 0 1rem; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
+  /* Ohne Mindestbreite macht die Umbruchfreigabe den Dateinamen zur Buchstabensaeule. */
+  .history .filename { min-width: 13rem; }
   .events li { grid-template-columns: 1fr; gap: 0.1rem; }
   .history th:nth-child(3), .history td:nth-child(3),
   .history th:nth-child(5), .history td:nth-child(5) { display: none; }

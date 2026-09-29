@@ -189,15 +189,20 @@ def _handle_failure(doc, repo: Repository, settings: Settings, error: Exception)
         repo.add_event(
             doc.id,
             EventType.RETRY_SCHEDULED,
-            f"Versuch {attempt}/{settings.retry_max} fehlgeschlagen; erneut um "
-            f"{retry_at:%Y-%m-%d %H:%M} UTC. Grund: {message}",
+            # Ortszeit im Anzeigeformat der UI — alle anderen Zeiten dort sind es auch.
+            f"Versuch {attempt} von {settings.retry_max} fehlgeschlagen. Nächster Versuch am "
+            f"{retry_at.astimezone():%d.%m.%Y um %H:%M}. Grund: {message}",
         )
     else:
         source = Path(doc.source_path)
         if source.exists():
             move_into(source, settings.error_dir)
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
-        repo.add_event(doc.id, EventType.FAILED, f"endgültig fehlgeschlagen: {message}")
+        repo.add_event(
+            doc.id,
+            EventType.FAILED,
+            f"Endgültig fehlgeschlagen nach {attempt} Versuchen. Grund: {message}",
+        )
 
 
 def run_pipeline(

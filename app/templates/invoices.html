@@ -4,15 +4,17 @@
 <h1>Rechnungen</h1>
 
 {% if not feature_sync %}
-<div class="alert">
-  Paperless-Sync ist deaktiviert. Setze <code>FEATURE_PAPERLESS_SYNC=true</code> und die
-  Paperless-Zugangsdaten, damit Rechnungen automatisch eingelesen werden.
+<div class="notice notice--info">
+  Paperless-Sync ist aus. Damit Lector Rechnungen aus Paperless einliest, setze
+  <code>FEATURE_PAPERLESS_SYNC=true</code> sowie <code>PAPERLESS_URL</code> und
+  <code>PAPERLESS_TOKEN</code>.
 </div>
 {% endif %}
 
 <form class="filters" method="get" action="/invoices">
-  <input type="search" name="q" value="{{ filters.q }}" placeholder="Titel / Korrespondent suchen…" />
-  <select name="sevdesk">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Titel / Korrespondent suchen…"
+         aria-label="Titel oder Korrespondent suchen" />
+  <select name="sevdesk" aria-label="SevDesk-Status">
     <option value="">Alle SevDesk-Status</option>
     {% for key, label in sevdesk_labels.items() if key != "none" %}
     <option value="{{ key }}" {% if filters.sevdesk == key|string %}selected{% endif %}>{{ label }}</option>
@@ -32,6 +34,7 @@
   </th>
 {%- endmacro %}
 
+<div class="table-scroll">
 <table class="history"
        data-fragment="/fragment/invoices?sevdesk={{ filters.sevdesk|urlencode }}&q={{ filters.q|urlencode }}&sort={{ sort.key }}&dir={{ sort.dir }}">
   <thead>
@@ -50,4 +53,5 @@
     {% include "partials/invoice_rows.html" %}
   </tbody>
 </table>
+</div>
 {% endblock %}

@@ -88,3 +88,27 @@ Die Animation `.row-updated` (Keyframes Zeilen 182–185) verblasst eine gerade 
 **Begründung:** Der Zugänglichkeit ist genügt, wenn die Änderung sichtbar wird. Die sanfte Animation ist eine Verfeinerung, keine notwendige Information. Wer Bewegungen reduziert sehen möchte, bekommt die wichtige Information (Hervorhebung) immer noch; sie verschwindet nur ohne Übergang.
 
 (Siehe auch: Aufleuchten geänderter Zeilen in [web-ui-sse.md](web-ui-sse.md#aufleuchten-geänderter-zeilen).)
+
+## Politur-Durchgang (2026-09-29)
+
+Referenz für Gestaltungsregeln ist jetzt `DESIGN.md` im Projektstamm (Leitbild „Das Stellwerk“,
+Tokens im Frontmatter). Dieser Durchgang hat nur Mängel behoben, nichts umgestaltet:
+
+- **Seitentitel vereinheitlicht:** `h1` global 1.3rem, `h2` global 1rem. Vorher liefen
+  „Rechnungen“, „Empfänger“ und „Paperless nicht erreichbar“ mit der Browser-Größe (2em).
+- **Kein Überlaufen mehr:** Dateinamen ohne Leerzeichen brechen um
+  (`overflow-wrap: anywhere` an `.history .filename` und `.detail-head h1`). Vorher sprengte
+  ein langer Scanner-Name Tabelle und Seite. Jede `.history`-Tabelle liegt in einem
+  `.table-scroll`-Wrapper (`overflow-x: auto`) und scrollt darin statt die Seite zu verbreitern;
+  bis 720 px behält die Dateinamen-Spalte mindestens 13rem. Bewusst Wrapper statt
+  `display: block` an der Tabelle — sonst füllen kurze Tabellen die Breite nicht mehr.
+- **Kopfleiste mobil:** bricht um (`flex-wrap`), der Untertitel entfällt bis 720 px.
+- **Badges** brechen nicht mehr um (`white-space: nowrap`), z. B. „E-Rechnung“.
+- **Neuer Token `--accent-strong`** (hell `#275d78`, dunkel `#86c2dc`): Hover aller gefüllten
+  Akzent-Schaltflächen. Stille und deaktivierte Varianten reagieren bewusst nicht.
+- **Neue Hinweisvariante `.notice--info`:** Akzent-Hauch, Tinte, Rahmen `--accent-ghost`. Für
+  Einrichtungshinweise („Paperless-Sync ist deaktiviert“, „Paperless-Anbindung fehlt“,
+  fehlendes Custom Field). Vorher `.alert` in Rot — dort ist aber nichts fehlgeschlagen.
+  `.alert` bleibt echten Fehlern vorbehalten.
+- **Browser-Bausteine eingefärbt:** `accent-color`, `::selection`, `::file-selector-button`.
+- **Tabellenziffern** für die ganze `.history`-Tabelle (Datumsangaben, Seiten, Versuche).

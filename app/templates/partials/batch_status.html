@@ -55,7 +55,7 @@
     Bestand ohne gesetzten Empfänger kann gerade nicht ermittelt werden (Paperless nicht
     erreichbar?)
     {% else %}
-    {{ missing_total }} Dokument(e) ohne gesetzten Empfänger
+    {{ missing_total }} {{ "Dokument" if missing_total == 1 else "Dokumente" }} ohne gesetzten Empfänger
     {% endif %}
     {% if progress.stopped %}— letzter Lauf abgebrochen{% endif %}
     {% if progress.aborted_reason %}({{ progress.aborted_reason }}){% endif %}
@@ -64,7 +64,8 @@
     <input type="hidden" name="page" value="{{ page }}" />
     <input type="hidden" name="q" value="{{ filters.q }}" />
     <input type="hidden" name="missing" value="{{ '1' if filters.missing else '' }}" />
-    <input type="number" name="limit" min="1" max="{{ batch_max }}" value="{{ default_limit }}" />
+    <input type="number" name="limit" min="1" max="{{ batch_max }}" value="{{ default_limit }}"
+           aria-label="Anzahl Dokumente in diesem Lauf (höchstens {{ batch_max }})" />
     <button type="submit" {% if not missing_total and not missing_total_unknown %}disabled{% endif %}>KI-Vorschlag starten</button>
   </form>
   {% if progress.finished_at %}
