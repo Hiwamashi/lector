@@ -28,7 +28,7 @@ from .ocr.base import OcrAdapter
 from .paperless_sync import PaperlessSync
 from .pipeline import run_pipeline
 from .repository import Repository
-from .retention import purge_chunk_cache, purge_processed
+from .retention import purge_chunk_cache, purge_processed, purge_web_sessions
 from .watcher import StabilityTracker, scan_dir
 
 log = logging.getLogger("lector.worker")
@@ -342,6 +342,7 @@ class Worker:
                     self.repo,
                     self.settings.chunk_cache_retention_days,
                 )
+                await loop.run_in_executor(None, purge_web_sessions, self.repo)
             except Exception:
                 log.exception("Fehler im Retention-Loop")
             await asyncio.sleep(_RETENTION_POLL_SECONDS)

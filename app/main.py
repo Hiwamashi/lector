@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import tempfile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -30,7 +31,20 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import detection
-from .config import ConfigurationRejectedError, Settings, get_settings_and_problems
+from .auth import (
+    AuthMiddleware,
+    LoginThrottle,
+    SecurityHeadersMiddleware,
+    auth_active,
+    safe_next,
+)
+from .config import (
+    ConfigurationRejectedError,
+    Settings,
+    get_settings_and_problems,
+    load_session_secret,
+    warn_auth_proxy_config,
+)
 from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .fileops import sanitize_upload_filename, store_upload
@@ -45,6 +59,7 @@ from .models import (
     SevdeskStatus,
 )
 from .ocr import get_adapter
+from .paperless import LoginResult, obtain_token
 from .paperless_sync import PaperlessSync
 from .recovery import resolve_stale_processing
 from .repository import Repository
@@ -251,6 +266,15 @@ templates.env.globals["recipient_status_labels"] = RECIPIENT_STATUS_LABELS
 templates.env.globals["static_url"] = static_url
 
 
+def _auth_user(request: Request) -> str | None:
+    """Angemeldeter Nutzername für die Topbar; ``None`` im Modus `none` und ohne Sitzung."""
+    session = request.scope.get("session")
+    return session.get("user") if session else None
+
+
+templates.env.globals["auth_user"] = _auth_user
+
+
 def _reject_startup(problems: list[str]) -> None:
     """Bricht den Start ab: protokolliert alle Beanstandungen zuerst als zusammenhängenden
     Block über `log.error`, wirft danach die Ausnahme. Trüge nur die Ausnahme die Meldung,
@@ -319,8 +343,15 @@ async def lifespan(app: FastAPI):
     problems = _check_writable_paths(settings)
     if problems:
         _reject_startup(problems)
+    warn_auth_proxy_config(settings)
+    # Nur im Modus `paperless` ein Wert (und nur dann entsteht `session.key`).
+    app.state.session_secret = load_session_secret(settings)
+    app.state.login_throttle = LoginThrottle()
     bus = EventBus()
     repo = Repository(settings.db_path, notifier=bus.publish_threadsafe)
+    purged = repo.purge_web_sessions()
+    if purged:
+        log.info("%s abgelaufene Web-Sitzung(en) beim Start entfernt", purged)
     stale = repo.reset_stale_exports()
     if stale:
         log.warning("%s verwaiste SevDesk-Exporte auf 'uncertain' zurückgesetzt", stale)
@@ -347,7 +378,15 @@ async def lifespan(app: FastAPI):
         repo.close()
 
 
-app = FastAPI(title="Lector", lifespan=lifespan)
+# Keine automatische Schnittstellenbeschreibung (/docs, /redoc, /openapi.json), in keinem Modus.
+app = FastAPI(
+    title="Lector", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+)
+# Beide Middlewares sind immer eingehängt; die Zugangsprüfung entscheidet pro Anfrage am
+# Zustand aus dem Lifespan (siehe auth.auth_context). Zuletzt eingehängt = ganz außen: Die
+# Schutz-Header liegen damit auch auf 401/303/403 der Zugangsprüfung.
+app.add_middleware(AuthMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 @app.exception_handler(httpx.HTTPError)
@@ -415,6 +454,129 @@ def _health_status(
     checks["database"] = {"state": db_health.state.value, "error": db_health.error}
     healthy = healthy and db_health.state.healthy
     return healthy, checks
+
+
+def _login_page(
+    request: Request,
+    *,
+    username: str = "",
+    next_url: str = "",
+    message: str | None = None,
+    kind: str = "alert",
+) -> HTMLResponse:
+    """Rendert die Anmeldeseite (Status 200, auch bei Fehlern). Das Passwort wird nie
+    zurückgegeben, der Nutzername schon."""
+    settings: Settings = request.app.state.settings
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "username": username,
+            "next_url": next_url,
+            "message": message,
+            "message_kind": kind,
+            "insecure_hint": settings.session_cookie_secure and request.url.scheme == "http",
+        },
+    )
+
+
+def _auth_routes_absent() -> Response:
+    # Im Modus `none` gibt es keine Anmeldung: die Pfade existieren schlicht nicht.
+    return Response("Not Found", status_code=404)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_form(request: Request, next: str | None = Query(None)):
+    if not auth_active(request):
+        return _auth_routes_absent()
+    if request.session.get("user"):
+        return RedirectResponse("/", status_code=303)
+    target = safe_next(next)
+    return _login_page(request, next_url=target if target != "/" else "")
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(
+    request: Request,
+    username: Annotated[str, Form()] = "",
+    password: Annotated[str, Form()] = "",
+    code: Annotated[str, Form()] = "",
+    next: Annotated[str, Form()] = "",
+):
+    if not auth_active(request):
+        return _auth_routes_absent()
+    settings: Settings = request.app.state.settings
+    repo: Repository = request.app.state.repo
+    throttle: LoginThrottle = request.app.state.login_throttle
+    username = username.strip()
+    target = safe_next(next)
+    next_url = target if target != "/" else ""
+    ip = request.client.host if request.client else "unbekannt"
+
+    def fail(message: str, kind: str = "alert") -> HTMLResponse:
+        return _login_page(
+            request, username=username, next_url=next_url, message=message, kind=kind
+        )
+
+    if not username or not password:
+        return fail("Anmeldung fehlgeschlagen. Bitte Nutzername und Passwort eingeben.")
+    # Versuch VOR dem await reservieren: laufende Versuche zählen wie Fehlversuche, sonst
+    # ließe sich die Sperre mit parallelen Anfragen umgehen. Je Nutzername läuft höchstens
+    # ein Versuch gleichzeitig.
+    if not throttle.try_begin(ip, username):
+        # Nutzername und IP kommen vom Client: mit %r loggen (kein Zeilenumbruch einschleusbar).
+        log.warning("Anmeldung gebremst: ip=%s nutzer=%r", ip, username)
+        return fail("Zu viele Fehlversuche. Bitte in einigen Minuten erneut versuchen.")
+
+    failed = False
+    result: LoginResult | None = None
+    try:
+        result = await obtain_token(
+            settings.paperless_url, username, password, code.strip() or None
+        )
+        # Auch die MFA-Aufforderung zählt: sonst wäre sie ein kostenloses Passwort-Orakel.
+        failed = result in (LoginResult.INVALID, LoginResult.MFA_REQUIRED)
+    finally:
+        throttle.finish(ip, username, failed)
+    if result is LoginResult.OK:
+        throttle.record_success(username)
+        # Rotation: immer eine neue sid; eine mitgebrachte wird nie übernommen und, falls sie
+        # noch gültig war, serverseitig gelöscht.
+        old_sid = request.session.get("sid")
+        if old_sid:
+            repo.delete_web_session(old_sid)
+        request.session.clear()
+        request.session["sid"] = repo.create_web_session(username)
+        request.session["user"] = username
+        return RedirectResponse(target, status_code=303)
+    if result is LoginResult.MFA_REQUIRED:
+        return fail("Bitte den MFA-Code eingeben.", kind="notice")
+    if result is LoginResult.UNAVAILABLE:
+        return fail("Paperless ist nicht erreichbar. Bitte später erneut versuchen.")
+    log.warning("Anmeldung fehlgeschlagen: ip=%s nutzer=%r", ip, username)
+    return fail("Anmeldung fehlgeschlagen. Bitte Angaben prüfen.")
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    if not auth_active(request):
+        return _auth_routes_absent()
+    # Nur die eigene Zeile löschen: auch jede Kopie des Cookies ist damit wertlos.
+    sid = request.session.get("sid")
+    if sid:
+        repo: Repository = request.app.state.repo
+        repo.delete_web_session(sid)
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/auth/status")
+async def auth_status(request: Request):
+    """Leichter Endpunkt für app.js: 204 angemeldet; ohne Sitzung antwortet schon die
+    Zugangsprüfung mit 401. Im Modus `none` gibt es ihn nicht (404)."""
+    if not auth_active(request):
+        return _auth_routes_absent()
+    return Response(status_code=204)
 
 
 @app.get("/healthz")
@@ -756,6 +918,9 @@ async def invoice_detail_fragment(request: Request, invoice_id: int):
     return templates.TemplateResponse(request, "partials/invoice_detail_body.html", ctx)
 
 
+_PREVIEW_TYPE_RE = re.compile(r"application/pdf|image/(?:png|jpeg|gif|webp|tiff)")
+
+
 @app.get("/invoices/{invoice_id}/preview")
 async def invoice_preview(request: Request, invoice_id: int):
     """Reicht die Paperless-Dokumentvorschau über Lectors eigene Origin durch.
@@ -772,7 +937,29 @@ async def invoice_preview(request: Request, invoice_id: int):
     if result is None:
         return Response("Vorschau nicht verfügbar", status_code=404)
     content, content_type = result
-    return Response(content, media_type=content_type, headers={"X-Frame-Options": "SAMEORIGIN"})
+    # Nur Dokumenttypen durchlassen: Ein von Paperless gelieferter text/html-Körper würde
+    # sonst auf Lectors Origin ausgeführt (gespeichertes XSS über Dokumentinhalte).
+    if not _PREVIEW_TYPE_RE.fullmatch(content_type.split(";", 1)[0].strip().lower()):
+        log.warning(
+            "Vorschau für Rechnung %s: Content-Type %r abgewiesen", invoice_id, content_type
+        )
+        return Response("Vorschau nicht verfügbar", status_code=415)
+    # Eigene Frame-Header: Die Vorschau wird per <object> in die eigene Seite eingebettet, die
+    # Standard-Header (frame-ancestors 'none', DENY) würden sie sperren. Die Schutz-Header-
+    # Middleware setzt nur fehlende Header und lässt diese stehen.
+    return Response(
+        content,
+        media_type=content_type,
+        headers={
+            "X-Frame-Options": "SAMEORIGIN",
+            # Skripte aus, sonst nur eigene Ressourcen. Bewusst `default-src 'self'` statt
+            # `'none'`: Der PDF-Viewer des Browsers lädt eigene Ressourcen nach, und ein
+            # strengeres CSP ließ sich hier nicht im Browser verifizieren.
+            "Content-Security-Policy": (
+                "default-src 'self'; script-src 'none'; frame-ancestors 'self'"
+            ),
+        },
+    )
 
 
 @app.post("/invoices/{invoice_id}/giro")

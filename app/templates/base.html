@@ -12,12 +12,22 @@
     <a class="brand" href="/">
       <span class="brand-mark">▤</span> Lector
     </a>
+    {% block topnav %}
     <nav class="topnav">
       <a href="/">Dokumente</a>
       <a href="/invoices">Rechnungen</a>
       <a href="/empfaenger">Empfänger</a>
     </nav>
+    {% endblock %}
     <span class="brand-sub">OCR-Veredelung für Paperless</span>
+    {# Nur im Modus `paperless` mit Sitzung; im Modus `none` liefert auth_user() nichts. #}
+    {% set user = auth_user(request) %}
+    {% if user %}
+    <form class="session-box" method="post" action="/logout">
+      <span class="session-user">{{ user }}</span>
+      <button type="submit" class="button--quiet">Abmelden</button>
+    </form>
+    {% endif %}
   </header>
   <main class="container">
     {# Wird von app.js eingeblendet, wenn ein Fragment-Refresh scheitert. Ohne diesen

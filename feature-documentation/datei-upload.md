@@ -6,7 +6,7 @@
 
 Das Web-UI erlaubt das Hochladen von Dokumente (Bilder, PDF, TIFF) ohne Datei-Manager oder NAS-Zugriff. Der Upload **endet an der Ablage im Eingangsordner** (`WATCH_DIR`); ab dort folgt der Datei die bestehende Verarbeitungs-Pipeline aus [Watch-Folder](watch-folder.md) und [Format-Erkennung & E-Rechnungs-Bypass](format-erkennung-erechnung.md). Das Web-UI tritt also nicht in die Verarbeitung ein — es schiebt die Datei nur in die Warteschlange, wie eine NAS-Kopie das täte.
 
-Authentifizierung und Größenbegrenzung bleiben ausgeschlossen (LAN-only, PRD §3.3).
+**Zugangsschutz:** Der Upload unterliegt demselben Zugangsschutz wie der Rest der Oberfläche — bei `AUTH_MODE=paperless` ist Anmeldung erforderlich. Größenbegrenzung bleibt ausgeschlossen (der Betreiber haftet für Speicher).
 
 ## Endpunkt: `POST /upload`
 
@@ -80,7 +80,7 @@ Das Dashboard (Route `GET /`) in `app/main.py` wertet diese Parameter aus und ze
 
 **Warum kein Flash-Speicher?**
 
-Flash-Speicher (Session-Daten) bräuchte eine Session-Middleware. Das Projekt hat absichtlich keine Authentifizierung und damit keine Session-Infrastruktur. Query-Parameter sind stateless und ausreichend. Die Rückmeldungen sind transient (einmalig), daher ist Verschlüsselung und CSRF-Schutz nicht nötig.
+Rückmeldungen über Query-Parameter sind stateless. Die Meldungen sind transient (einmalig) und bei LAN-only-Betrieb ohne ernsthaften Sicherheitsanforderungen ausreichend. Flash-Speicher würde komplexere Session-Infrastruktur erfordern (die allerdings bei `AUTH_MODE=paperless` ohnehin vorhanden ist, aber für Upload-Meldungen nicht nötig).
 
 ## Verzögerte Sichtbarkeit
 
@@ -95,9 +95,10 @@ Dies ist **Absicht**. Ein Upload vom lokalen PC ist schneller als vom Netzwerk; 
 
 ## Bewusst ausgelassen
 
-- **Authentifizierung** — Betrieb LAN-only, Einzelnutzer (PRD §3.3).
-- **Größenbegrenzung** — der Anwender haftet für Speicher und Netzwerk.
+- **Größenbegrenzung** — der Betreiber haftet für Speicher und Netzwerk.
 - **Vorgezogene Dublettenprüfung** — ein Upload mit demselben Dateinamen startet trotzdem. Die Dublettenerkennung läuft später durch die bestehende Logik (`find_by_hash_active` im Watch-Folder).
+
+(Zugangsschutz ist nicht ausgelassen; bei `AUTH_MODE=paperless` verlangt der Upload Anmeldung wie der Rest der Oberfläche.)
 - **Kamera-Aufnahme** (Web-API) — der Input ist HTML `<input type="file">`, keine `<input capture>`.
 - **Zusammenfassen mehrerer Bilder zu einem Dokument** — jede Datei ist ein Vorgang, wie im Watch-Folder.
 

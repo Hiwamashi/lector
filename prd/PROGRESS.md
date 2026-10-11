@@ -564,6 +564,104 @@ Schlägt der Export erneut fehl, nennt die UI-Fehlermeldung nun den genauen Grun
       Einrichtungshinweise als `.notice--info` statt Rot, Hover-Token `--accent-strong`
       (siehe `feature-documentation/ui-erscheinungsbild.md`).
 - [x] Texte: Rohwerte (Dokumenttyp, Ereignistyp, Zahldaten-Herkunft) mit Anzeigenamen,
-      Beträge deutsch („1.240,50 EUR“), Status „Fehlgeschlagen“ statt „Fehler“, Leerzustände
+      Beträge deutsch („1.240,50 EUR”), Status „Fehlgeschlagen” statt „Fehler”, Leerzustände
       mit/ohne Filter, Fehlerzustände mit Wiederherstellungsweg, Retry-Meldung in Ortszeit,
       `aria-label` an Formularfeldern (siehe `feature-documentation/ui-texte.md`).
+
+## Zusatz-Feature: Anmeldung über Paperless (web-zugang) — in Umsetzung
+
+Bisher war die Weboberfläche bewusst ohne Anmeldung gebaut (LAN-only). Künftig kann der
+Dienst hinter einem öffentlich erreichbaren HTTPS-Proxy betrieben werden, mit Anmeldung über
+die angebundene Paperless-Instanz. Ein Modus-Schalter `AUTH_MODE` lässt beide Betriebsweisen zu.
+
+| Task | Status |
+|---|---|
+| 1. Konfiguration & Abhängigkeiten (`itsdangerous`, Sitzungsgeheimnis-Laden) | ✅ |
+| 2. Prüfung gegen Paperless (`obtain_token()`, `LoginResult`-Enum) | ✅ (2.2 MFA-Verifizierung ausstehend) |
+| 3. Zugangsschicht (Drosselung, Herkunftsprüfung, Middleware, Routen `/login`, `/logout`, `/auth/status`) | ✅ |
+| 4. Härtung (Security-Header, entfernte `/docs`) | ✅ |
+| 5. Oberfläche (Login-Template, Abmelde-Button, `app.js` → `/auth/status`) | ✅ (5.4 Browserprüfung ausstehend) |
+| 6. Betrieb & Dokumentation | ✅ (6.1–6.3 Doku-Update) |
+
+**Stand (2026-10-11):** Task 7.1–7.2 implementiert; Task 7.3 (Dokumentation) in Umsetzung.
+
+### Security-Review-Nachträge (7.1)
+
+Fünf Befunde aus der Sicherheitsprüfung behoben:
+
+1. **Drosselung gegen parallele Anfragen:** `try_begin()` reserviert einen Versuch **vor** dem
+   Paperless-Aufruf und blockiert gleichzeitige Versuche desselben Nutzers. Nur `finish()` gibt
+   ihn frei. Mit dieser Reservierung zählen auch laufende (noch nicht antwortete) Versuche wie
+   Fehlversuche, die Sperre lässt sich nicht per Parallelität umgehen.
+
+2. **MFA_REQUIRED als Fehlversuch:** Ein fehlender MFA-Code ist kein kostenloses Orakel mehr —
+   wird gezählt und trägt zur Sperre bei. Falscher Code zählt weiterhin als `INVALID`.
+
+3. **Engere MFA-Erkennung:** Nicht jede `400`-Antwort ist MFA-Fehler — nur wenn `code`
+   als DRF-Feldname oder Keywords (`mfa`, `totp`, etc.) im Body stehen.
+
+4. **IPv6-/64-Normalisierung und Verdrängung:** IPv6-Adressen werden auf das `/64`-Präfix
+   normalisiert (typisches Angreifer-Subnetz); bei Speicherdruck werden älteste, nicht-gesperrte
+   Schlüssel zuerst entfernt. Damit bleibt die Drosselung stabil auch bei rotierendem IPv6.
+
+5. **Keine Redirects in `obtain_token()`:** `httpx.AsyncClient` läuft mit `follow_redirects=False`.
+   Eine Redirect-Antwort gilt als `UNAVAILABLE` und wird nicht verfolgt (Passwort-Sicherheit).
+
+6. **Content-Type-Filter auf Rechnungsvorschau:** `GET /invoices/{id}/preview` lehnt Anfragen ab,
+   die nicht `application/pdf` akzeptieren (HTTP 415). Damit lässt sich die PDF-URL nicht als
+   HTML oder Script einbetten.
+
+7. **Engere CSP der Rechnungsvorschau:** `frame-ancestors 'self'` erlaubt Einbettung nur von der
+   gleichen URL, nicht `frame-ancestors 'none'`.
+
+8. **Startwarnung auch bei leerem/`*` FORWARDED_ALLOW_IPS:** `warn_auth_proxy_config()` warnt nicht
+   nur bei fehlendem, sondern auch bei leerem oder Wildcard-Wert.
+
+### Serverseitige Sitzungsliste (7.2)
+
+Ein rein zustandsloses Cookie bleibt nach dem Abmelden als Kopie gültig (und würde sich gleitend
+verlängern). Deshalb: Neue Tabelle `web_sessions` mit Spalten `id` (Sitzungs-ID), `username`,
+`created_at` (90-Tage-Grenze), `last_seen_at` (30-Tage-Grenze).
+
+- **Gültigkeitsprüfung drei Ebenen:** Signatur OK (Cookie) + Zeile existiert (DB) + Fristen OK
+  (Laufzeiten).
+- **Neue `sid` bei jeder Anmeldung:** Session Fixation ausgeschlossen.
+- **Abmelden nutzerspezifisch:** Nur die eigene `sid`-Zeile wird gelöscht; andere Geräte bleiben
+  angemeldet.
+- **Kopierte Cookies ungültig nach Abmelden:** Da die `sid` fehlt, funktioniert die Kopie nicht.
+- **Aufräumen stündlich + beim Start:** Retention-Job und Lifespan-Aufruf.
+- **`last_seen_at` gedrosselt:** Höchstens einmal pro Minute geschrieben (SSE/Polling-Overhead).
+
+**Bewusste Abweichungen vom Design:**
+
+1. **Eigene Sitzungs-Middleware statt Starlette-`SessionMiddleware`:** Deren Secret muss beim
+   Einhängen feststehen; hier kommt es erst aus dem Lifespan (Settings + `session.key`-Datei).
+   Format, Verhalten und Cookie-Attribute sind identisch (`TimestampSigner`, base64-JSON,
+   gleitende 30-Tage-Laufzeit). Die Middleware ist immer eingehängt, reicht im Modus `none`
+   unverändert durch.
+
+2. **Auth-Routen liefern `404` im Modus `none`:** `/login`, `/logout`, `/auth/status` sind
+   im Modus `none` nicht vorhanden — nicht nur ungenutzt, sondern nicht erreichbar. Das
+   vereinfacht die Tests und vermeidet Verwirrung über „Login-Seite sichtbar obwohl anmeldefrei”.
+
+3. **Leere Angaben zählen nicht als Fehlversuch:** `username=””` ist syntaktisch valide,
+   aber unsinnig — die Drosselung würde alle aus der gleichen IP mit demselben leeren Namen
+   blockieren. Das wird als Netzwerk-Fehler (nicht versucht) klassifiziert, nicht als
+   Fehlversuch.
+
+4. **Anfragen ohne `text/html` im Accept erhalten `401` statt `303`:** Scripts und Tools
+   (z. B. `curl`) erhalten einen HTTP-Statuscode, keine Umleitung — dasselbe Verhalten wie
+   Fragmente und SSE. Damit ist ein automatisierter Zugriff sofort erkennbar.
+
+**Offen / ausstehend:**
+
+- **Task 2.2:** MFA-Antwort von Paperless verifizieren (echte Unterscheidung „Code fehlt” vs.
+  „Code falsch” dokumentieren).
+- **Task 5.4:** Browserprüfung (CSP, Live-Aktualisierung, Upload, Rechnungs-Vorschau, Abmelden,
+  abgelaufene Session).
+- **Task 6.5:** Deployment (DNS-Eintrag, Proxy-Einrichtung, Produktiv-ENV, Live-Test).
+
+**Dokumentation:** `feature-documentation/web-zugang.md` (aktualisiert mit serverseitigen Sitzungen,
+Drosselung, obtain_token, FORWARDED_ALLOW_IPS-Hinweis), `feature-documentation/datenhaltung.md`
+(web_sessions-Tabelle); aktualisiert in `.env.example`, `docker-compose.example.yml`, `konfiguration.md`,
+`web-ui-sse.md`, `datei-upload.md`, `README.md`, `PRODUCT.md` und `CLAUDE.md`.

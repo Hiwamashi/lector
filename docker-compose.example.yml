@@ -140,6 +140,23 @@ services:
       TZ: Europe/Berlin
       PUID: 1000
       PGID: 1000
+      # ---- Zugang zur Weboberfläche (optional) ----
+      # Modus `none` (Standard): ohne Anmeldung. Modus `paperless`: Anmeldung über Paperless.
+      # WARNUNG: AUTH_MODE=none bei öffentlich erreichbarem Betrieb legt alles offen!
+      AUTH_MODE: "none"
+      # Signierschlüssel für Sitzungs-Cookies (bei AUTH_MODE=paperless, sonst ignoriert).
+      # Leer: Lector erzeugt ihn beim Start und speichert ihn als session.key neben der DB.
+      LECTOR_SECRET_KEY: ""
+      # true = Sitzungs-Cookie nur über HTTPS (Betrieb hinter TLS-Proxy). Standard false.
+      SESSION_COOKIE_SECURE: "false"
+      # uvicorn vertraut X-Forwarded-*-Headern nur von dieser Adresse.
+      # Im Compose-Netz (z. B. mit nginx-Proxy als Reverse-Proxy im selben Netz):
+      #   FORWARDED_ALLOW_IPS: "172.17.0.0/16"
+      # Ohne Proxy: leer lassen.
+      # WARNUNG: FORWARDED_ALLOW_IPS=* nur wenn Port 8001 NICHT am Host veröffentlicht ist.
+      # Mit * muss der Proxy X-Forwarded-For ERSETZEN, nicht anhängen (nginx:
+      # proxy_set_header X-Forwarded-For $remote_addr; statt $proxy_add_x_forwarded_for).
+      FORWARDED_ALLOW_IPS: ""
       # ---- Paperless-Integration (entkoppeltes Zusatz-Feature) ----
       # GiroCode-Anzeige + SevDesk-Export. Standardmaessig AUS.
       # Erst aktiv, wenn FEATURE_PAPERLESS_SYNC=true gesetzt ist.

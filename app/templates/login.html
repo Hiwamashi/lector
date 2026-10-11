@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Anmelden — Lector{% endblock %}
+
+{# Vor der Anmeldung gibt es nichts zu navigieren. #}
+{% block topnav %}{% endblock %}
+
+{% block content %}
+<h1>Anmelden</h1>
+
+<p class="muted">Die Anmeldung prüft Paperless. Es gelten dieselben Zugangsdaten wie dort.</p>
+
+{% if insecure_hint %}
+<p class="notice notice--info" role="note">
+  Diese Seite wurde über <code>http</code> geöffnet, das Sitzungs-Cookie darf aber nur über
+  <code>https</code> übertragen werden. Die Anmeldung gelingt so nicht — bitte die
+  <code>https</code>-Adresse verwenden.
+</p>
+{% endif %}
+
+{% if message %}
+<p class="{{ 'notice notice--info' if message_kind == 'notice' else 'alert' }}" role="alert">{{ message }}</p>
+{% endif %}
+
+<form class="login-form" method="post" action="/login">
+  <input type="hidden" name="next" value="{{ next_url }}" />
+  <label for="login-username">Nutzername</label>
+  <input id="login-username" type="text" name="username" value="{{ username }}"
+         autocomplete="username" autocapitalize="none" spellcheck="false" required
+         {% if not username %}autofocus{% endif %} />
+  <label for="login-password">Passwort</label>
+  <input id="login-password" type="password" name="password"
+         autocomplete="current-password" required
+         {% if username %}autofocus{% endif %} />
+  <label for="login-code">MFA-Code <span class="muted">(optional)</span></label>
+  <input id="login-code" type="text" name="code" autocomplete="one-time-code"
+         inputmode="numeric" />
+  <button type="submit">Anmelden</button>
+</form>
+{% endblock %}

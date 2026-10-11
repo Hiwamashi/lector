@@ -292,6 +292,27 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 .invoice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; margin: 1rem 0; }
 .invoice-actions form { margin: 0; }
 .invoice-actions button:disabled { background: var(--ink-soft); border-color: var(--ink-soft); cursor: not-allowed; }
+/* Angemeldeter Nutzer und Abmelden (nur Modus `paperless`), rechts neben dem Untertitel. */
+.session-box { display: flex; align-items: baseline; gap: 0.6rem; margin: 0; }
+.session-user { color: var(--ink-soft); font-size: 0.85rem; }
+.session-box button {
+  padding: 0.25rem 0.65rem; border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; color: var(--ink); font-size: 0.85rem; cursor: pointer; }
+.session-box button:hover { border-color: var(--ink-soft); }
+
+/* Anmeldeformular: schmale Spalte, Felder untereinander. */
+.login-form { display: flex; flex-direction: column; gap: 0.4rem; max-width: 22rem; }
+.login-form label { font-size: 0.85rem; color: var(--ink-soft); margin-top: 0.4rem; }
+.login-form input[type="text"], .login-form input[type="password"] {
+  padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--ink); font-size: 0.95rem; }
+.login-form button {
+  margin-top: 0.8rem; padding: 0.55rem 0.9rem; border: 1px solid var(--accent);
+  border-radius: 8px; background: var(--accent); color: var(--on-accent);
+  font-size: 0.9rem; cursor: pointer; }
+.login-form button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.login-form button:active { transform: translateY(1px); }
+
 .muted { color: var(--ink-soft); font-size: 0.85rem; }
 @media (max-width: 720px) { .invoice-grid { grid-template-columns: 1fr; } }
 
