@@ -12,6 +12,8 @@ import json
 import logging
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from enum import Enum
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -73,6 +75,110 @@ class DocumentPage:
 
 class PaperlessError(RuntimeError):
     pass
+
+
+class LoginResult(Enum):
+    """Ergebnis einer Anmeldeprüfung gegen Paperless (siehe ``obtain_token``)."""
+
+    OK = "ok"
+    MFA_REQUIRED = "mfa_required"
+    INVALID = "invalid"
+    UNAVAILABLE = "unavailable"
+
+
+_MFA_MARKERS = ("mfa", "two-factor", "2fa", "one-time", "totp")
+
+
+def _mentions_mfa(body: object) -> bool:
+    """Sucht rekursiv in Schlüsseln und Texten nach einem MFA-Marker (ohne Beachtung der
+    Groß-/Kleinschreibung). Das bloße Wort ``code`` zählt bewusst nicht."""
+    if isinstance(body, str):
+        low = body.lower()
+        return any(m in low for m in _MFA_MARKERS)
+    if isinstance(body, dict):
+        return any(_mentions_mfa(k) or _mentions_mfa(v) for k, v in body.items())
+    if isinstance(body, list):
+        return any(_mentions_mfa(item) for item in body)
+    return False
+
+
+def _is_mfa_required(body: object) -> bool:
+    """Heuristik: Weist der 400-Body von ``/api/token/`` auf einen fehlenden MFA-Code hin?
+
+    Gewertet wird ein Schlüssel ``code`` auf oberster Ebene des Fehler-JSON (DRF-Feldfehler
+    wie ``{"code": ["This field is required."]}``) oder ein Text mit ``mfa``, ``two-factor``,
+    ``2fa``, ``one-time`` bzw. ``totp``. Das bloße Wort ``code`` in einem Text genügt nicht,
+    sonst löste jede Fehlermeldung mit „code“ die MFA-Aufforderung aus. Die exakte
+    Paperless-Antwort ist noch nicht verifiziert — die Funktion wird mit Task 2.2 an die echte
+    Antwort angepasst. Ob ein Code mitgeschickt wurde, prüft der Aufrufer (``obtain_token``).
+    """
+    if isinstance(body, dict) and "code" in body:
+        return True
+    return _mentions_mfa(body)
+
+
+async def obtain_token(
+    base_url: str,
+    username: str,
+    password: str,
+    code: str | None = None,
+    *,
+    timeout: float = 10.0,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> LoginResult:
+    """Prüft Zugangsdaten per ``POST /api/token/`` gegen Paperless.
+
+    Der erhaltene Token wird bewusst NICHT herausgereicht oder geloggt — nur das Ergebnis zählt.
+    Es wird ein eigener kurzlebiger Client ohne ``Authorization``-Header verwendet. Weiterleitungen
+    werden nicht verfolgt (sonst ginge das Passwort an ein fremdes Ziel) und gelten als
+    nicht erreichbar.
+
+    ``MFA_REQUIRED`` kommt nur zurück, wenn KEIN Code gesendet wurde; lehnt Paperless einen
+    gesendeten Code ab, ist das ``INVALID`` (zählt als Fehlversuch).
+    """
+    payload: dict[str, str] = {"username": username, "password": password}
+    if code:
+        payload["code"] = code
+    url = f"{base_url.rstrip('/')}/api/token/"
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, transport=transport
+        ) as client:
+            resp = await client.post(url, json=payload, headers={"Accept": "application/json"})
+    except httpx.HTTPError as exc:
+        # Nur den Fehlertyp loggen — niemals Anfrage-Inhalt (Passwort).
+        log.warning("Paperless-Anmeldung nicht möglich: %s", type(exc).__name__)
+        return LoginResult.UNAVAILABLE
+
+    status = resp.status_code
+    if 300 <= status < 400:
+        # Nur Status und Ziel-Host loggen, nie den Body.
+        target = urlsplit(resp.headers.get("Location", "")).netloc or "unbekannt"
+        log.warning("Paperless-Anmeldung: Weiterleitung %s nach %r abgewiesen", status, target)
+        return LoginResult.UNAVAILABLE
+    if status >= 500:
+        log.warning("Paperless-Anmeldung: Server antwortet mit %s", status)
+        return LoginResult.UNAVAILABLE
+    if status == 200:
+        try:
+            data = resp.json()
+        except ValueError:
+            return LoginResult.UNAVAILABLE
+        if isinstance(data, dict) and data.get("token"):
+            return LoginResult.OK
+        return LoginResult.UNAVAILABLE
+    if status == 400:
+        try:
+            body = resp.json()
+        except ValueError:
+            return LoginResult.INVALID
+        if not code and _is_mfa_required(body):
+            return LoginResult.MFA_REQUIRED
+        return LoginResult.INVALID
+    if status in (401, 403):
+        return LoginResult.INVALID
+    log.warning("Paperless-Anmeldung: unerwarteter Status %s", status)
+    return LoginResult.UNAVAILABLE
 
 
 class PaperlessClient:

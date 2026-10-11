@@ -381,3 +381,169 @@ def test_configuration_rejected_error_ist_ein_runtime_error():
     """Passt sich in die bestehende Fehlerhierarchie ein (`PaperlessError`,
     `SevdeskError`, `RecipientSuggesterError` sind ebenfalls `RuntimeError`)."""
     assert issubclass(ConfigurationRejectedError, RuntimeError)
+
+
+# ---- Gruppe 1: Zugangsmodus (AUTH_MODE, Sitzungsgeheimnis) ---------------------------
+
+
+def test_auth_standardwerte():
+    s = Settings(_env_file=None)
+    assert s.auth_mode == "none"
+    assert s.lector_secret_key == ""
+    assert s.session_cookie_secure is False
+
+
+def test_auth_felder_lesen_env():
+    s = Settings(
+        _env_file=None,
+        AUTH_MODE="paperless",
+        LECTOR_SECRET_KEY="geheim",
+        SESSION_COOKIE_SECURE="true",
+    )
+    assert s.auth_mode == "paperless"
+    assert s.lector_secret_key == "geheim"
+    assert s.session_cookie_secure is True
+
+
+def test_ungueltiger_auth_mode_wird_mit_weiterer_beanstandung_gemeinsam_gemeldet(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)  # keine .env im Arbeitsverzeichnis
+    monkeypatch.setenv("AUTH_MODE", "ldap")
+    monkeypatch.setenv("OCR_PROVIDER", "documentai")
+    monkeypatch.setenv("GCP_PROJECT_ID", "")
+    monkeypatch.setenv("DOCAI_PROCESSOR_ID", "proc-123")
+    monkeypatch.setenv("DOCAI_LOCATION", "eu")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    config.get_settings.cache_clear()
+    try:
+        settings, problems = config.get_settings_and_problems()
+    finally:
+        config.get_settings.cache_clear()
+
+    assert settings is not None
+    meldung = "\n".join(problems)
+    assert "AUTH_MODE hat einen ungültigen Wert" in meldung
+    assert "ldap" in meldung
+    assert "GCP_PROJECT_ID" in meldung
+    # Keine Folgebeanstandung wegen des auf "none" zurückgefallenen Modus.
+    assert "PAPERLESS_URL" not in meldung
+
+
+def test_validate_settings_paperless_modus_ohne_url_wird_beanstandet(tmp_path):
+    s = _vollstaendige_documentai_settings(tmp_path, AUTH_MODE="paperless", PAPERLESS_URL="")
+    problems = validate_settings(s)
+    assert len(problems) == 1
+    assert "PAPERLESS_URL ist leer" in problems[0]
+    assert "AUTH_MODE=paperless" in problems[0]
+
+
+def test_validate_settings_paperless_modus_url_pflicht_auch_ohne_sync(tmp_path):
+    s = _vollstaendige_documentai_settings(
+        tmp_path, AUTH_MODE="paperless", FEATURE_PAPERLESS_SYNC=False, PAPERLESS_URL=""
+    )
+    assert any("PAPERLESS_URL" in p for p in validate_settings(s))
+
+
+def test_validate_settings_paperless_modus_mit_url_ist_gueltig(tmp_path):
+    s = _vollstaendige_documentai_settings(
+        tmp_path, AUTH_MODE="paperless", PAPERLESS_URL="http://paperless.local"
+    )
+    assert validate_settings(s) == []
+
+
+def test_validate_settings_auth_modus_none_braucht_keine_paperless_url(tmp_path):
+    s = _vollstaendige_documentai_settings(tmp_path, AUTH_MODE="none", PAPERLESS_URL="")
+    assert validate_settings(s) == []
+
+
+def test_validate_settings_ueberspringt_auth_pruefung_bei_unzuverlaessigem_auth_mode(tmp_path):
+    s = _vollstaendige_documentai_settings(tmp_path, AUTH_MODE="paperless", PAPERLESS_URL="")
+    assert validate_settings(s, unzuverlaessige_felder={"auth_mode"}) == []
+
+
+def test_warn_auth_proxy_config_warnt_ohne_forwarded_allow_ips(monkeypatch, caplog):
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+    s = Settings(_env_file=None, AUTH_MODE="paperless")
+    with caplog.at_level("WARNING", logger="app.config"):
+        config.warn_auth_proxy_config(s)
+    assert any("FORWARDED_ALLOW_IPS" in r.getMessage() for r in caplog.records)
+    assert all(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_warn_auth_proxy_config_schweigt_mit_forwarded_allow_ips(monkeypatch, caplog):
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "172.18.0.0/16")
+    s = Settings(_env_file=None, AUTH_MODE="paperless")
+    with caplog.at_level("WARNING", logger="app.config"):
+        config.warn_auth_proxy_config(s)
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("wert", ["", "   ", "\t"])
+def test_warn_auth_proxy_config_warnt_bei_leerem_forwarded_allow_ips(monkeypatch, caplog, wert):
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", wert)
+    s = Settings(_env_file=None, AUTH_MODE="paperless")
+    with caplog.at_level("WARNING", logger="app.config"):
+        config.warn_auth_proxy_config(s)
+    assert any("leer" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("wert", ["*", "172.18.0.0/16, *", " * "])
+def test_warn_auth_proxy_config_warnt_bei_stern(monkeypatch, caplog, wert):
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", wert)
+    s = Settings(_env_file=None, AUTH_MODE="paperless")
+    with caplog.at_level("WARNING", logger="app.config"):
+        config.warn_auth_proxy_config(s)
+    meldungen = [r.getMessage() for r in caplog.records]
+    assert len(meldungen) == 1
+    assert "ERSETZEN" in meldungen[0]
+
+
+def test_warn_auth_proxy_config_schweigt_bei_stern_im_modus_none(monkeypatch, caplog):
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    s = Settings(_env_file=None, AUTH_MODE="none")
+    with caplog.at_level("WARNING", logger="app.config"):
+        config.warn_auth_proxy_config(s)
+    assert caplog.records == []
+
+
+def test_warn_auth_proxy_config_schweigt_im_modus_none(monkeypatch, caplog):
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+    s = Settings(_env_file=None, AUTH_MODE="none")
+    with caplog.at_level("WARNING", logger="app.config"):
+        config.warn_auth_proxy_config(s)
+    assert caplog.records == []
+
+
+def test_load_session_secret_env_gewinnt_und_legt_keine_datei_an(tmp_path):
+    s = Settings(
+        _env_file=None,
+        AUTH_MODE="paperless",
+        LECTOR_SECRET_KEY="aus-der-env",
+        DB_PATH=str(tmp_path / "lector.db"),
+    )
+    assert config.load_session_secret(s) == "aus-der-env"
+    assert not (tmp_path / "session.key").exists()
+
+
+def test_load_session_secret_erzeugt_datei_und_verwendet_sie_wieder(tmp_path):
+    s = Settings(_env_file=None, AUTH_MODE="paperless", DB_PATH=str(tmp_path / "lector.db"))
+    erster = config.load_session_secret(s)
+    key_file = tmp_path / "session.key"
+
+    assert erster and len(erster) >= 48
+    assert key_file.read_text(encoding="utf-8") == erster
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert config.load_session_secret(s) == erster
+
+
+def test_load_session_secret_strippt_whitespace_beim_lesen(tmp_path):
+    (tmp_path / "session.key").write_text("vorhanden\n", encoding="utf-8")
+    s = Settings(_env_file=None, AUTH_MODE="paperless", DB_PATH=str(tmp_path / "lector.db"))
+    assert config.load_session_secret(s) == "vorhanden"
+
+
+def test_load_session_secret_im_modus_none_ohne_datei(tmp_path):
+    s = Settings(_env_file=None, AUTH_MODE="none", DB_PATH=str(tmp_path / "lector.db"))
+    assert config.load_session_secret(s) is None
+    assert list(tmp_path.iterdir()) == []

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import secrets
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -123,6 +129,15 @@ class Settings(BaseSettings):
     )
     # Obergrenze, wie viele Dokumente ein einzelner Batch-Lauf maximal verarbeitet.
     recipient_batch_max: int = Field(default=1000, alias="RECIPIENT_BATCH_MAX")
+
+    # ---- Zugang zur Oberfläche ----
+    # none = offen (LAN-Betrieb wie bisher), paperless = Anmeldung mit Paperless-Konto.
+    auth_mode: Literal["none", "paperless"] = Field(default="none", alias="AUTH_MODE")
+    # Signierschlüssel der Sitzungs-Cookies. Leer = Datei `session.key` neben der DB
+    # (siehe load_session_secret()).
+    lector_secret_key: str = Field(default="", alias="LECTOR_SECRET_KEY")
+    # true = Cookie nur über HTTPS senden (Betrieb hinter TLS-terminierendem Proxy).
+    session_cookie_secure: bool = Field(default=False, alias="SESSION_COOKIE_SECURE")
 
     @property
     def partial_suffix_list(self) -> list[str]:
@@ -405,4 +420,71 @@ def validate_settings(
                 f"{_env_name('paperless_token')} ist leer (Pflicht bei {schalter}=true)"
             )
 
+    # Bedingung hängt an auth_mode: Hatte AUTH_MODE selbst einen Typfehler, steht der
+    # hier gelesene Wert nur als Standard ("none") da — dann keine Folgebeanstandung.
+    if "auth_mode" not in unreliable and settings.auth_mode == "paperless":
+        if not settings.paperless_url:
+            problems.append(
+                f"{_env_name('paperless_url')} ist leer "
+                f"(Pflicht bei {_env_name('auth_mode')}=paperless)"
+            )
+
     return problems
+
+
+def warn_auth_proxy_config(settings: Settings) -> None:
+    """Loggt Warnungen (keine Beanstandung, kein Abbruch), wenn die Anmeldung über Paperless
+    aktiv ist, aber `FORWARDED_ALLOW_IPS` fehlt, leer ist oder `*` enthält. uvicorn liest die
+    Variable selbst; ohne vertrauenswürdige Proxy-Adresse sieht Lector hinter einem Proxy
+    immer nur dessen IP — die Anmeldedrosselung träfe dann alle gemeinsam, und Secure-Cookie
+    sowie Herkunftsprüfung scheiterten am Schema (design.md D6/D9). Mit `*` vertraut uvicorn
+    jedem Absender; dann muss der Proxy `X-Forwarded-For` ersetzen statt anhängen, sonst
+    kann ein Client seine IP fälschen und die Drosselung umgehen."""
+    if settings.auth_mode != "paperless":
+        return
+    value = os.environ.get("FORWARDED_ALLOW_IPS")
+    if value is None or not value.strip():
+        log.warning(
+            "AUTH_MODE=paperless, aber FORWARDED_ALLOW_IPS ist nicht gesetzt oder leer. "
+            "Steht Lector hinter einem Reverse-Proxy, sehen alle Anfragen gleich aus "
+            "(Drosselung, Secure-Cookie und Herkunftsprüfung arbeiten dann falsch)."
+        )
+        return
+    if "*" in (part.strip() for part in value.split(",")):
+        log.warning(
+            "FORWARDED_ALLOW_IPS enthält '*': Lector vertraut X-Forwarded-For von jedem "
+            "Absender. Der Proxy muss den Header ERSETZEN statt anhängen, sonst kann ein "
+            "Client seine IP fälschen und die Anmeldedrosselung umgehen."
+        )
+
+
+def load_session_secret(settings: Settings) -> str | None:
+    """Liefert das Signiergeheimnis für Sitzungs-Cookies (design.md D2).
+
+    - `AUTH_MODE != paperless`: `None`, und es wird nichts angelegt.
+    - `LECTOR_SECRET_KEY` gesetzt: dieser Wert.
+    - Sonst `<DB-Verzeichnis>/session.key`: lesen, oder mit `secrets.token_urlsafe(48)`
+      neu erzeugen (Rechte 0600, exklusiv angelegt). Die Datei liegt im Volume und
+      überlebt Neustarts; ein geänderter Wert macht alle Sitzungen ungültig."""
+    if settings.auth_mode != "paperless":
+        return None
+    if settings.lector_secret_key:
+        return settings.lector_secret_key
+
+    key_path = settings.db_path.parent / "session.key"
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            value = key_path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+            # Leere Datei (z. B. abgebrochenes Erzeugen): verwerfen und neu anlegen.
+            key_path.unlink(missing_ok=True)
+            continue
+        value = secrets.token_urlsafe(48)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(value)
+        return value
+    raise RuntimeError(f"Sitzungsschlüssel in {key_path} konnte nicht angelegt werden")

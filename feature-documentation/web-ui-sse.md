@@ -7,7 +7,7 @@
 
 `app/main.py` baut die FastAPI-App. Im Lifespan werden `Settings`, `Repository` (mit
 SSE-Notifier), OCR-Adapter und `Worker` erzeugt und gestartet; beim Herunterfahren sauber
-gestoppt. Keine Authentifizierung (LAN-only, PRD §3.3).
+gestoppt. Anmeldung ist optional per `AUTH_MODE` (siehe [web-zugang.md](web-zugang.md)).
 
 ## Routen
 

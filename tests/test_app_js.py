@@ -90,14 +90,32 @@ global.document = {
     return null;
   },
 };
-global.window = { EventSource: function () {}, location: { pathname: "/empfaenger" } };
+// assign() zeichnet die Umleitung auf, statt zu navigieren.
+const umleitungen = [];
+global.window = {
+  EventSource: function () {},
+  location: {
+    pathname: "/empfaenger", search: scenario.search || "",
+    assign: (url) => { umleitungen.push(url); },
+  },
+};
 
-// Reihenfolge der Antworten laut Szenario; "ok" = 200, sonst Fehlerstatus.
+// Reihenfolge der Antworten laut Szenario; true = 200, false = 503, eine Zahl = genau
+// dieser Status (z.B. 401).
 let i = 0;
 let batchAntwort = 0;
+let authAufrufe = 0;
 global.fetch = (url, _opts) => {
+  // Statusendpunkt fuer EventSource-Fehler: eigene Antwort, zaehlt nicht in die Reihenfolge.
+  if (url === "/auth/status") {
+    authAufrufe++;
+    if (scenario.authStatus === "netzwerk") return Promise.reject(new Error("offline"));
+    const st = scenario.authStatus === undefined ? 204 : scenario.authStatus;
+    return Promise.resolve({ ok: st >= 200 && st < 300, status: st });
+  }
   const n = i++;
-  const ok = n < scenario.responses.length ? scenario.responses[n] : true;
+  const antwort = n < scenario.responses.length ? scenario.responses[n] : true;
+  const ok = typeof antwort === "number" ? antwort < 300 : antwort;
   const vorgabe = (scenario.delays || [])[n];
   const delay = vorgabe === undefined ? (scenario.defaultDelay || 0) : vorgabe;
   let inhalt = (scenario.bodies || [])[n];
@@ -108,7 +126,8 @@ global.fetch = (url, _opts) => {
       : "<tr></tr>";
   }
   const body = () => Promise.resolve(inhalt);
-  const res = { ok: ok, status: ok ? 200 : 503, text: body };
+  const status = typeof antwort === "number" ? antwort : (ok ? 200 : 503);
+  const res = { ok: ok, status: status, text: body };
   // delay < 0 heisst: antwortet NIE — gestauter Proxy, halboffene Verbindung.
   if (delay < 0) return new Promise(() => {});
   return new Promise((r) => echterTimeout(() => r(res), Math.round(delay * skala)));
@@ -122,6 +141,7 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
 
 (async () => {
   if (scenario.streamDown) sse.onerror();
+  if (scenario.errorTwice) sse.onerror();
   sse.onmessage({ data: "batch:recipient" });
   if (scenario.secondCycleAfter) {
     // Nach Ablauf der Entprellung einen zweiten Zyklus starten, der den ersten überholt.
@@ -133,7 +153,7 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
   if (scenario.streamRecovers) { sse.onopen(); await new Promise((r) => echterTimeout(r, 50)); }
   console.log(JSON.stringify({
     hinweisSichtbar: hidden === false, inhalt: tbodyInhalt, batchInhalt: batchInhalt,
-    aufgeleuchtet: aufgeleuchtet,
+    aufgeleuchtet: aufgeleuchtet, umleitungen: umleitungen, authAufrufe: authAufrufe,
   }));
   // Der Abfragetakt plant sich endlos weiter — ohne das bliebe node haengen.
   process.exit(0);
@@ -360,3 +380,58 @@ def test_verschobene_zeile_leuchtet_nicht_auf(tmp_path):
         tmp_path,
     )
     assert ergebnis["aufgeleuchtet"] == []
+
+
+# --- Anmeldung: 401 führt zur Anmeldeseite ------------------------------------
+#
+# Im Modus mit Anmeldung antworten Fragmente und der SSE-Strom ohne gültige Sitzung mit 401.
+# Das darf weder den Hinweis "Aktualisierung fehlgeschlagen" auslösen noch stumm bleiben.
+# Der SSE-Pfad ist heikler, weil EventSource keinen Statuscode liefert.
+
+def test_401_auf_fragment_leitet_mit_next_zur_anmeldung(tmp_path):
+    ergebnis = _run({"responses": [401], "search": "?seite=2"}, tmp_path)
+    assert ergebnis["umleitungen"] == ["/login?next=%2Fempfaenger%3Fseite%3D2"]
+    # Kein Fehlerzustand: der Hinweis bleibt aus, die Seite wird ohnehin verlassen.
+    assert ergebnis["hinweisSichtbar"] is False
+
+
+def test_401_bei_parallelen_fragmenten_leitet_nur_einmal_um(tmp_path):
+    ergebnis = _run(
+        {"responses": [401, 401], "withBatchStatus": True}, tmp_path
+    )
+    assert len(ergebnis["umleitungen"]) == 1
+
+
+def test_anderer_fehlerstatus_behaelt_bisheriges_verhalten(tmp_path):
+    """503 (z.B. Paperless nicht erreichbar) bleibt ein Aktualisierungsfehler."""
+    ergebnis = _run({"responses": [503]}, tmp_path)
+    assert ergebnis["umleitungen"] == []
+    assert ergebnis["hinweisSichtbar"] is True
+
+
+def test_sse_fehler_mit_auth_status_401_leitet_um(tmp_path):
+    ergebnis = _run(
+        {"responses": [True], "streamDown": True, "authStatus": 401}, tmp_path
+    )
+    assert ergebnis["authAufrufe"] == 1
+    assert ergebnis["umleitungen"] == ["/login?next=%2Fempfaenger"]
+
+
+@pytest.mark.parametrize("status", [204, 404, "netzwerk"])
+def test_sse_fehler_ohne_401_behaelt_live_hinweis(tmp_path, status):
+    """204 (angemeldet), 404 (Modus ohne Anmeldung) und Netzwerkfehler: keine Umleitung,
+    der Hinweis "Live-Verbindung unterbrochen" bleibt wie bisher."""
+    ergebnis = _run(
+        {"responses": [True], "streamDown": True, "authStatus": status}, tmp_path
+    )
+    assert ergebnis["authAufrufe"] == 1
+    assert ergebnis["umleitungen"] == []
+    assert ergebnis["hinweisSichtbar"] is True
+
+
+def test_wiederholte_sse_fehler_fragen_den_status_nur_einmal_ab(tmp_path):
+    """EventSource feuert beim Neuverbinden wiederholt onerror — keine Abfrageschleife."""
+    ergebnis = _run(
+        {"responses": [True], "streamDown": True, "errorTwice": True}, tmp_path
+    )
+    assert ergebnis["authAufrufe"] == 1

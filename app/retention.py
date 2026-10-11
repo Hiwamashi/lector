@@ -46,3 +46,17 @@ def purge_chunk_cache(repo, retention_days: int) -> int:
     if deleted:
         log.info("Retention: %d bewahrte Teilergebnis(se) entfernt", deleted)
     return deleted
+
+
+def purge_web_sessions(repo) -> int:
+    """Entfernt abgelaufene Web-Sitzungen (30 Tage Leerlauf, 90 Tage absolut).
+
+    Die Tabelle ist im Modus `none` leer; der Aufruf kostet dort nichts."""
+    try:
+        deleted = repo.purge_web_sessions()
+    except Exception:
+        log.exception("Aufräumen abgelaufener Web-Sitzungen fehlgeschlagen")
+        return 0
+    if deleted:
+        log.info("Retention: %d abgelaufene Web-Sitzung(en) entfernt", deleted)
+    return deleted

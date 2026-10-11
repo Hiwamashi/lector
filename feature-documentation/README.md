@@ -21,6 +21,7 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 | [konfiguration.md](konfiguration.md) | `app/config.py` | ENV-Konfiguration |
 | [datenhaltung.md](datenhaltung.md) | `app/db.py`, `app/repository.py`, `app/models.py` | SQLite-Historie |
 | [datei-upload.md](datei-upload.md) | `app/main.py`, `app/fileops.py`, `app/templates/` | Web-UI Datei-Upload |
+| [web-zugang.md](web-zugang.md) | `app/auth.py`, `app/main.py`, `app/config.py`, `app/paperless.py` | Anmeldung über Paperless, optional per `AUTH_MODE` |
 | [watch-folder.md](watch-folder.md) | `app/watcher.py`, `app/worker.py` | Watch-Folder, Queue, Worker |
 | [format-erkennung-erechnung.md](format-erkennung-erechnung.md) | `app/detection.py` | Format-Routing & E-Rechnungs-Bypass |
 | [bildvorverarbeitung.md](bildvorverarbeitung.md) | `app/pages.py`, `app/preprocessing.py` | Seitenextraktion & Vorverarbeitung |

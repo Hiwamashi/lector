@@ -54,7 +54,10 @@ vollständig bei Paperless. Die OCR-Engine ist über ein Adapter-Interface austa
   Live-Fortschritt via SSE), Rechnungen, Empfänger.
 - Status: `pending | processing | done | skipped_erechnung | failed`; Auto-Retry nach 15 min,
   max. 3 Versuche, **kein** manueller Retry-Button.
-- **Keine Authentifizierung**, LAN-only, Einzelnutzer; Upload ohne Größenbegrenzung.
+- **Anmeldung optional:** Standard `AUTH_MODE=none` (anmeldefrei, LAN-Betrieb wie bisher);
+  wahlweise `AUTH_MODE=paperless` für öffentlichen Betrieb hinter HTTPS-Proxy. Upload ist
+  jeweils uneingeschränkt (ohne Größenbegrenzung), unterliegt aber demselben Zugangsschutz
+  wie die Oberfläche. Einzelnutzer oder alle Paperless-Nutzer der Instanz.
 - UI-Stack: serverseitige Jinja2-Templates, offline-CSS, Vanilla-JS — **kein**
   Node-Buildchain, keine CDN-Abhängigkeiten zur Laufzeit.
 - Oberflächensprache Deutsch.

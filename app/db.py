@@ -113,6 +113,21 @@ CREATE TABLE IF NOT EXISTS document_recipients (
     status          TEXT    NOT NULL DEFAULT 'none',
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ----------------------------------------------------------------------------
+-- Web-Anmeldung (AUTH_MODE=paperless): serverseitige Sitzungsliste. Das signierte Cookie
+-- trägt nur die `id`; gültig ist eine Sitzung, solange sie hier steht und weder 30 Tage
+-- Leerlauf (last_seen_at) noch 90 Tage seit der Anmeldung (created_at) überschritten sind.
+-- Zeitstempel UTC im Format 'YYYY-MM-DD HH:MM:SS'.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS web_sessions (
+    id           TEXT PRIMARY KEY,
+    username     TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_sessions_last_seen ON web_sessions(last_seen_at);
 """
 
 

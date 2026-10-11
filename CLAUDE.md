@@ -71,7 +71,8 @@ Lector ist ein lokaler Backend-Service (zusätzlicher Docker-Container im besteh
 
 Sämtliche Einstellungen laufen über Umgebungsvariablen — keine Config-Dateien für Laufzeitparameter. Wichtige Variablen:
 `OCR_PROVIDER`, `GCP_PROJECT_ID`, `DOCAI_LOCATION` (`eu`), `DOCAI_PROCESSOR_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`, `DB_PATH`, `PROCESSED_RETENTION_DAYS`, `RETRY_DELAY_MINUTES`, `RETRY_MAX`, `CHUNK_SIZE_PAGES`,
-`DOCAI_MAX_PAGES_PER_MINUTE`, `PREPROCESS_DESKEW`, `PREPROCESS_CONTRAST`, `TZ`, `PUID`, `PGID`.
+`DOCAI_MAX_PAGES_PER_MINUTE`, `PREPROCESS_DESKEW`, `PREPROCESS_CONTRAST`, `TZ`, `PUID`, `PGID`,
+`AUTH_MODE` (`none` oder `paperless`, Standard `none`), `LECTOR_SECRET_KEY` (Sitzungsgeheimnis, optional), `SESSION_COOKIE_SECURE` (für HTTPS, Standard false), `FORWARDED_ALLOW_IPS` (Proxy-Konfiguration).
 
 Ein `PREPROCESS_AUTOROTATE` gibt es **nicht** (Schritt entfernt, siehe `PROGRESS.md`).
 Vollständige Liste inkl. der Paperless-/SevDesk-Variablen: `.env.example` und
@@ -81,9 +82,9 @@ Vollständige Liste inkl. der Paperless-/SevDesk-Variablen: `.env.example` und
 
 - **Paperless muss `PAPERLESS_OCR_MODE: skip` setzen** (am `webserver`-Service), sonst überschreibt Tesseract den eingebetteten Document-AI-Textlayer.
 - **Ausgabe-Eigentümerschaft:** Ergebnis-PDFs nach `consume` mit UID/GID **1000** schreiben (geteilter Ordner mit Paperless).
-- **Keine Authentifizierung** (Betrieb ausschließlich im LAN, Einzelnutzer).
+- **Anmeldung optional:** Standard `AUTH_MODE=none` (anmeldefrei, LAN-Betrieb), wahlweise `AUTH_MODE=paperless` (Anmeldung über Paperless, öffentlicher Betrieb hinter HTTPS-Proxy). Siehe `feature-documentation/web-zugang.md`.
 - **Explizit ausgeschlossen:** inhaltliche Datenextraktion/Klassifizierung/Tags (Aufgabe von Paperless), eigenes Scannen, Cloud-Anbindung außer der OCR-Engine.
-- **Datei-Upload über Web-UI:** vorhanden, aber ohne Authentifizierung und Größenbegrenzung (LAN-only). Der Upload endet im Eingangsordner; von dort läuft der bestehende Watch-Folder-Weg.
+- **Datei-Upload über Web-UI:** vorhanden, ohne Größenbegrenzung. Der Upload unterliegt dem Zugangsschutz der Oberfläche (bei `AUTH_MODE=paperless` ist Anmeldung erforderlich). Der Upload endet im Eingangsordner; von dort läuft der bestehende Watch-Folder-Weg.
 - **E-Rechnungs-Bypass ist deterministisch** — niemals per KI/OCR raten.
 
 ## Getroffene Entscheidungen (vormals offene Fragen)

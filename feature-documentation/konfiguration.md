@@ -25,6 +25,10 @@ Entwicklung wird optional eine `.env` gelesen (`.env.example` als Vorlage).
 | `PARTIAL_SUFFIXES` | `.tmp,.part,.crdownload` | nie-fertig-Suffixe |
 | `DOCAI_MAX_PAGES_PER_MINUTE` | 120 | Throttling gegen Quota |
 | `PUID`/`PGID` | 1000 | Eigentümerschaft der Ausgabe in `consume` |
+| `AUTH_MODE` | `none` | Zugangsmodus: `none` (offen) oder `paperless` (Anmeldung über Paperless). Siehe [web-zugang.md](web-zugang.md) |
+| `LECTOR_SECRET_KEY` | — | Signierschlüssel Sitzungs-Cookies (bei `AUTH_MODE=paperless`). Leer = Datei `session.key` neben der DB. Siehe [web-zugang.md](web-zugang.md) |
+| `SESSION_COOKIE_SECURE` | false | true = Cookie nur über HTTPS (Betrieb hinter TLS-Proxy). Nur bei `AUTH_MODE=paperless` und HTTPS sinnvoll. Siehe [web-zugang.md](web-zugang.md) |
+| `FORWARDED_ALLOW_IPS` | — | uvicorn vertraut `X-Forwarded-*`-Headern nur von dieser Adresse (Proxy-Konfiguration). Siehe [web-zugang.md](web-zugang.md#proxy-einrichtung-öffentlicher-betrieb) |
 
 ## Hinweise
 

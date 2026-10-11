@@ -28,6 +28,22 @@
   // veralteten Antwort ueberschrieben werden.
   var cycle = 0;
 
+  // Abgelaufene oder fehlende Sitzung (nur im Modus mit Anmeldung): der Server antwortet
+  // auf Fragmente und den SSE-Strom mit 401. Das ist kein Aktualisierungsfehler, sondern
+  // der Hinweis, sich neu anzumelden — also zur Anmeldeseite wechseln und danach hierher
+  // zurueckkehren (next). Das Flag verhindert mehrfaches Umleiten, wenn mehrere Requests
+  // eines Zyklus gleichzeitig mit 401 antworten. Im Modus ohne Anmeldung kommt nie ein 401,
+  // dort aendert sich nichts.
+  var umgeleitet = false;
+
+  function zurAnmeldung() {
+    if (umgeleitet) return;
+    umgeleitet = true;
+    window.location.assign("/login?next=" + encodeURIComponent(
+      window.location.pathname + window.location.search
+    ));
+  }
+
   function updateLiveStatus() {
     var el = document.getElementById("live-status");
     if (el) el.hidden = !(refreshFailed || streamDown);
@@ -103,7 +119,13 @@
     if (abbruch) opts.signal = abbruch.signal;
     return withDeadline(
       fetch(url, opts)
-        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+        .then(function (r) {
+          // 401 ist KEIN Fehlerzustand fuer den Hinweis (siehe refreshFragment), sondern
+          // fuehrt zur Anmeldung. Der Throw verhindert nur, dass apply() laeuft.
+          if (r.status === 401) { zurAnmeldung(); throw new Error("401"); }
+          if (!r.ok) throw new Error(r.status);
+          return r.text();
+        })
         // Inhalt nur einsetzen, solange dieser Zyklus der juengste ist: sonst schreibt eine
         // spaet eintreffende Antwort aelteren Inhalt ueber den bereits aktuelleren.
         .then(function (html) { if (mine === cycle) apply(html); }),
@@ -150,6 +172,7 @@
   }
 
   function refreshFragment() {
+    if (umgeleitet) return Promise.resolve();  // Seite wird gerade verlassen
     var mine = ++cycle;
     var jobs = [];
 
@@ -183,6 +206,7 @@
 
     return Promise.allSettled(jobs).then(function (results) {
       if (mine !== cycle) return;  // von einem neueren Zyklus ueberholt
+      if (umgeleitet) return;      // 401: kein "Aktualisierung fehlgeschlagen" zeigen
       refreshFailed = results.some(function (r) { return r.status === "rejected"; });
       updateLiveStatus();
     });
@@ -206,7 +230,28 @@
   var detail = currentDetail();
   var pending = false;
 
-  source.onerror = function () { streamDown = true; updateLiveStatus(); };
+  // EventSource meldet bei onerror keinen Statuscode. Ob die Sitzung abgelaufen ist (401),
+  // klaert deshalb ein leichter Statusaufruf. Der Browser verbindet nach Fehlern selbst
+  // neu und feuert onerror dabei wiederholt — daher gedrosselt und nie parallel. Alles
+  // ausser 401 (204, Netzwerkfehler, 404 im Modus ohne Anmeldung) bleibt beim bisherigen
+  // Verhalten: Hinweis "Live-Verbindung unterbrochen".
+  var SESSION_CHECK_MS = 5000;
+  var letztePruefung = 0;
+  var pruefLaeuft = false;
+
+  function pruefeSitzung() {
+    if (umgeleitet || pruefLaeuft) return;
+    var jetzt = Date.now();
+    if (letztePruefung && jetzt - letztePruefung < SESSION_CHECK_MS) return;
+    letztePruefung = jetzt;
+    pruefLaeuft = true;
+    fetch("/auth/status", { cache: "no-store", credentials: "same-origin" })
+      .then(function (r) { if (r.status === 401) zurAnmeldung(); })
+      .catch(function () { /* Netzwerkfehler: kein Beleg fuer eine abgelaufene Sitzung */ })
+      .then(function () { pruefLaeuft = false; });
+  }
+
+  source.onerror = function () { streamDown = true; updateLiveStatus(); pruefeSitzung(); };
   source.onopen = function () { streamDown = false; updateLiveStatus(); };
 
   source.onmessage = function (event) {

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -43,6 +44,16 @@ log = logging.getLogger("lector.repository")
 # selbst zu blockieren, lang genug, um eine kurze, reguläre Transaktion nicht fälschlich
 # als "beschäftigt" auszuweisen.
 _HEALTH_CHECK_LOCK_TIMEOUT_SECONDS = 0.2
+
+# Gültigkeit der Web-Sitzungen (design.md D10): Leerlauf gleitend, Gesamtdauer absolut.
+WEB_SESSION_IDLE = timedelta(days=30)
+WEB_SESSION_ABSOLUTE = timedelta(days=90)
+WEB_SESSION_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _ts(now: datetime | None = None) -> str:
+    """UTC-Zeitstempel im Repository-Format; ``now`` macht die Uhr für Tests injizierbar."""
+    return (now or datetime.now(UTC)).astimezone(UTC).strftime(WEB_SESSION_TS_FORMAT)
 
 
 class DatabaseHealthState(StrEnum):
@@ -541,6 +552,62 @@ class Repository:
                 deleted += cur.rowcount
             self._conn.commit()
         return deleted
+
+    # ---- Web-Sitzungen (AUTH_MODE=paperless) ----------------------------------
+    # Lösen bewusst keinen Notifier/SSE-Token aus: Sitzungen sind kein UI-Zustand.
+
+    def create_web_session(self, username: str, now: datetime | None = None) -> str:
+        """Legt eine neue Sitzung an und liefert ihre serverseitig erzeugte, zufällige `sid`."""
+        stamp = _ts(now)
+        sid = secrets.token_urlsafe(32)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO web_sessions (id, username, created_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?)",
+                (sid, username, stamp, stamp),
+            )
+            self._conn.commit()
+        return sid
+
+    def get_web_session(self, sid: str) -> tuple[str, str, str] | None:
+        """``(username, created_at, last_seen_at)`` oder ``None``, wenn die `sid` unbekannt ist."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT username, created_at, last_seen_at FROM web_sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+        if row is None:
+            return None
+        return row["username"], row["created_at"], row["last_seen_at"]
+
+    def touch_web_session(self, sid: str, now: datetime | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE web_sessions SET last_seen_at = ? WHERE id = ?", (_ts(now), sid)
+            )
+            self._conn.commit()
+
+    def delete_web_session(self, sid: str) -> None:
+        """Löscht genau diese Sitzung; andere Sitzungen derselben Person bleiben bestehen."""
+        with self._lock:
+            self._conn.execute("DELETE FROM web_sessions WHERE id = ?", (sid,))
+            self._conn.commit()
+
+    def purge_web_sessions(
+        self,
+        now: datetime | None = None,
+        idle: timedelta = WEB_SESSION_IDLE,
+        absolute: timedelta = WEB_SESSION_ABSOLUTE,
+    ) -> int:
+        """Entfernt Sitzungen mit Leerlauf über `idle` oder Alter über `absolute`."""
+        current = now or datetime.now(UTC)
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM web_sessions WHERE last_seen_at < ? OR created_at < ?",
+                (_ts(current - idle), _ts(current - absolute)),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     # ---- events ----------------------------------------------------------
 
