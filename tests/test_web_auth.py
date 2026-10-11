@@ -210,7 +210,18 @@ def test_login_ohne_next_landet_auf_startseite(anon_client):
 
 
 @pytest.mark.parametrize(
-    "next_value", ["//evil.example", "https://evil.example", "/\\evil.example", "evil", "/a\nb"]
+    "next_value",
+    [
+        "//evil.example",
+        "https://evil.example",
+        "/\\evil.example",
+        "evil",
+        "/a\nb",
+        # Rücksprung auf die Anmeldung selbst würde next endlos verschachteln.
+        "/login",
+        "/login?next=%2F",
+        "/logout",
+    ],
 )
 def test_login_fremdes_next_wird_ersetzt(anon_client, next_value):
     c, _, _ = anon_client
@@ -385,6 +396,15 @@ def test_login_seite_ohne_navigation_und_ohne_inline_code(anon_client):
     assert 'autocomplete="one-time-code"' in html and 'inputmode="numeric"' in html
     assert "optional" in html
     assert "Abmelden" not in html
+
+
+def test_login_seite_laedt_kein_app_js(anon_client):
+    """app.js öffnet /events; ohne Sitzung führte dessen 401 auf der Anmeldeseite zu einer
+    Umleitungsschleife mit endlos verschachteltem next (431 Request Header Fields Too Large)."""
+    c, _, _ = anon_client
+    assert "app.js" not in c.get("/login").text
+    _login(c)
+    assert "app.js" in c.get("/").text
 
 
 def test_abmelden(auth_client):

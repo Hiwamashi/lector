@@ -38,7 +38,7 @@
     </p>
     {% block content %}{% endblock %}
   </main>
-  <script src="{{ static_url('app.js') }}" defer></script>
+  {% block appjs %}<script src="{{ static_url('app.js') }}" defer></script>{% endblock %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

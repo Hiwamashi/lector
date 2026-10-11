@@ -5,6 +5,10 @@
 {# Vor der Anmeldung gibt es nichts zu navigieren. #}
 {% block topnav %}{% endblock %}
 
+{# Kein app.js: Ohne Sitzung antworten /events und die Fragmente mit 401, das Skript würde
+   zur Anmeldung umleiten — auf der Anmeldeseite selbst eine Endlosschleife. #}
+{% block appjs %}{% endblock %}
+
 {% block content %}
 <h1>Anmelden</h1>
 

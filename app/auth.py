@@ -222,13 +222,18 @@ def auth_active(request: Request) -> bool:
 
 
 def safe_next(value: str | None) -> str:
-    """Rücksprungziel: nur Pfade des eigenen Dienstes, sonst die Startseite."""
+    """Rücksprungziel: nur Pfade des eigenen Dienstes, sonst die Startseite.
+
+    Anmelde- und Abmeldepfad sind als Ziel ausgeschlossen: Ein Rücksprung auf `/login`
+    würde `next` bei jeder Umleitung weiter verschachteln.
+    """
     if (
         value
         and value.startswith("/")
         and not value.startswith("//")
         and "\\" not in value
         and value.isprintable()
+        and urlsplit(value).path not in ("/login", "/logout")
     ):
         return value
     return "/"

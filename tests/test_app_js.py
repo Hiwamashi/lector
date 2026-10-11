@@ -95,7 +95,7 @@ const umleitungen = [];
 global.window = {
   EventSource: function () {},
   location: {
-    pathname: "/empfaenger", search: scenario.search || "",
+    pathname: scenario.pathname || "/empfaenger", search: scenario.search || "",
     assign: (url) => { umleitungen.push(url); },
   },
 };
@@ -435,3 +435,13 @@ def test_wiederholte_sse_fehler_fragen_den_status_nur_einmal_ab(tmp_path):
         {"responses": [True], "streamDown": True, "errorTwice": True}, tmp_path
     )
     assert ergebnis["authAufrufe"] == 1
+
+
+def test_auf_der_anmeldeseite_wird_nie_umgeleitet(tmp_path):
+    """Regression: Lief app.js auf /login, führte das 401 von /events zu einer Umleitung auf
+    /login?next=/login?... — eine Schleife, bis der Header zu groß wurde (431)."""
+    ergebnis = _run(
+        {"responses": [401], "streamDown": True, "authStatus": 401, "pathname": "/login"},
+        tmp_path,
+    )
+    assert ergebnis["umleitungen"] == []

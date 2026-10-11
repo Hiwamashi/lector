@@ -37,7 +37,8 @@
   var umgeleitet = false;
 
   function zurAnmeldung() {
-    if (umgeleitet) return;
+    // Auf der Anmeldeseite selbst nie umleiten — sonst verschachtelt sich next endlos.
+    if (umgeleitet || window.location.pathname === "/login") return;
     umgeleitet = true;
     window.location.assign("/login?next=" + encodeURIComponent(
       window.location.pathname + window.location.search
