@@ -33,7 +33,7 @@
 - [x] 5.1 `app/templates/login.html` mit Nutzername, Passwort, optionalem MFA-Code, `next` und Meldungsbereich, gestaltet nach `DESIGN.md` und `feature-documentation/ui-texte.md`, plus Hinweis bei HTTP-Aufruf mit `SESSION_COOKIE_SECURE=true`. Prüfen: Ein Test rendert jede Meldung, und die Seite funktioniert unter der CSP ohne Konsolenfehler (manuell im Browser).
 - [x] 5.2 Nutzername und Abmelde-Button (Formular-POST) in `base.html`, nur im Modus `paperless`. Prüfen: Ein Test zeigt den Button im Modus `paperless`; im Modus `none` fehlt er.
 - [x] 5.3 `app/static/app.js`: Bei `401` auf `fetch` zur Anmeldung mit `next` umleiten. Bei `EventSource.onerror` per `/auth/status` prüfen und bei `401` ebenfalls umleiten. Prüfen: Ein Test in `tests/test_app_js.py` deckt beide Pfade ab.
-- [ ] 5.4 Manuelle Browserprüfung im Modus `paperless` mit Schutz-Headern: Dashboard mit Live-Update, Detailansicht, Upload, Rechnungen inkl. PDF-Vorschau und GiroCode, Empfänger inkl. Batch-Lauf, Abmelden, abgelaufene Sitzung (Cookie löschen) während eine Seite offen ist. Prüfen: Alles funktioniert, und die Konsole zeigt keine CSP-Verstöße.
+- [x] 5.4 Manuelle Browserprüfung im Modus `paperless` mit Schutz-Headern: Dashboard mit Live-Update, Detailansicht, Upload, Rechnungen inkl. PDF-Vorschau und GiroCode, Empfänger inkl. Batch-Lauf, Abmelden, abgelaufene Sitzung (Cookie löschen) während eine Seite offen ist. Prüfen: Alles funktioniert, und die Konsole zeigt keine CSP-Verstöße.
 
 ## 6. Betrieb und Dokumentation
 
@@ -41,7 +41,7 @@
 - [x] 6.2 Neue Feature-Doku `feature-documentation/web-zugang.md`: Ablauf, Modi, Sitzung, Drosselung, Herkunftsprüfung, Header, Proxy-Einrichtung (Host, TLS, SSE ungepuffert, `FORWARDED_ALLOW_IPS`), Abmelden aller Sitzungen durch Schlüsselwechsel. `konfiguration.md`, `web-ui-sse.md`, `datei-upload.md` und `README.md` dort aktualisieren, wo sie „keine Authentifizierung“ behaupten. Prüfen: `grep -ri "keine Authentifizierung" feature-documentation README.md` findet nur noch zutreffende Aussagen.
 - [x] 6.3 `PRODUCT.md` und `CLAUDE.md` (Abschnitte „Keine Authentifizierung“ und Datei-Upload) auf „Anmeldung über Paperless, optional über `AUTH_MODE`“ umstellen. In `prd/PROGRESS.md` einen Abschnitt zum Feature mit Stand und Abweichungen ergänzen. Prüfen: Die Dateien sind entsprechend geändert, und keine Stelle widerspricht mehr dem neuen Verhalten.
 - [x] 6.4 Gesamte Testsuite und Linting ausführen. Prüfen: `uv run pytest` und `uv run ruff check .` sind grün.
-- [ ] 6.5 Deployment gemäß Migrationsplan im Design: DNS `lector.nerd-wg.eu`, Proxy-Host mit TLS und ungepuffertem SSE, ENV `AUTH_MODE=paperless`, `SESSION_COOKIE_SECURE=true`, `FORWARDED_ALLOW_IPS` passend zum Proxy. Prüfen: Anmeldung über `https://lector.nerd-wg.eu` gelingt, nach fünf Fehlversuchen greift die Sperre, das Log zeigt die echte Client-IP, und `/healthz` antwortet ohne Anmeldung.
+- [x] 6.5 Deployment gemäß Migrationsplan im Design: DNS `lector.nerd-wg.eu`, Proxy-Host mit TLS und ungepuffertem SSE, ENV `AUTH_MODE=paperless`, `SESSION_COOKIE_SECURE=true`, `FORWARDED_ALLOW_IPS` passend zum Proxy. Prüfen: Anmeldung über `https://lector.nerd-wg.eu` gelingt, nach fünf Fehlversuchen greift die Sperre, das Log zeigt die echte Client-IP, und `/healthz` antwortet ohne Anmeldung.
 
 ## 7. Nachträge aus dem Security-Review
 

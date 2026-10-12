@@ -174,16 +174,6 @@ ausweisen, während die Veredelung einwandfrei arbeitet.
   selbst aber arbeitsfähig ist
 - **THEN** antwortet der Health-Endpunkt weiterhin mit einem Erfolgsstatus
 
-### Requirement: Der Dienst verlangt keine Authentifizierung
-
-Der Dienst ist für den Betrieb im lokalen Netz durch einen einzelnen Nutzer bestimmt und
-MUSS ohne Anmeldung bedienbar sein. Er DARF keine eigene Benutzerverwaltung mitbringen.
-
-#### Scenario: Zugriff ohne Anmeldedaten
-
-- **WHEN** die Weboberfläche ohne Anmeldedaten aufgerufen wird
-- **THEN** ist sie vollständig bedienbar
-
 ### Requirement: Der Dienst nimmt keine inhaltliche Klassifizierung vor
 
 Der Dienst DARF keine Inhaltsdaten aus Dokumenten extrahieren, keine Dokumentklassen

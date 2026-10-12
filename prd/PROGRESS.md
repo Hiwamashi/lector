@@ -580,14 +580,19 @@ die angebundene Paperless-Instanz. Ein Modus-Schalter `AUTH_MODE` lässt beide B
 | 2. Prüfung gegen Paperless (`obtain_token()`, `LoginResult`-Enum) | ✅ (2.2 MFA-Verifizierung ausstehend) |
 | 3. Zugangsschicht (Drosselung, Herkunftsprüfung, Middleware, Routen `/login`, `/logout`, `/auth/status`) | ✅ |
 | 4. Härtung (Security-Header, entfernte `/docs`) | ✅ |
-| 5. Oberfläche (Login-Template, Abmelde-Button, `app.js` → `/auth/status`) | ✅ (5.4 Browserprüfung ausstehend) |
-| 6. Betrieb & Dokumentation | ✅ (6.1–6.3 Doku-Update) |
+| 5. Oberfläche (Login-Template, Abmelde-Button, `app.js` → `/auth/status`) | ✅ |
+| 6. Betrieb & Dokumentation | ✅ (produktiv unter `https://lector.nerd-wg.eu`) |
+| 7. Nachträge aus dem Security-Review (7.1–7.3) | ✅ |
 
-**Stand (2026-10-11):** Task 7.1–7.2 implementiert; Task 7.3 (Dokumentation) in Umsetzung.
+**Stand (2026-10-12):** Umgesetzt, produktiv im Einsatz und als OpenSpec-Change archiviert
+(`openspec/changes/archive/2026-10-12-paperless-anmeldung/`, neue Haupt-Spec `web-zugang`).
+Nach dem Go-live behoben: Umleitungsschleife auf der Anmeldeseite (`app.js` lief dort mit;
+`next` verschachtelte sich bis HTTP 431). Fix: Anmeldeseite ohne `app.js`, keine Umleitung auf
+`/login`, `/login` und `/logout` als Rücksprungziel ausgeschlossen.
 
 ### Security-Review-Nachträge (7.1)
 
-Fünf Befunde aus der Sicherheitsprüfung behoben:
+Befunde aus der Sicherheitsprüfung behoben:
 
 1. **Drosselung gegen parallele Anfragen:** `try_begin()` reserviert einen Versuch **vor** dem
    Paperless-Aufruf und blockiert gleichzeitige Versuche desselben Nutzers. Nur `finish()` gibt
@@ -607,12 +612,13 @@ Fünf Befunde aus der Sicherheitsprüfung behoben:
 5. **Keine Redirects in `obtain_token()`:** `httpx.AsyncClient` läuft mit `follow_redirects=False`.
    Eine Redirect-Antwort gilt als `UNAVAILABLE` und wird nicht verfolgt (Passwort-Sicherheit).
 
-6. **Content-Type-Filter auf Rechnungsvorschau:** `GET /invoices/{id}/preview` lehnt Anfragen ab,
-   die nicht `application/pdf` akzeptieren (HTTP 415). Damit lässt sich die PDF-URL nicht als
-   HTML oder Script einbetten.
+6. **Content-Type-Filter auf Rechnungsvorschau:** `GET /invoices/{id}/preview` reicht die
+   Paperless-Antwort nur durch, wenn sie `application/pdf` oder ein Rasterbild
+   (`image/png|jpeg|gif|webp|tiff`) ist, sonst HTTP 415. So kann kein HTML/SVG aus Paperless
+   auf Lectors Origin ausgeführt werden.
 
-7. **Engere CSP der Rechnungsvorschau:** `frame-ancestors 'self'` erlaubt Einbettung nur von der
-   gleichen URL, nicht `frame-ancestors 'none'`.
+7. **Eigene CSP der Rechnungsvorschau:** `default-src 'self'; script-src 'none';
+   frame-ancestors 'self'` — einbettbar nur in Lectors eigene Seiten, ohne Skriptausführung.
 
 8. **Startwarnung auch bei leerem/`*` FORWARDED_ALLOW_IPS:** `warn_auth_proxy_config()` warnt nicht
    nur bei fehlendem, sondern auch bei leerem oder Wildcard-Wert.
@@ -644,10 +650,9 @@ verlängern). Deshalb: Neue Tabelle `web_sessions` mit Spalten `id` (Sitzungs-ID
    im Modus `none` nicht vorhanden — nicht nur ungenutzt, sondern nicht erreichbar. Das
    vereinfacht die Tests und vermeidet Verwirrung über „Login-Seite sichtbar obwohl anmeldefrei”.
 
-3. **Leere Angaben zählen nicht als Fehlversuch:** `username=””` ist syntaktisch valide,
-   aber unsinnig — die Drosselung würde alle aus der gleichen IP mit demselben leeren Namen
-   blockieren. Das wird als Netzwerk-Fehler (nicht versucht) klassifiziert, nicht als
-   Fehlversuch.
+3. **Leere Angaben zählen nicht als Fehlversuch:** Fehlt Nutzername oder Passwort, meldet die
+   Seite „Anmeldung fehlgeschlagen“, ohne Paperless zu fragen und ohne die Drosselung zu
+   belasten.
 
 4. **Anfragen ohne `text/html` im Accept erhalten `401` statt `303`:** Scripts und Tools
    (z. B. `curl`) erhalten einen HTTP-Statuscode, keine Umleitung — dasselbe Verhalten wie
@@ -657,9 +662,6 @@ verlängern). Deshalb: Neue Tabelle `web_sessions` mit Spalten `id` (Sitzungs-ID
 
 - **Task 2.2:** MFA-Antwort von Paperless verifizieren (echte Unterscheidung „Code fehlt” vs.
   „Code falsch” dokumentieren).
-- **Task 5.4:** Browserprüfung (CSP, Live-Aktualisierung, Upload, Rechnungs-Vorschau, Abmelden,
-  abgelaufene Session).
-- **Task 6.5:** Deployment (DNS-Eintrag, Proxy-Einrichtung, Produktiv-ENV, Live-Test).
 
 **Dokumentation:** `feature-documentation/web-zugang.md` (aktualisiert mit serverseitigen Sitzungen,
 Drosselung, obtain_token, FORWARDED_ALLOW_IPS-Hinweis), `feature-documentation/datenhaltung.md`
