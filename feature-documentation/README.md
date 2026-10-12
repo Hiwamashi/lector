@@ -20,8 +20,9 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 |---|---|---|
 | [konfiguration.md](konfiguration.md) | `app/config.py` | ENV-Konfiguration |
 | [datenhaltung.md](datenhaltung.md) | `app/db.py`, `app/repository.py`, `app/models.py` | SQLite-Historie |
-| [datei-upload.md](datei-upload.md) | `app/main.py`, `app/fileops.py`, `app/templates/` | Web-UI Datei-Upload |
+| [datei-upload.md](datei-upload.md) | `app/main.py`, `app/fileops.py`, `app/templates/`, `app/api.py` | Web-UI & App-Schnittstellen-Datei-Upload |
 | [web-zugang.md](web-zugang.md) | `app/auth.py`, `app/main.py`, `app/config.py`, `app/paperless.py` | Anmeldung über Paperless, optional per `AUTH_MODE` |
+| [app-schnittstelle.md](app-schnittstelle.md) | `app/api.py`, `app/auth.py`, `app/main.py` | REST-API für iOS-App (Bearer-Token, Vorgänge, Upload, Events) |
 | [watch-folder.md](watch-folder.md) | `app/watcher.py`, `app/worker.py` | Watch-Folder, Queue, Worker |
 | [format-erkennung-erechnung.md](format-erkennung-erechnung.md) | `app/detection.py` | Format-Routing & E-Rechnungs-Bypass |
 | [bildvorverarbeitung.md](bildvorverarbeitung.md) | `app/pages.py`, `app/preprocessing.py` | Seitenextraktion & Vorverarbeitung |
@@ -37,6 +38,7 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 | [paperless-integration/](paperless-integration/README.md) | `app/paperless.py`, `app/girocode.py`, `app/sevdesk.py`, `app/paperless_sync.py` | GiroCode-Anzeige & SevDesk-Export (entkoppelt) |
 | [startvalidierung-und-healthcheck.md](startvalidierung-und-healthcheck.md) | `app/config.py`, `app/main.py`, `app/worker.py`, `app/repository.py` | Startvalidierung, `/healthz`, Container-`HEALTHCHECK` |
 | [docker-deployment.md](docker-deployment.md) | `Dockerfile`, `docker-compose.example.yml` | Deployment |
+| [ios-app/](ios-app/README.md) | `ios/` | Native SwiftUI-App für iOS: Einrichtung, Anmeldung, Historie, Live-Updates, Scanner, Fotoauswahl, Share Extension, PDF-Erzeugung |
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack
 

@@ -42,3 +42,7 @@ prd/token-log.csv
 .opencode/
 .claude/commands/
 .claude/skills/
+
+# iOS-App (XcodeGen erzeugt das Projekt, siehe ios/README.md)
+ios/*.xcodeproj
+ios/build/

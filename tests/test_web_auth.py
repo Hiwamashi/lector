@@ -831,3 +831,155 @@ def test_modus_none_legt_keine_sitzungen_an(plain_client):
     c.post("/login", data={"username": "x", "password": "y"}, headers=EIGENE_HERKUNFT)
     n = application.state.repo._conn.execute("SELECT COUNT(*) FROM web_sessions").fetchone()[0]
     assert n == 0
+
+
+# --- Zugangsschlüssel der App (Change ios-app, design.md D3) -----------------------------
+
+
+def _api_login(c, username="sascha"):
+    """Meldet sich über die Schnittstelle an (ohne Cookie) und liefert den Schlüssel."""
+    resp = c.post(
+        "/api/v1/login",
+        json={"username": username, "password": PASSWORT},
+        headers={"Origin": "https://fremd.example"},  # Herkunft ist für den Login ohne Belang
+    )
+    assert resp.status_code == 200, resp.text
+    c.cookies.clear()
+    return resp.json()["token"]
+
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_post_mit_schluessel_ohne_origin_wird_ausgefuehrt(anon_client, tmp_path):
+    c, _, _ = anon_client
+    token = _api_login(c)
+    resp = c.post(
+        "/upload",
+        files=[("files", ("scan.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        headers=_bearer(token),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert [p.name for p in (tmp_path / "scan-in").iterdir()] == ["scan.pdf"]
+
+
+def test_post_mit_cookie_ohne_origin_bleibt_403(auth_client, tmp_path):
+    c, _, _ = auth_client
+    resp = c.post(
+        "/upload",
+        files=[("files", ("scan.pdf", b"%PDF-1.4 x", "application/pdf"))],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 403
+    assert list((tmp_path / "scan-in").iterdir()) == []
+
+
+def test_schluessel_sitzung_kommt_ohne_cookie_aus_und_setzt_keins(anon_client):
+    c, _, _ = anon_client
+    token = _api_login(c)
+    resp = c.get("/auth/status", headers=_bearer(token))
+    assert resp.status_code == 204
+    assert "set-cookie" not in resp.headers
+
+
+def test_ungueltiger_schluessel_neben_gueltigem_cookie_401(auth_client):
+    """Schickt die Anfrage einen Schlüssel mit, entscheidet allein er: kein Rückfall auf das
+    (gültige) Cookie."""
+    c, _, _ = auth_client
+    assert c.get("/auth/status").status_code == 204
+    resp = c.get("/auth/status", headers=_bearer("kein-gueltiger-schluessel"))
+    assert resp.status_code == 401
+    assert "set-cookie" not in resp.headers
+    resp = c.get("/api/v1/documents", headers=_bearer("kein-gueltiger-schluessel"))
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "not_authenticated"
+
+
+def test_cookie_wert_als_schluessel_wird_abgelehnt(auth_client):
+    c, _, _ = auth_client
+    cookie = c.cookies.get("lector_session")
+    assert c.get("/auth/status", headers=_bearer(cookie)).status_code == 401
+
+
+def test_api_ohne_sitzung_401_json_ohne_umleitung(anon_client):
+    c, _, _ = anon_client
+    for headers in ({}, HTML):  # auch mit Browser-Accept keine Umleitung
+        resp = c.get("/api/v1/documents", headers=headers, follow_redirects=False)
+        assert resp.status_code == 401
+        assert "location" not in resp.headers
+        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.json()["error"]["code"] == "not_authenticated"
+        assert resp.json()["error"]["message"]
+    resp = c.post("/api/v1/upload", follow_redirects=False)
+    assert resp.status_code == 401
+
+
+def test_options_ohne_cors_freigabe(anon_client):
+    c, _, _ = anon_client
+    token = _api_login(c)
+    for headers in (
+        {},
+        _bearer(token),
+        {"Origin": "https://fremd.example", "Access-Control-Request-Method": "GET"},
+    ):
+        resp = c.options("/api/v1/documents", headers=headers)
+        assert not [h for h in resp.headers if h.lower().startswith("access-control-allow")]
+    resp = c.get("/api/info", headers={"Origin": "https://fremd.example"})
+    assert not [h for h in resp.headers if h.lower().startswith("access-control-allow")]
+
+
+async def _asgi_get(application, path, headers):
+    """Ruft die App direkt per ASGI auf und bricht nach dem ersten Körperblock ab (ein
+    TestClient-Aufruf von /events würde hängen). Liefert Status, Header und den Block."""
+    gesehen: dict = {}
+
+    class Fertig(Exception):
+        pass
+
+    async def receive():
+        await asyncio.sleep(3600)
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            gesehen["status"] = message["status"]
+            gesehen["headers"] = {k.decode(): v.decode() for k, v in message["headers"]}
+        elif message["type"] == "http.response.body":
+            gesehen["body"] = message["body"]
+            raise Fertig
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [(b"host", b"testserver"), *headers],
+        "client": ("testclient", 1),
+        "server": ("testserver", 80),
+    }
+    with pytest.raises(Fertig):
+        await application(scope, receive, send)
+    return gesehen
+
+
+def test_events_mit_schluessel_oeffnet_den_strom(anon_client):
+    """200 und Ereignisstrom mit Zugangsschlüssel, ohne Cookie; ohne Schlüssel 401."""
+    c, application, _ = anon_client
+    token = _api_login(c)
+
+    mit = asyncio.run(
+        _asgi_get(application, "/events", [(b"authorization", f"Bearer {token}".encode())])
+    )
+    assert mit["status"] == 200
+    assert mit["headers"]["content-type"].startswith("text/event-stream")
+    assert "set-cookie" not in mit["headers"]
+    assert mit["body"] == b": connected\n\n"
+
+    ohne = asyncio.run(_asgi_get(application, "/events", []))
+    assert ohne["status"] == 401

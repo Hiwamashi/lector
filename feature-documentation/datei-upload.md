@@ -1,6 +1,6 @@
-# Datei-Upload über das Web-UI
+# Datei-Upload über das Web-UI und die App-Schnittstelle
 
-**Module:** `app/main.py` (Endpunkt `POST /upload`), `app/fileops.py` (`sanitize_upload_filename`, `store_upload`), `app/templates/dashboard.html` (Formular + Rückmeldungen)
+**Module:** `app/main.py` (Endpunkt `POST /upload` für HTML, `accept_uploads()` gemeinsamer Kern), `app/api.py` (Endpunkt `POST /api/v1/upload` für die Schnittstelle), `app/fileops.py` (`sanitize_upload_filename`, `store_upload`), `app/templates/dashboard.html` (Formular + Rückmeldungen)
 
 ## Zweck und Abgrenzung
 
@@ -92,6 +92,24 @@ Eine hochgeladene Datei erscheint **nicht sofort** in der Dashboard-Übersicht, 
 Daher: ein Upload mit sofortiger Sichtbarkeit könnte **bis zu 2 + 6 = 8 Sekunden** dauern, bis die Datei in der Dashboard-Tabelle erscheint.
 
 Dies ist **Absicht**. Ein Upload vom lokalen PC ist schneller als vom Netzwerk; würde die Sichtbarkeit sofort erfolgen, könnte man nicht sicher sein, ob eine schleppend erscheinende Datei noch hochgeladen wird oder schon vollständig ist.
+
+## Gemeinsamer Upload-Kern für HTML und Schnittstelle
+
+Aus der HTML-Route `POST /upload` wurde eine Funktion `accept_uploads(files, settings) -> list[UploadOutcome]` in `app/main.py` herausgelöst. Sie übernimmt die gesamte Upload-Logik:
+
+1. Namensabsicherung via `sanitize_upload_filename()`
+2. Format-Prüfung via `detection.is_supported()`
+3. Ablage im Eingangsordner via `store_upload()` über den Default-Executor
+
+Jedes `UploadOutcome` enthält:
+- `filename`: Der Client-Name (ggf. gekürzt)
+- `accepted`: `true`, wenn die Datei abgelegt wurde
+- `reason`: Ablehnung­grund (`unsupported_format`, `unusable_name`, `store_failed`) oder `None`
+- `stored_as`: Der tatsächliche Name im Eingangsordner oder `None`
+
+Die HTML-Route `POST /upload` nutzt diese Daten, um Query-Parameter für das Dashboard zu erzeugen und umzuleiten. Die Schnittstellen-Route `POST /api/v1/upload` gibt die Liste als JSON zurück — mit HTTP 200 auch dann, wenn einzelne Dateien abgewiesen werden. Ohne Datei antwortet sie mit 400 `no_files`.
+
+Siehe [App-Schnittstelle](app-schnittstelle.md) für das vollständige Schnittstellen-Protokoll.
 
 ## Bewusst ausgelassen
 
