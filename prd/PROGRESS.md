@@ -577,7 +577,7 @@ die angebundene Paperless-Instanz. Ein Modus-Schalter `AUTH_MODE` lässt beide B
 | Task | Status |
 |---|---|
 | 1. Konfiguration & Abhängigkeiten (`itsdangerous`, Sitzungsgeheimnis-Laden) | ✅ |
-| 2. Prüfung gegen Paperless (`obtain_token()`, `LoginResult`-Enum) | ✅ (2.2 MFA-Verifizierung ausstehend) |
+| 2. Prüfung gegen Paperless (`obtain_token()`, `LoginResult`-Enum) | ✅ (MFA im Betrieb bestätigt) |
 | 3. Zugangsschicht (Drosselung, Herkunftsprüfung, Middleware, Routen `/login`, `/logout`, `/auth/status`) | ✅ |
 | 4. Härtung (Security-Header, entfernte `/docs`) | ✅ |
 | 5. Oberfläche (Login-Template, Abmelde-Button, `app.js` → `/auth/status`) | ✅ |
@@ -658,10 +658,9 @@ verlängern). Deshalb: Neue Tabelle `web_sessions` mit Spalten `id` (Sitzungs-ID
    (z. B. `curl`) erhalten einen HTTP-Statuscode, keine Umleitung — dasselbe Verhalten wie
    Fragmente und SSE. Damit ist ein automatisierter Zugriff sofort erkennbar.
 
-**Offen / ausstehend:**
-
-- **Task 2.2:** MFA-Antwort von Paperless verifizieren (echte Unterscheidung „Code fehlt” vs.
-  „Code falsch” dokumentieren).
+**Offen / ausstehend:** nichts. Task 2.2 (MFA) wurde am 2026-10-12 im Betrieb bestätigt:
+Die Anmeldung mit MFA-Code funktioniert. Der echte Antworttext von Paperless liegt nicht als
+Testfixture vor; die Tests nutzen nachgebildete Antworten.
 
 **Dokumentation:** `feature-documentation/web-zugang.md` (aktualisiert mit serverseitigen Sitzungen,
 Drosselung, obtain_token, FORWARDED_ALLOW_IPS-Hinweis), `feature-documentation/datenhaltung.md`

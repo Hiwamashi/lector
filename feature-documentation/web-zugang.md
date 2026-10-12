@@ -230,7 +230,7 @@ Ein Nutzer, der in Paperless deaktiviert oder gelöscht wird, bleibt bis zu 30 T
 
 Die Unterscheidung zwischen „MFA-Code fehlt" (→ Seite zeigt „MFA erforderlich") und „MFA-Code ist falsch" (→ „Anmeldung fehlgeschlagen") basiert auf dem Antworttext von Paperless bei `400`-Fehlern. Ändert Paperless die Fehlermeldung, fällt der Fall auf `INVALID` zurück — die Seite zeigt nur „Anmeldung fehlgeschlagen", und der Nutzer sieht nicht explizit „MFA nötig". Das MFA-Feld ist aber immer sichtbar, daher kein großer Fehler.
 
-TODO: Nach Verifizierung der echten Antwort von `POST /api/token/` in Task 2.2 konkrete Anforderung dokumentieren.
+Im Betrieb gegen `https://paperless.nerd-wg.eu` bestätigt (2026-10-12): Die Anmeldung mit MFA-Code funktioniert. Den genauen Antworttext von Paperless gibt es nicht als Testfixture; die Tests in `tests/test_paperless_login.py` arbeiten weiter mit nachgebildeten Antworten.
 
 ## Code-Orte
 
