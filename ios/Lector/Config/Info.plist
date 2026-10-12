@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key><string>de</string>
+	<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+	<key>CFBundleDisplayName</key><string>Lector</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key><true/>
+	<key>UILaunchScreen</key><dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array><string>UIInterfaceOrientationPortrait</string></array>
+	<key>ITSAppUsesNonExemptEncryption</key><false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Lector nutzt die Kamera, um Belege zu scannen und an deinen Lector-Dienst zu übergeben.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Lector liest Fotos aus deiner Mediathek, die du auswählst, um sie an deinen Lector-Dienst zu übergeben.</string>
+	<!-- Zugriffsgruppe des Zugangsschlüssels (entitlements); unaufgelöst im Simulator ohne Team, dann greift die App-Standardgruppe. -->
+	<key>KeychainAccessGroup</key><string>$(AppIdentifierPrefix)me.krinke.lector.shared</string>
+	<!-- http nur im lokalen Netz (.local, Namen ohne Punkt, IP-Adressen). Kein NSAllowsArbitraryLoads. -->
+	<key>NSAppTransportSecurity</key>
+	<dict><key>NSAllowsLocalNetworking</key><true/></dict>
+</dict>
+</plist>

@@ -666,3 +666,42 @@ Testfixture vor; die Tests nutzen nachgebildete Antworten.
 Drosselung, obtain_token, FORWARDED_ALLOW_IPS-Hinweis), `feature-documentation/datenhaltung.md`
 (web_sessions-Tabelle); aktualisiert in `.env.example`, `docker-compose.example.yml`, `konfiguration.md`,
 `web-ui-sse.md`, `datei-upload.md`, `README.md`, `PRODUCT.md` und `CLAUDE.md`.
+
+## Zusatz-Feature: iOS-App mit App-Schnittstelle (ios-app) — in Umsetzung
+
+Belege lassen sich direkt vom iPhone übergeben (Scanner, Fotos, Teilen-Menü), und die App
+zeigt die Historie wie das Dashboard, einschließlich Freigeben und Verwerfen angehaltener
+Vorgänge. Server-seitig kommt dafür eine JSON-Schnittstelle unter `/api/` hinzu. Die
+Anmeldung läuft wie in der Weboberfläche über Paperless; die App weist ihre Sitzung mit einem
+Zugangsschlüssel statt mit einem Cookie nach. OpenSpec-Change: `openspec/changes/ios-app/`.
+
+| Task | Status |
+|---|---|
+| 1. Zugangsschlüssel in der Zugangsschicht (Bearer-Weiche, gemeinsamer Anmeldekern) | ✅ |
+| 2. App-Schnittstelle (`app/api.py`: Info, Login/Logout, Liste, Detail, Entscheidungen, Upload) | ✅ |
+| 3. iOS-Projektgerüst (`ios/`, XcodeGen, App + Share Extension) | ✅ |
+| 4. iOS: Netzwerk, Einrichtung der Serveradresse, Anmeldung, Abmelden/Server wechseln | ✅ |
+| 5. iOS: Historie, Live-Aktualisierung, Detail mit Entscheidungen | ✅ |
+| 6. iOS: PDF-Erzeugung ✅, Scanner/Fotos 🚧, Teilen-Menü 🚧 (je: Geräteprüfung offen) | 🚧 |
+| 7. Abnahme auf dem Gerät 🚧, Dokumentation ✅, Fortschritt/Graph ✅ | 🚧 |
+
+**Stand (2026-10-12):** Server und App sind umgesetzt; Server- und iOS-Code wurden je einmal
+geprüft (Review), alle Befunde behoben. Offen ist die Abnahme auf einem echten iPhone per
+TestFlight gegen die Produktivinstanz: Scanner, Teilen-Menü (Mail, Dateien), Live-Strom
+durch den Reverse Proxy. Checkliste: `feature-documentation/ios-app/abnahme.md`.
+
+**Bewusste Entscheidungen bei der Umsetzung:**
+
+1. **Ereignisstrom unverändert:** `/events` sendet weiterhin `data: doc:<id>` (daneben
+   `inv:`, `rec:`, `batch:`). Die App wertet nur `doc:` aus; die Weboberfläche bleibt
+   unberührt.
+2. **Pfade werden maskiert:** Fehlermeldungen und Verlaufseinträge enthalten in der
+   Schnittstelle nur Dateinamen, keine NAS-Pfade. Die Weboberfläche zeigt die gespeicherten
+   Texte weiter vollständig.
+3. **TIFF aus dem Teilen-Menü bleibt unverändert**, nur Bilder aus Kamera, Mediathek und
+   geteilte Fotoformate werden zu PDF.
+4. **Keine Schemaänderung:** App-Sitzungen sind Zeilen in `web_sessions`; der Schlüssel ist
+   die mit eigenem Salt signierte Sitzungskennung.
+
+**Dokumentation:** `feature-documentation/app-schnittstelle.md`, `feature-documentation/ios-app/`,
+`ios/README.md`; aktualisiert `web-zugang.md`, `datei-upload.md`, `feature-documentation/README.md`.

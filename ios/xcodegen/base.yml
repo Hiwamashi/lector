@@ -1,0 +1,27 @@
+# Gemeinsame Basis für jede eigene App: gilt unabhängig von Namen, Targets und Bundle-ID.
+options:
+  bundleIdPrefix: me.krinke
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    # Sandbox für Build-Skripte: verhindert, dass ein Skript unbemerkt das Repo umschreibt.
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ENABLE_TESTABILITY: NO
+    SDKROOT: iphoneos
+    TARGETED_DEVICE_FAMILY: "1"
+  configs:
+    Debug:
+      ENABLE_TESTABILITY: YES
+      SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+      GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    Release:
+      # Im Release darf keine Warnung durchrutschen.
+      SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+      GCC_TREAT_WARNINGS_AS_ERRORS: YES

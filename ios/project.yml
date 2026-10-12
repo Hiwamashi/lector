@@ -1,0 +1,92 @@
+name: Lector
+include:
+  - xcodegen/base.yml
+
+options:
+  developmentLanguage: de
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Automatisches Signing; Archiv mit -allowProvisioningUpdates legt Zertifikat und Profile an.
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: J3P792SJ75
+
+targets:
+  Lector:
+    type: application
+    platform: iOS
+    sources:
+      - path: Lector
+        excludes:
+          - Config/**
+      # Gemeinsamer Code von App und Share Extension (Netzwerk, DTOs, TokenStore, ServerKonfiguration).
+      - path: Shared
+    dependencies:
+      - target: LectorShare
+    settings:
+      base:
+        # Bundle-ID ist endgültig und ändert sich nie.
+        PRODUCT_BUNDLE_IDENTIFIER: me.krinke.lector
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Lector/Config/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Lector/Config/Lector.entitlements
+        # Nur iPhone: Die iOS-Vorgabe von XcodeGen setzt am Target "1,2" und überschreibt die Projektebene.
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    scheme:
+      testTargets:
+        - LectorTests
+
+  LectorShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: LectorShare
+        excludes:
+          - Config/**
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.krinke.lector.share
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: LectorShare/Config/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LectorShare/Config/LectorShare.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  LectorTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: LectorTests
+    dependencies:
+      - target: Lector
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: me.krinke.lector.tests
+
+  # Eigenes Schema (unten), nicht im Standard-Schema "Lector".
+  LectorUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: LectorUITests
+    dependencies:
+      - target: Lector
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: me.krinke.lector.uitests
+
+schemes:
+  LectorUITests:
+    build:
+      targets:
+        Lector: all
+        LectorUITests: [test]
+    test:
+      targets:
+        - LectorUITests
