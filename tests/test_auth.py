@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from app.auth import LoginThrottle, _ip_key, origin_allowed
+import base64
+import json
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from itsdangerous import TimestampSigner
+
+from app.auth import LoginThrottle, _ip_key, load_app_session, origin_allowed, sign_app_token
+from app.repository import Repository
 
 
 class _Clock:
@@ -201,3 +209,104 @@ def test_get_immer_erlaubt():
     for m in ("GET", "HEAD", "OPTIONS"):
         assert origin_allowed(m, "https", HOST, None, None)
         assert origin_allowed(m, "https", HOST, "https://evil.example", None)
+
+
+# --- Zugangsschlüssel der App (ios-app D2) -----------------------------------------------
+
+SECRET = "geheimnis-a"
+
+
+@pytest.fixture
+def repo(tmp_path):
+    r = Repository(tmp_path / "lector.db")
+    yield r
+    r.close()
+
+
+def _token_fuer(repo, *, created=None, seen=None):
+    """Legt eine Sitzung an (optional mit zurückdatierten Zeitpunkten) und liefert
+    ``(sid, schluessel)``."""
+    now = datetime.now(UTC)
+    sid = repo.create_web_session("sascha", now=created or now)
+    if seen is not None:
+        repo.touch_web_session(sid, seen)
+    return sid, sign_app_token(SECRET, sid)
+
+
+def test_schluessel_gueltig(repo):
+    sid, token = _token_fuer(repo)
+    assert load_app_session(token, SECRET, repo) == {"sid": sid, "user": "sascha"}
+
+
+def test_schluessel_veraendert_wird_abgelehnt(repo):
+    _, token = _token_fuer(repo)
+    assert load_app_session(token[:-2] + "xx", SECRET, repo) == {}
+    assert load_app_session("x" + token, SECRET, repo) == {}
+    assert load_app_session("", SECRET, repo) == {}
+    # Selbst erstellt: nur die sid, ohne Signatur.
+    sid = token.split(".")[0]
+    assert load_app_session(sid, SECRET, repo) == {}
+
+
+def test_cookie_wert_taugt_nicht_als_schluessel(repo):
+    """Eigenes Salt: Ein abgegriffenes Cookie ist als Header-Schlüssel wertlos."""
+    sid, _ = _token_fuer(repo)
+    payload = base64.b64encode(json.dumps({"sid": sid}).encode("utf-8"))
+    cookie_wert = TimestampSigner(SECRET).sign(payload).decode("utf-8")
+    assert load_app_session(cookie_wert, SECRET, repo) == {}
+    # Auch eine mit dem Cookie-Salt signierte nackte sid wird abgelehnt.
+    assert load_app_session(TimestampSigner(SECRET).sign(sid).decode(), SECRET, repo) == {}
+
+
+def test_gewechseltes_geheimnis_macht_schluessel_ungueltig(repo):
+    _, token = _token_fuer(repo)
+    assert load_app_session(token, "anderes-geheimnis", repo) == {}
+
+
+def test_geloeschte_sitzung_macht_schluessel_ungueltig(repo):
+    sid, token = _token_fuer(repo)
+    repo.delete_web_session(sid)
+    assert load_app_session(token, SECRET, repo) == {}
+
+
+def test_leerlauf_grenze(repo):
+    now = datetime.now(UTC)
+    _, frisch = _token_fuer(repo, created=now - timedelta(days=40), seen=now - timedelta(days=29))
+    assert load_app_session(frisch, SECRET, repo) != {}
+    _, alt = _token_fuer(repo, created=now - timedelta(days=40), seen=now - timedelta(days=31))
+    assert load_app_session(alt, SECRET, repo) == {}
+
+
+def test_absolute_grenze_trotz_regelmaessiger_nutzung(repo):
+    """Auch ein eben noch benutzter Schlüssel endet 90 Tage nach der Anmeldung — und die
+    Signatur selbst läuft nie ab (kein `max_age`): Ein 100 Tage alter Schlüssel einer
+    jungen, aktiven Sitzung bliebe gültig."""
+    now = datetime.now(UTC)
+    _, zu_alt = _token_fuer(repo, created=now - timedelta(days=91), seen=now - timedelta(hours=1))
+    assert load_app_session(zu_alt, SECRET, repo) == {}
+    _, noch_gut = _token_fuer(repo, created=now - timedelta(days=89), seen=now)
+    assert load_app_session(noch_gut, SECRET, repo) != {}
+
+
+def test_signatur_ohne_altersgrenze(repo, monkeypatch):
+    """Die App erneuert den Schlüssel nie: Der Signaturzeitstempel darf keine Rolle spielen."""
+    sid, _ = _token_fuer(repo)
+    alt = TimestampSigner(SECRET, salt="lector-app-token")
+    vor_400_tagen = int(datetime.now(UTC).timestamp()) - 400 * 86400
+    with monkeypatch.context() as m:
+        m.setattr(TimestampSigner, "get_timestamp", lambda self: vor_400_tagen)
+        token = alt.sign(sid).decode()
+    assert load_app_session(token, SECRET, repo) == {"sid": sid, "user": "sascha"}
+
+
+def test_last_seen_hoechstens_einmal_pro_minute(repo):
+    now = datetime.now(UTC)
+    sid, token = _token_fuer(repo, seen=now - timedelta(seconds=30))
+    vorher = repo.get_web_session(sid)[2]
+    assert load_app_session(token, SECRET, repo) != {}
+    assert repo.get_web_session(sid)[2] == vorher  # unter einer Minute: nicht geschrieben
+
+    sid2, token2 = _token_fuer(repo, seen=now - timedelta(minutes=5))
+    vorher2 = repo.get_web_session(sid2)[2]
+    assert load_app_session(token2, SECRET, repo) != {}
+    assert repo.get_web_session(sid2)[2] > vorher2

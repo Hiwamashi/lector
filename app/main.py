@@ -13,13 +13,16 @@ import re
 import tempfile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Annotated, BinaryIO
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -31,6 +34,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import detection
+from .api import ApiError, api_error_handler, api_internal_error_handler, api_validation_handler
+from .api import router as api_router
 from .auth import (
     AuthMiddleware,
     LoginThrottle,
@@ -387,6 +392,12 @@ app = FastAPI(
 # Schutz-Header liegen damit auch auf 401/303/403 der Zugangsprüfung.
 app.add_middleware(AuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+# App-Schnittstelle unter /api/ (ios-app D1): Router plus JSON-Fehlerbehandlung. Die
+# Validierungsantwort wird nur unter /api/ ersetzt, sonst bleibt FastAPIs Standard.
+app.include_router(api_router)
+app.add_exception_handler(ApiError, api_error_handler)
+app.add_exception_handler(RequestValidationError, api_validation_handler)
+app.add_exception_handler(Exception, api_internal_error_handler)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 @app.exception_handler(httpx.HTTPError)
@@ -485,6 +496,59 @@ def _auth_routes_absent() -> Response:
     return Response("Not Found", status_code=404)
 
 
+class _Throttled(Enum):
+    THROTTLED = "throttled"
+
+
+# Ergebnis von `authenticate()`, wenn die Drosselung den Versuch abgewiesen hat (Paperless
+# wurde dann nicht befragt). Eigener Wert statt eines `LoginResult`, weil Paperless nichts
+# geantwortet hat.
+THROTTLED = _Throttled.THROTTLED
+
+
+async def authenticate(
+    request: Request, username: str, password: str, code: str | None
+) -> tuple[LoginResult | _Throttled, str | None]:
+    """Anmeldekern für Anmeldeseite und App-Schnittstelle (ios-app D4).
+
+    Übernimmt Drosselung, Prüfung durch Paperless (`obtain_token`) und Protokollierung und
+    eröffnet bei Erfolg eine neue Sitzung. Liefert ``(Ergebnis, sid)``; die `sid` gibt es nur
+    bei ``LoginResult.OK``. Beide Wege teilen sich damit zwangsläufig eine `LoginThrottle`.
+    Was mit einer mitgebrachten Sitzung geschieht (Rotation des Cookies), entscheidet der
+    Aufrufer — der Kern fasst `request.session` nicht an. Der Aufrufer prüft vorher, dass
+    Nutzername und Passwort nicht leer sind.
+    """
+    settings: Settings = request.app.state.settings
+    repo: Repository = request.app.state.repo
+    throttle: LoginThrottle = request.app.state.login_throttle
+    username = username.strip()
+    ip = request.client.host if request.client else "unbekannt"
+    # Versuch VOR dem await reservieren: laufende Versuche zählen wie Fehlversuche, sonst
+    # ließe sich die Sperre mit parallelen Anfragen umgehen. Je Nutzername läuft höchstens
+    # ein Versuch gleichzeitig.
+    if not throttle.try_begin(ip, username):
+        # Nutzername und IP kommen vom Client: mit %r loggen (kein Zeilenumbruch einschleusbar).
+        log.warning("Anmeldung gebremst: ip=%s nutzer=%r", ip, username)
+        return THROTTLED, None
+
+    failed = False
+    result: LoginResult | None = None
+    try:
+        result = await obtain_token(
+            settings.paperless_url, username, password, (code or "").strip() or None
+        )
+        # Auch die MFA-Aufforderung zählt: sonst wäre sie ein kostenloses Passwort-Orakel.
+        failed = result in (LoginResult.INVALID, LoginResult.MFA_REQUIRED)
+    finally:
+        throttle.finish(ip, username, failed)
+    if result is LoginResult.OK:
+        throttle.record_success(username)
+        return result, repo.create_web_session(username)
+    if result is LoginResult.INVALID:
+        log.warning("Anmeldung fehlgeschlagen: ip=%s nutzer=%r", ip, username)
+    return result, None
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request, next: str | None = Query(None)):
     if not auth_active(request):
@@ -505,13 +569,9 @@ async def login_submit(
 ):
     if not auth_active(request):
         return _auth_routes_absent()
-    settings: Settings = request.app.state.settings
-    repo: Repository = request.app.state.repo
-    throttle: LoginThrottle = request.app.state.login_throttle
     username = username.strip()
     target = safe_next(next)
     next_url = target if target != "/" else ""
-    ip = request.client.host if request.client else "unbekannt"
 
     def fail(message: str, kind: str = "alert") -> HTMLResponse:
         return _login_page(
@@ -520,40 +580,23 @@ async def login_submit(
 
     if not username or not password:
         return fail("Anmeldung fehlgeschlagen. Bitte Nutzername und Passwort eingeben.")
-    # Versuch VOR dem await reservieren: laufende Versuche zählen wie Fehlversuche, sonst
-    # ließe sich die Sperre mit parallelen Anfragen umgehen. Je Nutzername läuft höchstens
-    # ein Versuch gleichzeitig.
-    if not throttle.try_begin(ip, username):
-        # Nutzername und IP kommen vom Client: mit %r loggen (kein Zeilenumbruch einschleusbar).
-        log.warning("Anmeldung gebremst: ip=%s nutzer=%r", ip, username)
+    result, sid = await authenticate(request, username, password, code)
+    if result is THROTTLED:
         return fail("Zu viele Fehlversuche. Bitte in einigen Minuten erneut versuchen.")
-
-    failed = False
-    result: LoginResult | None = None
-    try:
-        result = await obtain_token(
-            settings.paperless_url, username, password, code.strip() or None
-        )
-        # Auch die MFA-Aufforderung zählt: sonst wäre sie ein kostenloses Passwort-Orakel.
-        failed = result in (LoginResult.INVALID, LoginResult.MFA_REQUIRED)
-    finally:
-        throttle.finish(ip, username, failed)
     if result is LoginResult.OK:
-        throttle.record_success(username)
         # Rotation: immer eine neue sid; eine mitgebrachte wird nie übernommen und, falls sie
         # noch gültig war, serverseitig gelöscht.
         old_sid = request.session.get("sid")
         if old_sid:
-            repo.delete_web_session(old_sid)
+            request.app.state.repo.delete_web_session(old_sid)
         request.session.clear()
-        request.session["sid"] = repo.create_web_session(username)
+        request.session["sid"] = sid
         request.session["user"] = username
         return RedirectResponse(target, status_code=303)
     if result is LoginResult.MFA_REQUIRED:
         return fail("Bitte den MFA-Code eingeben.", kind="notice")
     if result is LoginResult.UNAVAILABLE:
         return fail("Paperless ist nicht erreichbar. Bitte später erneut versuchen.")
-    log.warning("Anmeldung fehlgeschlagen: ip=%s nutzer=%r", ip, username)
     return fail("Anmeldung fehlgeschlagen. Bitte Angaben prüfen.")
 
 
@@ -660,10 +703,24 @@ def _store_upload_sync(
     return store_upload(source, directory, filename, partial_suffix=partial_suffix)
 
 
-@app.post("/upload")
-async def upload(request: Request, files: Annotated[list[UploadFile] | None, File()] = None):
-    """Legt hochgeladene Dateien im Eingangsordner ab; ab dort läuft der bestehende
-    Watch-Folder-Weg unverändert weiter (PRD §Pipeline Schritt 1).
+@dataclass
+class UploadOutcome:
+    """Ausgang der Übergabe einer einzelnen Datei (ios-app D7)."""
+
+    filename: str
+    accepted: bool
+    # Nur bei Zurückweisung: unsupported_format | unusable_name | store_failed
+    reason: str | None = None
+    # Nur bei Annahme: Name, unter dem die Datei im Eingangsordner liegt (kollisionsfrei).
+    stored_as: str | None = None
+
+
+async def accept_uploads(files: list[UploadFile] | None, settings: Settings) -> list[UploadOutcome]:
+    """Legt hochgeladene Dateien im Eingangsordner ab und meldet je Datei den Ausgang.
+
+    Gemeinsamer Kern von `POST /upload` (Weboberfläche) und `POST /api/v1/upload` (App,
+    ios-app D7). Ab dem Eingangsordner läuft der bestehende Watch-Folder-Weg unverändert
+    weiter (PRD §Pipeline Schritt 1).
 
     Ein gelieferter Name durchläuft zuerst `sanitize_upload_filename()` — erst dadurch
     kann er den Eingangsordner nicht verlassen, `store_upload()` selbst prüft das nicht.
@@ -675,21 +732,12 @@ async def upload(request: Request, files: Annotated[list[UploadFile] | None, Fil
     Geräten mit wenigen Kernen können parallele Uploads den Default-Executor belegen
     und dadurch den Scan-Lauf verzögern.
 
-    Es gibt keine Session-Middleware und damit keinen Flash-Speicher — die Rückmeldung
-    wandert als Query-Parameter im Redirect-Ziel mit. Deren Auswertung übernimmt die
-    Dashboard-Route (Gruppe 3); hier wird das Ziel nur gebaut.
-
-    Der Default `None` (statt einer leeren Liste als Argument-Default) vermeidet den
-    veränderlichen Default-Wert (`ruff` B006); `files or []` gleich zu Beginn der
-    Verarbeitung bildet die leere Auswahl unverändert auf eine leere Liste ab.
+    Die Bytes werden nur kopiert, nie verändert. Eine Nicht-Auswahl (leerer Name, leerer
+    Inhalt) ergibt keinen Eintrag; eine leere Rückgabe heißt also „keine Datei“.
     """
-    settings: Settings = request.app.state.settings
     partial_suffix = settings.partial_suffix_list[0] if settings.partial_suffix_list else ".part"
     loop = asyncio.get_running_loop()
-
-    ok = 0
-    format_abgelehnt: list[str] = []
-    fehler: list[str] = []
+    outcomes: list[UploadOutcome] = []
 
     for file in files or []:
         if not file.filename and not file.size:
@@ -701,18 +749,43 @@ async def upload(request: Request, files: Annotated[list[UploadFile] | None, Fil
             continue
         anzeige_name = file.filename or "(ohne Namen)"
         name = sanitize_upload_filename(file.filename or "")
-        if not name or not detection.is_supported(Path(name)):
-            format_abgelehnt.append(anzeige_name)
+        if not name:
+            outcomes.append(UploadOutcome(anzeige_name, False, reason="unusable_name"))
+            continue
+        if not detection.is_supported(Path(name)):
+            outcomes.append(UploadOutcome(anzeige_name, False, reason="unsupported_format"))
             continue
         try:
-            await loop.run_in_executor(
+            target = await loop.run_in_executor(
                 None, _store_upload_sync, file.file, settings.watch_dir, name, partial_suffix
             )
         except Exception:
             log.exception("Hochgeladene Datei %s konnte nicht gespeichert werden", anzeige_name)
-            fehler.append(anzeige_name)
+            outcomes.append(UploadOutcome(anzeige_name, False, reason="store_failed"))
             continue
-        ok += 1
+        outcomes.append(UploadOutcome(anzeige_name, True, stored_as=Path(target).name))
+    return outcomes
+
+
+@app.post("/upload")
+async def upload(request: Request, files: Annotated[list[UploadFile] | None, File()] = None):
+    """Legt hochgeladene Dateien im Eingangsordner ab (Kern: `accept_uploads`).
+
+    Es gibt keine Session-Middleware und damit keinen Flash-Speicher — die Rückmeldung
+    wandert als Query-Parameter im Redirect-Ziel mit. Deren Auswertung übernimmt die
+    Dashboard-Route (Gruppe 3); hier wird das Ziel nur gebaut.
+
+    Der Default `None` (statt einer leeren Liste als Argument-Default) vermeidet den
+    veränderlichen Default-Wert (`ruff` B006).
+    """
+    outcomes = await accept_uploads(files, request.app.state.settings)
+
+    ok = sum(1 for o in outcomes if o.accepted)
+    # Unbrauchbarer Name und nicht unterstütztes Format zeigt die Oberfläche gemeinsam an.
+    format_abgelehnt = [
+        o.filename for o in outcomes if o.reason in ("unsupported_format", "unusable_name")
+    ]
+    fehler = [o.filename for o in outcomes if o.reason == "store_failed"]
 
     params: dict[str, object] = {}
     if ok:

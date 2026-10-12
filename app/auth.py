@@ -21,7 +21,7 @@ from urllib.parse import quote, urlsplit
 from itsdangerous import BadSignature, TimestampSigner
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .repository import WEB_SESSION_ABSOLUTE, WEB_SESSION_IDLE, WEB_SESSION_TS_FORMAT
@@ -185,9 +185,16 @@ SESSION_MAX_AGE = 30 * 24 * 3600  # 30 Tage, gleitend (bei jeder angemeldeten An
 # `last_seen_at` höchstens einmal pro Minute je Sitzung schreiben (SSE/Fragment-Polling).
 LAST_SEEN_WRITE_INTERVAL = timedelta(seconds=60)
 
-# Ohne Sitzung zugänglich (design.md D3). `/login` gilt für GET und POST.
-_OPEN_PATHS = {"/healthz", "/login"}
+# Ohne Sitzung zugänglich (design.md D3). `/login` gilt für GET und POST. `/api/info` und
+# `/api/v1/login` sind die beiden offenen Pfade der App-Schnittstelle (ios-app D3).
+_OPEN_PATHS = {"/healthz", "/login", "/api/info", "/api/v1/login"}
 _OPEN_PREFIXES = ("/static/",)
+
+# Zugangsschlüssel der App (ios-app D2): dieselbe `sid` wie im Cookie, aber mit eigenem Salt
+# signiert. Dadurch sind Cookie-Wert und Schlüssel nicht austauschbar.
+APP_TOKEN_SALT = "lector-app-token"
+# Pfad der Anmeldung über die Schnittstelle: von der Herkunftsprüfung ausgenommen (ios-app D3).
+API_LOGIN_PATH = "/api/v1/login"
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -246,6 +253,32 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
+def _session_from_sid(sid: str, repo: Any) -> dict[str, Any]:
+    """Gleicht eine `sid` mit der Sitzungsliste ab und schreibt `last_seen_at` fort.
+
+    Gemeinsamer Kern für Cookie und Zugangsschlüssel (design.md D10, ios-app D2): Über die
+    Gültigkeit entscheidet allein die Zeile in ``web_sessions``. Ohne Zeile, nach 30 Tagen
+    Leerlauf oder 90 Tagen seit der Anmeldung gilt die Anfrage als ohne Sitzung.
+    Gültig: ``{"sid", "user"}``.
+    """
+    row = repo.get_web_session(sid)
+    if row is None:
+        return {}
+    username, created_raw, seen_raw = row
+    created, seen = _parse_ts(created_raw), _parse_ts(seen_raw)
+    now = datetime.now(UTC)
+    if (
+        created is None
+        or seen is None
+        or now - seen > WEB_SESSION_IDLE
+        or now - created > WEB_SESSION_ABSOLUTE
+    ):
+        return {}
+    if now - seen > LAST_SEEN_WRITE_INTERVAL:
+        repo.touch_web_session(sid, now)
+    return {"sid": sid, "user": username}
+
+
 def _load_session(request: Request, secret: str, repo: Any) -> dict[str, Any]:
     """Liest das Cookie und gleicht die `sid` mit der Sitzungsliste ab (design.md D10).
 
@@ -263,22 +296,42 @@ def _load_session(request: Request, secret: str, repo: Any) -> dict[str, Any]:
     sid = cookie.get("sid") if isinstance(cookie, dict) else None
     if not isinstance(sid, str) or not sid:
         return {}
-    row = repo.get_web_session(sid)
-    if row is None:
+    return _session_from_sid(sid, repo)
+
+
+def sign_app_token(secret: str, sid: str) -> str:
+    """Zugangsschlüssel der App für eine Sitzung (ios-app D2): die `sid`, signiert mit dem
+    Sitzungsgeheimnis und dem eigenen Salt ``lector-app-token``."""
+    return TimestampSigner(secret, salt=APP_TOKEN_SALT).sign(sid).decode("utf-8")
+
+
+def load_app_session(token: str, secret: str, repo: Any) -> dict[str, Any]:
+    """Prüft einen Zugangsschlüssel und lädt die zugehörige Sitzung (ios-app D2, D3).
+
+    Die Signatur wird bewusst OHNE ``max_age`` geprüft: Die App erneuert den Schlüssel nie,
+    über Gültigkeit und Laufzeit entscheidet allein ``web_sessions`` (30 Tage Leerlauf, 90
+    Tage absolut, `touch` höchstens einmal pro Minute). Ein anderes Geheimnis, ein anderes
+    Salt (z. B. ein Cookie-Wert) oder ein veränderter Wert ergibt eine Anfrage ohne Sitzung.
+    """
+    if not token or repo is None:
         return {}
-    username, created_raw, seen_raw = row
-    created, seen = _parse_ts(created_raw), _parse_ts(seen_raw)
-    now = datetime.now(UTC)
-    if (
-        created is None
-        or seen is None
-        or now - seen > WEB_SESSION_IDLE
-        or now - created > WEB_SESSION_ABSOLUTE
-    ):
+    try:
+        sid = (
+            TimestampSigner(secret, salt=APP_TOKEN_SALT).unsign(token.encode("utf-8")).decode()
+        )
+    except (BadSignature, ValueError):
         return {}
-    if now - seen > LAST_SEEN_WRITE_INTERVAL:
-        repo.touch_web_session(sid, now)
-    return {"sid": sid, "user": username}
+    return _session_from_sid(sid, repo) if sid else {}
+
+
+def bearer_token(request: Request) -> str | None:
+    """Der Zugangsschlüssel aus ``Authorization: Bearer …`` oder ``None``, wenn der Header
+    fehlt oder ein anderes Schema trägt. Ein leerer Schlüssel ergibt ``""`` (Header ist da,
+    der Schlüssel aber ungültig)."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    return value.strip()
 
 
 def _cookie_header(value: str, *, secure: bool, max_age: int, expired: bool = False) -> str:
@@ -300,6 +353,9 @@ class AuthMiddleware:
     signiert = gleitende Laufzeit), aber das Cookie trägt nur die ``sid``; gültig ist eine
     Sitzung nur, solange sie in ``web_sessions`` steht (D10). Die Sitzung liegt in
     ``scope["session"]`` (``user`` und ``sid``) und ist über ``request.session`` lesbar.
+
+    Eine Anfrage mit ``Authorization: Bearer`` (App) ist eine eigene Weiche: Sitzung nur aus
+    dem Zugangsschlüssel, keine Herkunftsprüfung, kein Cookie (ios-app D2, D3).
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -322,18 +378,42 @@ class AuthMiddleware:
         request = Request(scope)
         path = scope["path"]
         method = scope["method"]
+        repo = getattr(scope["app"].state, "repo", None)
 
-        if not origin_allowed(
+        # Weiche für den Zugangsschlüssel (ios-app D3): Die Sitzung kommt allein aus dem
+        # Schlüssel, ein Cookie bleibt unbeachtet (auch bei ungültigem Schlüssel, kein
+        # Rückfall). Keine Herkunftsprüfung — es gibt kein CORS, ein Browser darf einen
+        # selbst gesetzten `Authorization`-Header an eine fremde Herkunft nicht senden —
+        # und kein `Set-Cookie`.
+        token = bearer_token(request)
+        if token is not None:
+            session = load_app_session(token, secret, repo)
+            scope["session"] = session
+            if not session.get("user") and not self._is_open(path):
+                await self._deny(request, path, method)(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        # Die Anmeldung über die Schnittstelle ist von der Herkunftsprüfung ausgenommen; sie
+        # verlangt dafür `Content-Type: application/json` (ios-app D3).
+        if path != API_LOGIN_PATH and not origin_allowed(
             method,
             request.url.scheme,
             request.headers.get("host", ""),
             request.headers.get("origin"),
             request.headers.get("referer"),
         ):
+            if path.startswith("/api/") and SESSION_COOKIE not in request.cookies:
+                # Eine App-Anfrage ganz ohne Sitzungsnachweis (kein Schlüssel, kein Cookie)
+                # ist „nicht angemeldet“ (401, maschinenlesbar), nicht „falsche Herkunft“:
+                # Es gibt keine Sitzung, die ein Dritter missbrauchen könnte. Mit Cookie
+                # bleibt es beim 403.
+                await self._deny(request, path, method)(scope, receive, send)
+                return
             await Response("", status_code=403)(scope, receive, send)
             return
 
-        repo = getattr(scope["app"].state, "repo", None)
         had_cookie = SESSION_COOKIE in request.cookies
         session = _load_session(request, secret, repo)
         scope["session"] = session
@@ -365,16 +445,29 @@ class AuthMiddleware:
                     )
             await send(message)
 
-        if not session.get("user") and not (
-            path in _OPEN_PATHS or path.startswith(_OPEN_PREFIXES)
-        ):
+        if not session.get("user") and not self._is_open(path):
             await self._deny(request, path, method)(scope, receive, send_wrapper)
             return
 
         await self.app(scope, receive, send_wrapper)
 
     @staticmethod
+    def _is_open(path: str) -> bool:
+        return path in _OPEN_PATHS or path.startswith(_OPEN_PREFIXES)
+
+    @staticmethod
     def _deny(request: Request, path: str, method: str) -> Response:
+        if path.startswith("/api/"):
+            # Die Schnittstelle antwortet maschinenlesbar und leitet nie um (ios-app D3, D5).
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "not_authenticated",
+                        "message": "Nicht angemeldet. Bitte zuerst anmelden.",
+                    }
+                },
+                status_code=401,
+            )
         accept = request.headers.get("accept", "").lower()
         if (
             path.startswith("/fragment/")

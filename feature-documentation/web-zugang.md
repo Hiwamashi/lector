@@ -1,9 +1,10 @@
 # Web-Zugang — Anmeldung und Zugangsschutz
 
-**Module:** `app/auth.py` (Drosselung, Herkunftsprüfung, Sitzungs-Middleware, Zugangsprüfung),
-`app/main.py` (Routen `/login`, `/logout`, `/auth/status`, App-Konfiguration, Security-Header),
+**Module:** `app/auth.py` (Drosselung, Herkunftsprüfung, Sitzungs-Middleware, Zugangsprüfung, Bearer-Token),
+`app/main.py` (Routen `/login`, `/logout`, `/auth/status`, `authenticate()`, App-Konfiguration, Security-Header),
 `app/config.py` (`auth_mode`, `lector_secret_key`, `session_cookie_secure`, `load_session_secret`,
 `warn_auth_proxy_config`), `app/paperless.py` (`obtain_token`, `LoginResult`),
+`app/api.py` (App-Schnittstelle mit Bearer-Token-Weiche),
 `app/templates/login.html`, `app/templates/base.html`, `app/static/app.js`
 
 ## Zweck
@@ -91,18 +92,48 @@ Die Anmeldung selbst wird gegen die Paperless-REST-API (`POST {PAPERLESS_URL}/ap
 
 Alle zustandsändernden Anfragen (POST, PUT, DELETE) werden geprüft, ob ihre `Origin`- oder `Referer`-Header auf die eigene Seite zeigen. Diese Prüfung erfolgt **nur bei `AUTH_MODE=paperless`**; im Modus `none` gibt es nichts zu erschleichen.
 
+**Ausnahmen:**
+
+- **Anfragen mit `Authorization: Bearer`-Token:** Diese sind von der Herkunftsprüfung ausgenommen (siehe [App-Schnittstelle](app-schnittstelle.md)). Das ist sicher, weil ein Browser keinen selbst gesetzten `Authorization`-Header an eine fremde Herkunft senden darf (CORS-Preflight erforderlich, das der Dienst verweigert).
+- **`POST /api/v1/login`:** Ebenfalls ausgenommen, verlangt dafür aber `Content-Type: application/json` (Schutz vor untergeschobenen Anmeldungen, da ein HTML-Formular diesen Typ nicht ohne Preflight senden kann).
+
 **Warum nötig trotz `SameSite=Strict`:** Das Cookie wird zwar nicht an andere Sites mitgesendet — aber bei same-site Subdomains (`lector.nerd-wg.eu` und `paperless.nerd-wg.eu`) genügt `SameSite=Strict` nicht. Eine XSS-Lücke oder ein hochgeladener HTML-Inhalt auf einer Schwester-Subdomain könnte sonst von dort aus eine Aktion in Lector auslösen. Daher wird zusätzlich die Herkunft geprüft.
 
 **Logik (Funktion `origin_allowed()` in `app/auth.py`):**
 
 - `GET`/`HEAD`/`OPTIONS`: Immer erlaubt (sicher und nötig für CORS-Preflight).
 - Übrige Methoden:
+  - `Authorization: Bearer`-Header vorhanden: Herkunftsprüfung übersprungen (siehe oben).
   - `Origin` vorhanden: Muss exakt `{scheme}://{host}` der eigenen Seite entsprechen.
   - `Origin` fehlt, `Referer` vorhanden: Dessen Schema und Netzwerk (`scheme://host`) müssen passen.
-  - Beide Header fehlen: `403` (ungültig, verdächtig oder Nicht-Browser).
+  - Beide Header fehlen: `403` (ungültig, verdächtig oder Nicht-Browser) — **Ausnahme:** `POST /api/v1/login` mit `Content-Type: application/json` wird akzeptiert.
   - Beide Header sind present but disagree (selten): `Origin` gewinnt.
 
 **Im Browser:** Alle modernen Browser senden `Origin` bei `POST` von Formularen. Ein fehlender Header deutet auf einen Nicht-Browser (Script/Tool) hin, braucht ohnehin eine Sitzung.
+
+## Zugangsschlüssel für die iOS-App (Bearer-Token)
+
+Zusätzlich zum Cookie `lector_session` existiert ein zweiter Sitzungsnachweis: der Zugangsschlüssel (`Bearer`-Token) für die App-Schnittstelle. Beide nutzen dieselbe `sid` aus der Tabelle `web_sessions`, aber mit unterschiedlichen Signaturen:
+
+- **Cookie:** signiert mit `TimestampSigner(secret)` ohne Salt, mit `max_age=30 Tage`.
+- **Token:** signiert mit `TimestampSigner(secret, salt="lector-app-token")` ohne Altersprüfung.
+
+Dadurch sind Cookies und Tokens nicht austauschbar — ein abgegriffenes Cookie taugt nicht als `Authorization`-Header und umgekehrt.
+
+Über Gültigkeit entscheidet in beiden Fällen allein die Zeile in `web_sessions` (30 Tage Leerlauf, 90 Tage absolut). Der Token wird nach der Anmeldung nie erneuert.
+
+Siehe [App-Schnittstelle](app-schnittstelle.md) für Details zur Verwendung, Gültigkeit und Abmeldung.
+
+## Gemeinsamer Anmeldekern
+
+Aus der HTML-Route `login_submit` wurde eine Funktion `authenticate(request, username, password, code)` in `app/main.py` herausgelöst. Sie übernimmt:
+
+- Drosselung (`LoginThrottle.try_begin`, `.finish`)
+- Paperless-Abfrage (`obtain_token`)
+- Protokollierung
+- Sitzungserstellung (`repo.create_web_session`)
+
+Die HTML-Route `POST /login` und die Schnittstellen-Route `POST /api/v1/login` rufen beide diese Funktion auf. Dadurch teilen sich Fehlversuche über beide Zugangsarten eine gemeinsame Drosselung — eine Anfrage-Flut über die Schnittstelle zählt gegen die HTML-Seite und umgekehrt.
 
 ## Security-Header
 
@@ -236,9 +267,9 @@ Im Betrieb gegen `https://paperless.nerd-wg.eu` bestätigt (2026-10-12): Die Anm
 
 | Datei | Rolle |
 |---|---|
-| `app/auth.py` | `LoginThrottle` (Drosselung mit `try_begin()`/`finish()`), `origin_allowed()` (Herkunftsprüfung), `AuthMiddleware` (Sitzung + Zugangsschutz), `_load_session()` (Prüfung gegen `web_sessions`), `SecurityHeadersMiddleware` (Header), `SESSION_COOKIE`, `SESSION_MAX_AGE`, `SECURITY_HEADERS`, Hilfsfunktionen. |
+| `app/auth.py` | `LoginThrottle` (Drosselung mit `try_begin()`/`finish()`), `origin_allowed()` (Herkunftsprüfung), `AuthMiddleware` (Sitzung + Zugangsschutz + Bearer-Token-Weiche), `_load_session()` (Prüfung gegen `web_sessions`), `sign_app_token()` (Schlüssel erzeugen), `load_app_session()` (Schlüssel prüfen), `bearer_token()` (Header parsen), `SecurityHeadersMiddleware` (Header), `SESSION_COOKIE`, `SESSION_MAX_AGE`, `SECURITY_HEADERS`, Hilfsfunktionen. |
 | `app/config.py` | `Settings.auth_mode`, `.lector_secret_key`, `.session_cookie_secure`, `load_session_secret()`, `warn_auth_proxy_config()` (Warnung bei fehlendem/leerem/`*` `FORWARDED_ALLOW_IPS`). |
-| `app/main.py` | Routes `GET /login`, `POST /login`, `POST /logout`, `GET /auth/status`. Middleware-Einhängung, App-Flags `docs_url=None`. Lifespan: `purge_web_sessions()` beim Start. |
+| `app/main.py` | Routes `GET /login`, `POST /login`, `POST /logout`, `GET /auth/status`. Funktion `authenticate()` (gemeinsamer Kern für HTML-Anmeldung und App-Schnittstelle). Middleware-Einhängung, App-Flags `docs_url=None`. Lifespan: `purge_web_sessions()` beim Start. |
 | `app/paperless.py` | Funktion `obtain_token()` (schlanker HTTP-Client, keine Redirects, `LoginResult`-Enum). |
 | `app/db.py` | Tabelle `web_sessions` (Schema). |
 | `app/repository.py` | `create_web_session()`, `get_web_session()`, `touch_web_session()`, `delete_web_session()`, `purge_web_sessions()` (Repository-Schicht). |
