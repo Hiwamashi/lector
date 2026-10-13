@@ -667,13 +667,13 @@ Drosselung, obtain_token, FORWARDED_ALLOW_IPS-Hinweis), `feature-documentation/d
 (web_sessions-Tabelle); aktualisiert in `.env.example`, `docker-compose.example.yml`, `konfiguration.md`,
 `web-ui-sse.md`, `datei-upload.md`, `README.md`, `PRODUCT.md` und `CLAUDE.md`.
 
-## Zusatz-Feature: iOS-App mit App-Schnittstelle (ios-app) — in Umsetzung
+## Zusatz-Feature: iOS-App mit App-Schnittstelle (ios-app) — im Einsatz
 
 Belege lassen sich direkt vom iPhone übergeben (Scanner, Fotos, Teilen-Menü), und die App
 zeigt die Historie wie das Dashboard, einschließlich Freigeben und Verwerfen angehaltener
 Vorgänge. Server-seitig kommt dafür eine JSON-Schnittstelle unter `/api/` hinzu. Die
 Anmeldung läuft wie in der Weboberfläche über Paperless; die App weist ihre Sitzung mit einem
-Zugangsschlüssel statt mit einem Cookie nach. OpenSpec-Change: `openspec/changes/ios-app/`.
+Zugangsschlüssel statt mit einem Cookie nach. OpenSpec-Change archiviert unter `openspec/changes/archive/2026-10-13-ios-app/` (neue Haupt-Specs `app-schnittstelle` und `ios-app`).
 
 | Task | Status |
 |---|---|
@@ -682,13 +682,17 @@ Zugangsschlüssel statt mit einem Cookie nach. OpenSpec-Change: `openspec/change
 | 3. iOS-Projektgerüst (`ios/`, XcodeGen, App + Share Extension) | ✅ |
 | 4. iOS: Netzwerk, Einrichtung der Serveradresse, Anmeldung, Abmelden/Server wechseln | ✅ |
 | 5. iOS: Historie, Live-Aktualisierung, Detail mit Entscheidungen | ✅ |
-| 6. iOS: PDF-Erzeugung ✅, Scanner/Fotos 🚧, Teilen-Menü 🚧 (je: Geräteprüfung offen) | 🚧 |
-| 7. Abnahme auf dem Gerät 🚧, Dokumentation ✅, Fortschritt/Graph ✅ | 🚧 |
+| 6. iOS: PDF-Erzeugung, Scanner/Fotos, Teilen-Menü (Geräteprüfung teilweise, Rest zurückgestellt) | ✅ |
+| 7. Abnahme auf dem Gerät (teilweise, Rest zurückgestellt), Dokumentation, Fortschritt/Graph | ✅ |
 
-**Stand (2026-10-12):** Server und App sind umgesetzt; Server- und iOS-Code wurden je einmal
-geprüft (Review), alle Befunde behoben. Offen ist die Abnahme auf einem echten iPhone per
-TestFlight gegen die Produktivinstanz: Scanner, Teilen-Menü (Mail, Dateien), Live-Strom
-durch den Reverse Proxy. Checkliste: `feature-documentation/ios-app/abnahme.md`.
+**Stand (2026-10-13):** Server-Image `git-1979ddd` läuft auf dem NAS, Build 0.1.0 (1) ist per
+TestFlight auf dem iPhone. Bestätigt sind Einrichtung, Anmeldung und das Teilen-Menü (zwei
+PDFs aus Mail, beide bis „Fertig“ verarbeitet). Die übrige Geräteabnahme (Scanner, Fotos,
+Live-Strom durch den Proxy, E-Rechnung, Freigabe, Randfälle des Teilen-Menüs) ist auf Wunsch
+zurückgestellt; Fehler aus dem Alltag werden nachgemeldet. Checkliste:
+`feature-documentation/ios-app/abnahme.md`. Für den nächsten TestFlight-Upload muss
+`CURRENT_PROJECT_VERSION` in `ios/project.yml` erhöht werden. Vor einer Veröffentlichung über
+TestFlight hinaus fehlen noch ein echtes App-Symbol und die Prüfung des Privacy-Manifests.
 
 **Bewusste Entscheidungen bei der Umsetzung:**
 

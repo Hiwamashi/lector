@@ -1,6 +1,6 @@
 import Foundation
 
-// Abbild des „Schnittstellenvertrags v1“ (openspec/changes/ios-app/design.md, Anhang).
+// Abbild des „Schnittstellenvertrags v1“ (openspec/changes/archive/2026-10-13-ios-app/design.md, Anhang).
 // Schlüssel kommen als snake_case und werden von `JSONKodierung` in camelCase gelesen.
 
 /// Zugangsmodus des Dienstes (`AUTH_MODE`).

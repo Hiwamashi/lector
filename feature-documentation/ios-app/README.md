@@ -4,8 +4,8 @@ Diese Dokumentation beschreibt die iOS-Anwendung „Lector", eine native SwiftUI
 
 **Maßgebliche Quellen:**
 
-- `openspec/changes/ios-app/design.md` — Design-Entscheidungen (D9–D14)
-- `openspec/changes/ios-app/specs/ios-app/spec.md` — Anforderungen und Szenarien
+- `openspec/changes/archive/2026-10-13-ios-app/design.md` — Design-Entscheidungen (D9–D14)
+- `openspec/changes/archive/2026-10-13-ios-app/specs/ios-app/spec.md` — Anforderungen und Szenarien
 - `ios/README.md` — Build, Tests, Archiv, TestFlight (verweisen statt duplizieren)
 
 ---
@@ -158,4 +158,4 @@ Die Abnahme-Checkliste (`abnahme.md`) deckt folgende Szenarien ab:
 
 - **Referenz-App:** Smoking Tracker (Team `J3P792SJ75`, Bundle `me.krinke`, Swift 6 mit strikter Concurrency)
 - **Design-Farbwerte:** `feature-documentation/ui-erscheinungsbild.md` (DESIGN.md)
-- **OpenSpec-Tickets:** `openspec/changes/ios-app/tasks.md` (Aufgaben 1–7)
+- **OpenSpec-Tickets:** `openspec/changes/archive/2026-10-13-ios-app/tasks.md` (Aufgaben 1–7)

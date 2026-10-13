@@ -8,8 +8,9 @@ Das MVP ist vollständig umgesetzt und läuft produktiv auf dem NAS. Dazu kommen
 Zusatz-Features: die Paperless-Integration (GiroCode, SevDesk-Export, Empfänger-Zuordnung,
 standardmäßig über `FEATURE_PAPERLESS_SYNC` deaktiviert) und das Image-Deployment über die
 Scaleway Container Registry. Der OCR-Weg ist mit echten Document-AI-Credentials verifiziert.
-In Umsetzung ist eine native iOS-App (`ios/`, SwiftUI, XcodeGen) samt JSON-Schnittstelle unter
-`/api/` (`app/api.py`); Stand und offene Geräteabnahme in `PROGRESS.md`.
+Neu im Einsatz ist eine native iOS-App (`ios/`, SwiftUI, XcodeGen, Verteilung per TestFlight)
+samt JSON-Schnittstelle unter `/api/` (`app/api.py`); Stand und zurückgestellte Geräteabnahme
+in `PROGRESS.md`.
 
 **Maßgebliche Quellen:** `prd/PROGRESS.md` für den aktuellen Stand, `prd/PRD_Lector.md` für
 die Soll-Architektur. Die unten beschriebene Architektur entspricht dem umgesetzten Code;

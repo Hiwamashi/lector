@@ -9,6 +9,25 @@ Diese Checkliste dient der manuellen Abnahme der iOS-App gegen eine echte Lector
 
 ---
 
+## Stand der Abnahme (2026-10-13)
+
+Build 0.1.0 (1) aus TestFlight auf dem iPhone, Server-Image `git-1979ddd` auf dem NAS.
+
+**Bestätigt:**
+
+- `GET /api/info` liefert `{"service":"lector","api_version":1,"auth_mode":"paperless"}`,
+  geschützte Routen antworten ohne Schlüssel mit 401 als JSON.
+- Einrichtung mit der Produktivadresse und Anmeldung in der App.
+- Teilen-Menü: zwei PDFs aus der Mail-App übergeben, beide in der Historie bis „Fertig“
+  verarbeitet.
+
+**Zurückgestellt:** Alle übrigen Punkte dieser Liste wurden auf Wunsch nicht gezielt geprüft.
+Die App ist im Alltag im Einsatz; auftretende Fehler werden gemeldet und dann behoben. Die
+Checkliste bleibt als Referenz für eine spätere vollständige Abnahme (z. B. vor einer
+Veröffentlichung über TestFlight hinaus).
+
+---
+
 ## 1. Einrichtung und Anmeldung
 
 - [ ] **App startet und zeigt Einrichtungsformular**  
@@ -90,9 +109,9 @@ Diese Checkliste dient der manuellen Abnahme der iOS-App gegen eine echte Lector
   Ablauf: Mail-App → ZUGFeRD-rechnung.pdf → Teilen → Lector  
   Erwartung: Datei wird byte-genau unverändert hochgeladen. In der Historia wird der Vorgang mit `status: skipped_erechnung` und `doc_type: erechnung_pdf` angezeigt (nicht `done`).
 
-- [ ] **E-Rechnung wird nicht nach `consume` kopiert**  
-  Überprüfung: Dateisystem prüfen oder Lector-Log  
-  Erwartung: Das Original geht zu `processed`, **nicht** zu `consume`. Paperless sieht die E-Rechnung nie (kein Duplikat in der Weboberfläche).
+- [ ] **E-Rechnung landet unverändert in Paperless**  
+  Überprüfung: Paperless-Weboberfläche bzw. `consume`/`processed` auf dem NAS  
+  Erwartung: Die Datei wird byte-identisch nach `consume` kopiert (ohne OCR, ohne Umbenennung) und von Paperless importiert; das Original liegt in `processed`. In Paperless erscheint genau ein Dokument mit der eingebetteten XML.
 
 ---
 

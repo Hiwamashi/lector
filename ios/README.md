@@ -2,7 +2,7 @@
 
 Native SwiftUI-App zum Übergeben von Belegen an Lector und zum Verfolgen der Verarbeitung.
 Minimum ist **iOS 26**, Swift 6 mit vollständiger Concurrency-Prüfung. Maßgeblich sind
-`openspec/changes/ios-app/` (Design, Spec, Tasks) und der Schnittstellenvertrag v1 im Anhang
+`openspec/changes/archive/2026-10-13-ios-app/` (Design, Spec, Tasks) und der Schnittstellenvertrag v1 im Anhang
 von `design.md`. Stand dieses Ordners: Gerüst, Netzwerkschicht, Einrichtung, Anmeldung,
 Einstellungen, Historie mit Detail und Live-Aktualisierung, Erfassung (Scanner, Fotoauswahl, PDF,
 Upload) und die Share Extension.
