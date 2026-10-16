@@ -690,8 +690,8 @@ TestFlight auf dem iPhone. Bestätigt sind Einrichtung, Anmeldung und das Teilen
 PDFs aus Mail, beide bis „Fertig“ verarbeitet). Die übrige Geräteabnahme (Scanner, Fotos,
 Live-Strom durch den Proxy, E-Rechnung, Freigabe, Randfälle des Teilen-Menüs) ist auf Wunsch
 zurückgestellt; Fehler aus dem Alltag werden nachgemeldet. Checkliste:
-`feature-documentation/ios-app/abnahme.md`. Für den nächsten TestFlight-Upload muss
-`CURRENT_PROJECT_VERSION` in `ios/project.yml` erhöht werden. Vor einer Veröffentlichung über
+`feature-documentation/ios-app/abnahme.md`. Für den nächsten TestFlight-Upload ist Build-Nummer 2 nötig
+(`CURRENT_PROJECT_VERSION` in `ios/project.yml`, siehe 2026-10-16). Vor einer Veröffentlichung über
 TestFlight hinaus fehlen noch ein echtes App-Symbol und die Prüfung des Privacy-Manifests.
 
 **Bewusste Entscheidungen bei der Umsetzung:**
@@ -709,3 +709,40 @@ TestFlight hinaus fehlen noch ein echtes App-Symbol und die Prüfung des Privacy
 
 **Dokumentation:** `feature-documentation/app-schnittstelle.md`, `feature-documentation/ios-app/`,
 `ios/README.md`; aktualisiert `web-zugang.md`, `datei-upload.md`, `feature-documentation/README.md`.
+
+### Behoben: Kamera-Scan ohne Übergabe (ios-app, 2026-10-16)
+
+**Befund:** Ein mit der Kamera gescannter Beleg zeigte in der iOS-App „Senden fehlgeschlagen.“.
+Im Server-Log erschien kein `POST /api/v1/upload`. Die Fotoauswahl über denselben Upload-Weg
+funktionierte.
+
+**Ursache:** Das Übergabeblatt öffnete sich, während die Scanner-Ansicht schloss. Das Blatt wurde
+dabei einmal abgeräumt, `onDisappear` löschte den Arbeitsordner mit dem fertigen PDF. Beim
+Hochladen fehlte die Datei (`UploadFehler.dateiNichtLesbar`), gemeldet wurde nur die Sammelmeldung.
+
+**Fix** (Change `openspec/changes/fix-scan-uebergabe/`):
+
+- Der Scanner merkt sich die Bilder (`ausstehenderScan`) und schließt nur. Die Übergabe startet im
+  `onDismiss` der Vollbild-Ansicht, also erst nach dem Schließen des Scanners.
+- Aufgeräumt wird im `onDismiss` des Übergabeblatts (`HauptAnsicht.nachErfassung`), nicht mehr in
+  `onDisappear` der Ansicht.
+- `starten()` prüft nach der PDF-Erzeugung auf Abbruch und lädt dann nicht hoch.
+- Fehlt die vorbereitete Datei beim Senden, lautet die Meldung „Der vorbereitete Beleg liegt nicht
+  mehr vor. Bitte neu erfassen.“ (Zustand `abgewiesen`, ohne „Erneut senden“).
+- Regressionstest: UI-Test `testScanWegUebergibt` über das Startargument `-UITEST_TESTSCAN` (nur
+  Debug). Vor dem Fix lief er rot: Statt `erfassung.uebergeben` erschien `erfassung.fehler`, der
+  Fehler ist damit im Simulator reproduziert.
+- Nacharbeit aus dem Review (D6): `HauptAnsicht.uebergeben` räumt ein vorgemerktes `offeneErfassung`
+  vor dem Überschreiben auf, und `ErfassungsModell.verwaisteAufraeumen(ausser:)` löscht beim Erscheinen
+  von `HauptAnsicht` liegengebliebene `erfassung-*`-Ordner (Reste nach Absturz oder abgelaufener Sitzung).
+- Nacharbeit aus dem Review (D7): `UploadFehler.rumpfNichtSchreibbar` (neu) trennt einen nicht
+  schreibbaren Upload-Rumpf von der fehlenden Quelldatei (`dateiNichtLesbar`). Meldung dazu: „Der Beleg
+  konnte nicht zum Senden vorbereitet werden. Ist der Gerätespeicher voll?“, Zustand `fehlgeschlagen`
+  mit „Erneut senden“.
+
+**Teststand (2026-10-16, Simulator iPhone 17 Pro):** 151 Unit-Tests in 20 Suites und 22 UI-Tests
+grün, Release-Build mit `SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` sauber.
+
+**Stand:** Für einen neuen TestFlight-Build ist Build-Nummer 2 nötig (`CURRENT_PROJECT_VERSION` in
+`ios/project.yml`). Die Geräteabnahme des Scans ist offen (Aufgaben 6.1 und 6.2 im Change; Checkliste
+`feature-documentation/ios-app/abnahme.md`, Abschnitt 3, Punkte noch nicht abgehakt).

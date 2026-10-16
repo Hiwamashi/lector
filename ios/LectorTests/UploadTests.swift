@@ -114,6 +114,25 @@ struct UploadTests {
         #expect(Set(nachher).isSubset(of: Set(vorher)))
     }
 
+    @Test("Rumpf nicht schreibbar: rumpfNichtSchreibbar; fehlende Quelle bleibt dateiNichtLesbar")
+    func rumpfNichtSchreibbar() async throws {
+        let a = aufbau { _ in .json(self.angenommen) }
+        let (datei, ordner) = try datei("Beleg.pdf", Data("x".utf8))
+        defer { try? FileManager.default.removeItem(at: ordner) }
+        let fehlenderOrdner = ordner.appendingPathComponent("gibt-es-nicht", isDirectory: true)
+
+        await #expect(throws: UploadFehler.rumpfNichtSchreibbar) {
+            try await a.client.hochladen(datei, rumpfOrdner: fehlenderOrdner)
+        }
+
+        try FileManager.default.removeItem(at: datei.url)
+        await #expect(throws: UploadFehler.dateiNichtLesbar) {
+            try await a.client.hochladen(datei, rumpfOrdner: fehlenderOrdner)
+        }
+        await #expect(throws: UploadFehler.dateiNichtLesbar) { try await a.client.hochladen(datei) }
+        #expect(await a.transport.anfragen.isEmpty)
+    }
+
     @Test("Ohne Serveradresse wird nichts gesendet")
     func ohneAdresse() async throws {
         let transport = TransportAttrappe { _ in .json("{}") }

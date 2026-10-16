@@ -161,4 +161,85 @@ struct ErfassungsModellTests {
         guard case .abgewiesen = modell.zustand else { Issue.record("erwartet: abgewiesen, ist \(modell.zustand)"); return }
         #expect(await transport.anzahl(pfad: "/api/v1/upload") == 0)
     }
+
+    @Test("Abbruch nach der Vorbereitung: kein Upload, Zustand wieder bereit")
+    func abbruchNachVorbereitung() async throws {
+        let transport = TransportAttrappe { _ in .json(self.angenommen) }
+        let modell = ErfassungsModell(client: client(transport)) { _ in
+            // Bricht die laufende Aufgabe ab; das PDF-Zeichnen selbst ignoriert den Abbruch.
+            withUnsafeCurrentTask { $0?.cancel() }
+            return [.bild(Testbild.bild(breite: 600, hoehe: 800))]
+        }
+        defer { modell.aufraeumen() }
+
+        await Task { await modell.starten() }.value
+
+        #expect(await transport.anzahl(pfad: "/api/v1/upload") == 0)
+        #expect(modell.zustand == .bereit)
+    }
+
+    @Test("Fehlt das vorbereitete PDF beim Senden, kommt eine eigene Meldung ohne „Erneut senden“")
+    func dateiFehlt() async throws {
+        let versuch = Mutex(0)
+        let transport = TransportAttrappe { _ in
+            if versuch.withLock({ $0 += 1; return $0 }) == 1 { throw URLError(.notConnectedToInternet) }
+            return .json(self.angenommen)
+        }
+        let modell = ErfassungsModell(client: client(transport), seiten: dreiBilder())
+        defer { modell.aufraeumen() }
+
+        await modell.starten()
+        #expect(modell.kannErneutSenden)
+        try FileManager.default.removeItem(at: modell.arbeitsordner)
+
+        await modell.erneutSenden()
+
+        #expect(modell.zustand == .abgewiesen("Der vorbereitete Beleg liegt nicht mehr vor. Bitte neu erfassen."))
+        #expect(modell.kannErneutSenden == false)
+        #expect(await transport.anzahl(pfad: "/api/v1/upload") == 1)
+    }
+
+    @Test("Rumpf nicht schreibbar: Fehlschlag mit eigener Meldung, „Erneut senden“ bleibt, PDF bleibt liegen")
+    func rumpfNichtSchreibbar() async throws {
+        let transport = TransportAttrappe { _ in .json(self.angenommen) }
+        let fehlenderOrdner = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rumpf-\(UUID().uuidString)", isDirectory: true)
+        let modell = ErfassungsModell(client: client(transport), rumpfOrdner: fehlenderOrdner, seiten: dreiBilder())
+        defer { modell.aufraeumen() }
+
+        await modell.starten()
+
+        #expect(modell.zustand == .fehlgeschlagen(
+            "Der Beleg konnte nicht zum Senden vorbereitet werden. Ist der Gerätespeicher voll?"))
+        #expect(modell.kannErneutSenden)
+        let dateiname = try #require(modell.dateiname)
+        #expect(FileManager.default.fileExists(atPath: modell.arbeitsordner.appendingPathComponent(dateiname).path))
+        #expect(await transport.anzahl(pfad: "/api/v1/upload") == 0)
+    }
+
+    @Test("Verwaiste Arbeitsordner: nur erfassung-* außer dem ausgenommenen verschwinden")
+    func verwaisteAufraeumen() throws {
+        let verzeichnis = try Testbild.temporaererOrdner()
+        defer { try? FileManager.default.removeItem(at: verzeichnis) }
+        let dateien = FileManager.default
+        func anlegen(_ name: String) throws -> URL {
+            let url = verzeichnis.appendingPathComponent(name, isDirectory: true)
+            try dateien.createDirectory(at: url, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: url.appendingPathComponent("beleg.pdf"))
+            return url
+        }
+        let offen = try anlegen("erfassung-offen")
+        let verwaist = try anlegen("erfassung-verwaist")
+        let fremd = try anlegen("upload-fremd")
+
+        ErfassungsModell.verwaisteAufraeumen(ausser: offen, in: verzeichnis)
+
+        #expect(dateien.fileExists(atPath: offen.path))
+        #expect(!dateien.fileExists(atPath: verwaist.path))
+        #expect(dateien.fileExists(atPath: fremd.path))
+
+        ErfassungsModell.verwaisteAufraeumen(ausser: nil, in: verzeichnis)
+        #expect(!dateien.fileExists(atPath: offen.path))
+        #expect(dateien.fileExists(atPath: fremd.path))
+    }
 }
