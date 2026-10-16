@@ -690,8 +690,8 @@ TestFlight auf dem iPhone. Bestätigt sind Einrichtung, Anmeldung und das Teilen
 PDFs aus Mail, beide bis „Fertig“ verarbeitet). Die übrige Geräteabnahme (Scanner, Fotos,
 Live-Strom durch den Proxy, E-Rechnung, Freigabe, Randfälle des Teilen-Menüs) ist auf Wunsch
 zurückgestellt; Fehler aus dem Alltag werden nachgemeldet. Checkliste:
-`feature-documentation/ios-app/abnahme.md`. Für den nächsten TestFlight-Upload ist Build-Nummer 2 nötig
-(`CURRENT_PROJECT_VERSION` in `ios/project.yml`, siehe 2026-10-16). Vor einer Veröffentlichung über
+`feature-documentation/ios-app/abnahme.md`. Build 0.1.0 (2) mit dem Scan-Fix ist seit 2026-10-16 bei
+TestFlight; für den nächsten Upload `CURRENT_PROJECT_VERSION` in `ios/project.yml` auf 3 erhöhen. Vor einer Veröffentlichung über
 TestFlight hinaus fehlen noch ein echtes App-Symbol und die Prüfung des Privacy-Manifests.
 
 **Bewusste Entscheidungen bei der Umsetzung:**
@@ -743,6 +743,5 @@ Hochladen fehlte die Datei (`UploadFehler.dateiNichtLesbar`), gemeldet wurde nur
 **Teststand (2026-10-16, Simulator iPhone 17 Pro):** 151 Unit-Tests in 20 Suites und 22 UI-Tests
 grün, Release-Build mit `SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` sauber.
 
-**Stand:** Für einen neuen TestFlight-Build ist Build-Nummer 2 nötig (`CURRENT_PROJECT_VERSION` in
-`ios/project.yml`). Die Geräteabnahme des Scans ist offen (Aufgaben 6.1 und 6.2 im Change; Checkliste
+**Stand:** Build 0.1.0 (2) am 2026-10-16 zu TestFlight hochgeladen (Merge `1018e20`). Die Geräteabnahme des Scans ist offen (Aufgaben 6.1 und 6.2 im Change; Checkliste
 `feature-documentation/ios-app/abnahme.md`, Abschnitt 3, Punkte noch nicht abgehakt).
