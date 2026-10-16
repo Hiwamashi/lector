@@ -15,6 +15,8 @@ import UIKit
 ///   (Vorgang 2 wird fertig) und nach 7 s einen neuen Vorgang (8).
 /// - `-UITEST_TESTBILD`: Im Menü „Beleg übergeben“ erscheint „Testbild übergeben“; es umgeht Kamera
 ///   und Fotoauswahl und übergibt drei erzeugte Bilder.
+/// - `-UITEST_TESTSCAN`: Im Menü erscheint „Testscan übergeben“; es öffnet statt der Kamera eine
+///   Vollbild-Ansicht mit „Speichern“ und „Abbrechen“ und nimmt denselben Weg wie der echte Scanner.
 /// - `-UITEST_UPLOAD_FEHLER`: Der erste Upload scheitert wie ohne Netz, alle weiteren gelingen.
 /// - `-UITEST_UPLOAD_ABGELEHNT`: Der Dienst lehnt jede hochgeladene Datei ab (`unsupported_format`).
 enum UITestStart {
@@ -49,6 +51,8 @@ enum UITestStart {
     }
 
     static var testbildEingespeist: Bool { ProcessInfo.processInfo.arguments.contains("-UITEST_TESTBILD") }
+
+    static var testscanEingespeist: Bool { ProcessInfo.processInfo.arguments.contains("-UITEST_TESTSCAN") }
 
     /// Drei Seiten für den Testweg ohne Kamera und Mediathek.
     static func testbilder() -> [UIImage] {

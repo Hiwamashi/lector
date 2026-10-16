@@ -61,6 +61,8 @@ Veröffentlichung über TestFlight hinaus).
 
 ## 3. Scan eines mehrseitigen Belegs
 
+> **Hinweis (Change `fix-scan-uebergabe`, 2026-10-16):** Der Fehler „Senden fehlgeschlagen.“ nach einem Kamera-Scan ist behoben. Ursache war, dass das Übergabeblatt während des Schließens des Scanners erschien und das vorbereitete PDF danach gelöscht wurde. Die Übergabe startet jetzt erst nach dem Schließen des Scanners. Die Geräteprüfung dieses Abschnitts steht noch aus; die Punkte unten sind noch nicht abgehakt.
+
 - [ ] **Mehrseitiger Scan (mindestens 3 Seiten)**  
   Ablauf: Menü + → Beleg scannen → 3 Seiten scannen → Speichern → „An Lector übergeben"  
   Erwartung: Ein einzelner Vorgang entsteht mit der richtigen Seitenzahl (z. B. `total_pages: 3`).

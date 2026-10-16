@@ -25,7 +25,9 @@ In der `HauptAnsicht` (Tab-Navigation) steht ein Menü mit dem Titel „Beleg ü
 └─────────────────────┘
 ```
 
-Ein Tap auf „Beleg scannen" öffnet den Scanner, ein Tap auf „Aus Mediathek" öffnet den Photo-Picker.
+Ein Tap auf „Beleg scannen" öffnet den Scanner, ein Tap auf „Fotos auswählen" öffnet den Photo-Picker.
+
+Im Debug-Build mit dem Startargument `-UITEST_TESTSCAN` steht zusätzlich „Testscan übergeben" im Menü (nur für UI-Tests, siehe `ios/README.md`).
 
 ## Scanner (`VNDocumentCameraViewController`)
 
@@ -41,7 +43,17 @@ Der Scanner bietet:
 - **Automatische Kantenerkennung:** Vision Framework erkennt Dokumentkanten und führt perspektivische Korrektur durch.
 - **Speichern/Abbrechen:** Am Ende kann die Person die Seiten speichern oder verwerfen.
 
-Nach dem Speichern landen die Bilder im `ErfassungsModell`.
+### Übergabe nach dem Scan
+
+Der `fertig`-Callback des Scanners öffnet das Übergabeblatt nicht direkt. `HauptAnsicht` (`ios/Lector/UI/HauptAnsicht.swift`) geht so vor:
+
+1. `scanBeendet(_:)` merkt sich die Bilder in `ausstehenderScan` und setzt nur `scannerArt = nil`, also schließt die Vollbild-Ansicht (`fullScreenCover(item:)` mit der privaten Enum `Scannerart`).
+2. Erst im `onDismiss` der Vollbild-Ansicht (`scannerGeschlossen()`) wird `ausstehenderScan` übernommen und `uebergeben` aufgerufen. Das Übergabeblatt (`.sheet(item:)`) öffnet sich daher erst, wenn der Scanner vollständig weg ist. Ein gleichzeitiges Schließen und Öffnen gibt es nicht mehr.
+3. Abbruch (`abgebrochen`) und ein leeres Ergebnis setzen `ausstehenderScan` auf `nil`. Dann öffnet sich kein Blatt.
+
+Der Testscan-Weg (`TestscanAnsicht`, nur Debug) nutzt denselben Ausgang (`scanBeendet`) und damit denselben Ablauf.
+
+Die Bilder landen anschließend im `ErfassungsModell`.
 
 ## Fotoauswahl (`PhotosPicker`)
 
@@ -62,16 +74,24 @@ Das Modell verwaltet einen Zustandsautomat:
 | `vorbereiten` | Bilder werden zu PDF verarbeitet | „Abbrechen" |
 | `senden` | PDF wird hochgeladen | „Abbrechen" |
 | `übergeben` | Upload erfolgreich, PDF wird verarbeitet | — |
-| `abgewiesen` | Upload abgelehnt (z. B. unsupported format) | „Erneut senden", „Schließen" |
+| `abgewiesen` | Upload abgelehnt (z. B. unsupported format) oder vorbereitete Datei fehlt | „Schließen" (bei fehlender Datei: „Bitte neu erfassen.") |
 | `fehlgeschlagen` | Upload gescheitert (Netz, 5xx, etc.) | „Erneut senden", „Schließen" |
 
 ### Erneut senden
 
 Wenn der Upload fehlschlägt, bietet das Modell „Erneut senden": Die PDF wird nochmals hochgeladen (über `APIClient.hochladen`). Dies funktioniert auch im Flugmodus-Szenario: Fehler → Person wartet → Flugmodus aus → „Erneut senden" tippt.
 
-### Aufräumen beim Schließen
+### Abbruch und fehlende Datei
 
-Das Modell speichert die PDF temporär auf der Festplatte (in einem Arbeitsordner). Wenn die Ansicht geschlossen wird, wird dieser Ordner gelöscht. Dies verhindert, dass sich eine alte PDF bei jedem Durchlauf auf dem Gerät sammelt.
+- **Abbruch während der Vorbereitung:** `starten()` prüft nach der PDF-Erzeugung mit `Task.checkCancellation()`. Bei Abbruch erfolgt kein Upload, der Zustand geht auf `bereit` zurück. Das PDF-Zeichnen selbst (`Task.detached`) ignoriert den Abbruch, deshalb die Prüfung danach.
+- **Vorbereitete Datei fehlt beim Senden:** `senden()` fängt `UploadFehler.dateiNichtLesbar` ausdrücklich. Der Zustand wird `abgewiesen("Der vorbereitete Beleg liegt nicht mehr vor. Bitte neu erfassen.")`, und `vorbereitet` wird verworfen. „Erneut senden" gibt es in diesem Fall nicht, weil es ohne Datei nicht helfen kann. Der Fehler ist nicht mehr die Sammelmeldung „Senden fehlgeschlagen.“.
+- **Rumpf nicht schreibbar:** `MultipartRumpf.schreiben` unterscheidet die Ursache. Lässt sich die Quelldatei nicht öffnen oder lesen, wirft `hochladen` `UploadFehler.dateiNichtLesbar` (siehe oben). Lässt sich der Multipart-Rumpf nicht anlegen oder schreiben (typisch: Gerätespeicher voll), wirft es `UploadFehler.rumpfNichtSchreibbar`. `senden()` setzt dafür `fehlgeschlagen("Der Beleg konnte nicht zum Senden vorbereitet werden. Ist der Gerätespeicher voll?")`. `vorbereitet` bleibt erhalten, „Erneut senden" ist möglich. Für Tests nehmen `hochladen(_:fortschritt:rumpfOrdner:)` und `ErfassungsModell.init(client:rumpfOrdner:seiten:)` ein Zielverzeichnis für den Rumpf entgegen (Standard: `temporaryDirectory`). Die Share Extension (`TeilenModell`) fängt den Fall nicht gezielt ab und meldet ihn wie bisher über den allgemeinen Zweig.
+
+### Aufräumen beim Schließen des Blatts
+
+Das Modell speichert die PDF temporär auf der Festplatte (in einem Arbeitsordner, `arbeitsordner`). `aufraeumen()` löscht diesen Ordner. Aufgerufen wird es **nicht** mehr aus `ErfassungsAnsicht`, sondern von `HauptAnsicht.nachErfassung()` im `onDismiss` des Übergabeblatts. Dort wird das Modell aufgeräumt, das geschlossen wurde (`offeneErfassung`). Früher löschte `onDisappear` in `ErfassungsAnsicht` den Ordner. Dadurch war die Datei weg, sobald das Blatt beim Wechsel vom Scanner kurz verschwand. Dies verhindert, dass sich eine alte PDF bei jedem Durchlauf auf dem Gerät sammelt.
+
+**Verwaiste Arbeitsordner:** Fällt `HauptAnsicht` mit offenem Blatt weg (Sitzung abgelaufen, Wechsel zur Anmeldung) oder stürzt die App ab, feuert `onDismiss` nicht. Deshalb gilt zusätzlich: `HauptAnsicht.uebergeben` räumt ein noch vorgemerktes `offeneErfassung` auf, bevor es ein neues Modell setzt. Die statische Funktion `ErfassungsModell.verwaisteAufraeumen(ausser:in:)` löscht alle `erfassung-*`-Ordner im temporären Verzeichnis außer dem übergebenen (Fehler werden still ignoriert). Die `.task` von `HauptAnsicht` ruft sie beim Erscheinen mit `ausser: offeneErfassung?.arbeitsordner` auf. Die Share Extension hat ein eigenes temporäres Verzeichnis und ist nicht betroffen.
 
 ### Keine Warteschlange
 

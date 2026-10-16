@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Blatt nach Scan oder Fotoauswahl: zeigt Vorbereitung, Fortschritt und Ergebnis der Übergabe.
-/// Beim Schließen wird der Arbeitsordner gelöscht; was nicht übergeben wurde, ist dann weg.
+/// Den Arbeitsordner löscht der Aufrufer (`HauptAnsicht`), sobald das Blatt geschlossen ist; was nicht
+/// übergeben wurde, ist dann weg. Das bloße Verschwinden der Ansicht räumt nichts auf.
 struct ErfassungsAnsicht: View {
     let modell: ErfassungsModell
     let schliessen: () -> Void
@@ -26,7 +27,6 @@ struct ErfassungsAnsicht: View {
         }
         .interactiveDismissDisabled(modell.laeuft)
         .task { await modell.starten() }
-        .onDisappear { modell.aufraeumen() }
     }
 
     @ViewBuilder

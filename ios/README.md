@@ -27,7 +27,7 @@ Entfernen von Quelldateien neu erzeugen. Einstellungen nie in Xcode von Hand än
 | `Lector/App` | Einstieg (`LectorApp`, `WurzelAnsicht`), `AppAbhaengigkeiten`, Debug-Startargumente und Attrappen-Dienst (`UITestStart`), Privacy-Manifest |
 | `Lector/UI` | Einrichtung, Anmeldung, Einstellungen, `HauptAnsicht` (Rahmen mit Historie, Einstellungen und Menü „Beleg übergeben“), `SitzungsModell`, `EinrichtungsModell` |
 | `Lector/UI/Historie` | Historie (Liste, Zähler, Filter, Suche), Detail mit Verlauf und Freigabe; `HistorieModell`, `DetailModell`, `Anzeige` (Begriffe, Zeitzone) |
-| `Lector/UI/Erfassung` | Scanner (`DokumentScanner`, `VNDocumentCameraViewController`), Fotoauswahl (`PhotosPicker` in `HauptAnsicht`), Übergabeblatt `ErfassungsAnsicht` und der Ablauf `ErfassungsModell` (Seiten → ein PDF → Upload; bereit, vorbereiten, senden, übergeben, abgewiesen, fehlgeschlagen mit „Erneut senden“; löscht beim Schließen den Arbeitsordner) |
+| `Lector/UI/Erfassung` | Scanner (`DokumentScanner`, `VNDocumentCameraViewController`), Fotoauswahl (`PhotosPicker` in `HauptAnsicht`), Übergabeblatt `ErfassungsAnsicht` und der Ablauf `ErfassungsModell` (Seiten → ein PDF → Upload; bereit, vorbereiten, senden, übergeben, abgewiesen, fehlgeschlagen mit „Erneut senden“; löscht beim Schließen des Blatts in `HauptAnsicht` den Arbeitsordner; der Scanner übergibt erst nach dessen Schließen) |
 | `Lector/Live` | `EreignisStrom`: SSE-Verbindung zu `/api/v1/events` mit Wiederaufbau, speist die Historie |
 | `Lector/Design` | `Farbe` (Akzent und Signalfarben aus `DESIGN.md`), `Farben.xcassets` |
 | `Lector/Config` | `Info.plist`, `Lector.entitlements` |
@@ -70,6 +70,8 @@ nutzen `TransportAttrappe` (`LectorTests/TransportAttrappe.swift`). `xcodebuild 
 
 Erfassung in den UI-Tests: Kamera und Fotoauswahl lassen sich nicht automatisieren. `-UITEST_TESTBILD`
 blendet im Menü „Beleg übergeben“ den Eintrag „Testbild übergeben“ ein (drei erzeugte Bilder);
+`-UITEST_TESTSCAN` blendet „Testscan übergeben“ ein: Eine Vollbild-Ansicht mit „Speichern“ und
+„Abbrechen“ ersetzt die Kamera und nimmt denselben Weg wie der Scanner (Test `testScanWegUebergibt`);
 `-UITEST_UPLOAD_FEHLER` lässt den ersten Upload scheitern, `-UITEST_UPLOAD_ABGELEHNT` lässt den
 Dienst jede Datei ablehnen.
 

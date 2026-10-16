@@ -6,22 +6,37 @@ enum MultipartRumpf {
     static let feldname = "files"
     private static let blockgroesse = 1 << 20
 
-    /// Schreibt Kopf, Dateiinhalt und Abschluss nach `ziel`.
+    /// Schreibt Kopf, Dateiinhalt und Abschluss nach `ziel`. Die Ursache bleibt unterscheidbar:
+    /// Quelle nicht lesbar → `dateiNichtLesbar`, Rumpf nicht anleg- oder schreibbar → `rumpfNichtSchreibbar`.
     static func schreiben(datei: UploadDatei, grenze: String, nach ziel: URL) throws {
-        FileManager.default.createFile(atPath: ziel.path, contents: nil)
-        let ausgabe = try FileHandle(forWritingTo: ziel)
-        defer { try? ausgabe.close() }
-        let eingabe = try FileHandle(forReadingFrom: datei.url)
+        let eingabe: FileHandle
+        do { eingabe = try FileHandle(forReadingFrom: datei.url) } catch { throw UploadFehler.dateiNichtLesbar }
         defer { try? eingabe.close() }
+
+        guard FileManager.default.createFile(atPath: ziel.path, contents: nil) else {
+            throw UploadFehler.rumpfNichtSchreibbar
+        }
+        let ausgabe: FileHandle
+        do { ausgabe = try FileHandle(forWritingTo: ziel) } catch { throw UploadFehler.rumpfNichtSchreibbar }
+        defer { try? ausgabe.close() }
 
         let kopf = "--\(grenze)\r\n"
             + "Content-Disposition: form-data; name=\"\(feldname)\"; filename=\"\(bereinigt(datei.dateiname))\"\r\n"
             + "Content-Type: \(datei.medientyp)\r\n\r\n"
-        try ausgabe.write(contentsOf: Data(kopf.utf8))
-        while let block = try eingabe.read(upToCount: blockgroesse), !block.isEmpty {
-            try ausgabe.write(contentsOf: block)
+        do {
+            try ausgabe.write(contentsOf: Data(kopf.utf8))
+            while true {
+                let block: Data?
+                do { block = try eingabe.read(upToCount: blockgroesse) } catch { throw UploadFehler.dateiNichtLesbar }
+                guard let block, !block.isEmpty else { break }
+                try ausgabe.write(contentsOf: block)
+            }
+            try ausgabe.write(contentsOf: Data("\r\n--\(grenze)--\r\n".utf8))
+        } catch let fehler as UploadFehler {
+            throw fehler
+        } catch {
+            throw UploadFehler.rumpfNichtSchreibbar
         }
-        try ausgabe.write(contentsOf: Data("\r\n--\(grenze)--\r\n".utf8))
     }
 
     /// Anführungszeichen und Zeilenumbrüche würden den Kopf aufbrechen.
@@ -36,19 +51,18 @@ extension APIClient {
     /// Lädt eine Datei als eigene Anfrage hoch und liefert das Ergebnis des Dienstes für sie.
     /// Eine abgelehnte Datei (`accepted == false`) ist **kein** Fehler, sondern ein Ergebnis mit
     /// `reason`. Netzfehler werfen `APIFehler.keinNetz`, 401 `APIFehler.nichtAngemeldet`.
-    /// Es wird nichts zwischengespeichert; die temporäre Rumpfdatei wird in jedem Fall gelöscht.
+    /// Es wird nichts zwischengespeichert; die temporäre Rumpfdatei (in `rumpfOrdner`) wird in jedem
+    /// Fall gelöscht. Fehlt die Quelldatei, wirft es `dateiNichtLesbar`, lässt sich der Rumpf nicht
+    /// schreiben (z. B. Speicher voll), `rumpfNichtSchreibbar`.
     func hochladen(
-        _ datei: UploadDatei, fortschritt: (@Sendable (Double) -> Void)? = nil
+        _ datei: UploadDatei, fortschritt: (@Sendable (Double) -> Void)? = nil,
+        rumpfOrdner: URL = FileManager.default.temporaryDirectory
     ) async throws -> UploadErgebnisDTO {
         let grenze = "Lector-" + UUID().uuidString
-        let rumpf = FileManager.default.temporaryDirectory
+        let rumpf = rumpfOrdner
             .appendingPathComponent("upload-\(UUID().uuidString).multipart")
         defer { try? FileManager.default.removeItem(at: rumpf) }
-        do {
-            try MultipartRumpf.schreiben(datei: datei, grenze: grenze, nach: rumpf)
-        } catch {
-            throw UploadFehler.dateiNichtLesbar
-        }
+        try MultipartRumpf.schreiben(datei: datei, grenze: grenze, nach: rumpf)
 
         var request = try await authentifizierteAnfrage("POST", "/api/v1/upload", zeitlimit: 300)
         request.setValue("multipart/form-data; boundary=\(grenze)", forHTTPHeaderField: "Content-Type")
@@ -69,8 +83,11 @@ extension APIClient {
 }
 
 enum UploadFehler: Error, Equatable {
-    /// Die vorbereitete Datei ließ sich nicht lesen oder der Rumpf nicht schreiben.
+    /// Die vorbereitete Quelldatei ließ sich nicht öffnen oder lesen (z. B. gelöscht).
     case dateiNichtLesbar
+    /// Der Multipart-Rumpf ließ sich nicht anlegen oder schreiben (z. B. Gerätespeicher voll);
+    /// die Quelldatei liegt dabei noch vor, ein erneutes Senden bleibt sinnvoll.
+    case rumpfNichtSchreibbar
 }
 
 extension UploadErgebnisDTO {

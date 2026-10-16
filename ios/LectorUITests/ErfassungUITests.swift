@@ -12,7 +12,7 @@ final class ErfassungUITests: XCTestCase {
     private func starten(_ zusatz: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-UITEST_ATTRAPPE", "-UITEST_ADRESSE_GESETZT", "-UITEST_ANGEMELDET",
-                               "-UITEST_AUTH_MODUS", "paperless", "-UITEST_TESTBILD"] + zusatz
+                               "-UITEST_AUTH_MODUS", "paperless", "-UITEST_TESTBILD", "-UITEST_TESTSCAN"] + zusatz
         app.launch()
         return app
     }
@@ -62,5 +62,43 @@ final class ErfassungUITests: XCTestCase {
         XCTAssertTrue(abgewiesen.waitForExistence(timeout: 15), "Ablehnung wird nicht angezeigt")
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Dateiformat wird nicht unterstützt'")).firstMatch.exists)
         XCTAssertFalse(app.buttons["erfassung.erneut"].exists, "Bei Ablehnung hilft erneutes Senden nicht")
+    }
+
+    /// Der Weg des echten Scanners: Die Vollbild-Ansicht schließt sich, die Übergabe startet.
+    @MainActor
+    func testScanWegUebergibt() {
+        let app = starten()
+        let menue = app.buttons["haupt.hinzufuegen"]
+        XCTAssertTrue(menue.waitForExistence(timeout: 10), "Menü „Beleg übergeben“ fehlt")
+        menue.tap()
+        let testscan = app.buttons["haupt.testscan"]
+        XCTAssertTrue(testscan.waitForExistence(timeout: 5))
+        testscan.tap()
+        let speichern = app.buttons["testscan.speichern"]
+        XCTAssertTrue(speichern.waitForExistence(timeout: 5), "Testscan-Ansicht fehlt")
+        speichern.tap()
+        let uebergeben = app.descendants(matching: .any)["erfassung.uebergeben"]
+        let fehler = app.descendants(matching: .any)["erfassung.fehler"]
+        let abgewiesen = app.descendants(matching: .any)["erfassung.abgewiesen"]
+        let erschienen = uebergeben.waitForExistence(timeout: 15)
+        XCTAssertTrue(erschienen, "Übergabe fehlt; Fehler: \(fehler.exists), abgewiesen: \(abgewiesen.exists)")
+    }
+
+    /// Abbrechen im Scanner öffnet kein Übergabeblatt und führt zurück zur Historie.
+    @MainActor
+    func testScanAbbrechenOeffnetKeineUebergabe() {
+        let app = starten()
+        let menue = app.buttons["haupt.hinzufuegen"]
+        XCTAssertTrue(menue.waitForExistence(timeout: 10), "Menü „Beleg übergeben“ fehlt")
+        menue.tap()
+        let testscan = app.buttons["haupt.testscan"]
+        XCTAssertTrue(testscan.waitForExistence(timeout: 5))
+        testscan.tap()
+        let abbrechen = app.buttons["testscan.abbrechen"]
+        XCTAssertTrue(abbrechen.waitForExistence(timeout: 5), "Testscan-Ansicht fehlt")
+        abbrechen.tap()
+        XCTAssertTrue(menue.waitForExistence(timeout: 10), "Historie nach dem Abbrechen nicht sichtbar")
+        XCTAssertFalse(app.descendants(matching: .any)["erfassung.schliessen"].waitForExistence(timeout: 3),
+                       "Übergabeblatt darf nicht erscheinen")
     }
 }
