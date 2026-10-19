@@ -743,5 +743,5 @@ Hochladen fehlte die Datei (`UploadFehler.dateiNichtLesbar`), gemeldet wurde nur
 **Teststand (2026-10-16, Simulator iPhone 17 Pro):** 151 Unit-Tests in 20 Suites und 22 UI-Tests
 grün, Release-Build mit `SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` sauber.
 
-**Stand:** Build 0.1.0 (2) am 2026-10-16 zu TestFlight hochgeladen (Merge `1018e20`). Die Geräteabnahme des Scans ist offen (Aufgaben 6.1 und 6.2 im Change; Checkliste
-`feature-documentation/ios-app/abnahme.md`, Abschnitt 3, Punkte noch nicht abgehakt).
+**Stand:** Build 0.1.0 (2) am 2026-10-16 zu TestFlight hochgeladen (Merge `1018e20`). Auf dem iPhone bestätigt: dreiseitiger Scan wird übergeben, Fehlschlag im Flugmodus und
+„Erneut senden“ funktionieren (`feature-documentation/ios-app/abnahme.md`, Abschnitte 3 und 5).

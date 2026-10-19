@@ -61,9 +61,9 @@ Veröffentlichung über TestFlight hinaus).
 
 ## 3. Scan eines mehrseitigen Belegs
 
-> **Hinweis (Change `fix-scan-uebergabe`, 2026-10-16):** Der Fehler „Senden fehlgeschlagen.“ nach einem Kamera-Scan ist behoben. Ursache war, dass das Übergabeblatt während des Schließens des Scanners erschien und das vorbereitete PDF danach gelöscht wurde. Die Übergabe startet jetzt erst nach dem Schließen des Scanners. Die Geräteprüfung dieses Abschnitts steht noch aus; die Punkte unten sind noch nicht abgehakt.
+> **Hinweis (Change `fix-scan-uebergabe`, 2026-10-16):** Der Fehler „Senden fehlgeschlagen.“ nach einem Kamera-Scan ist behoben. Ursache war, dass das Übergabeblatt während des Schließens des Scanners erschien und das vorbereitete PDF danach gelöscht wurde. Die Übergabe startet jetzt erst nach dem Schließen des Scanners. Auf dem iPhone bestätigt (Build 0.1.0 (2), 2026-10-16): mehrseitiger Scan sowie Fehlschlag im Flugmodus mit anschließendem „Erneut senden“.
 
-- [ ] **Mehrseitiger Scan (mindestens 3 Seiten)**  
+- [x] **Mehrseitiger Scan (mindestens 3 Seiten)**  
   Ablauf: Menü + → Beleg scannen → 3 Seiten scannen → Speichern → „An Lector übergeben"  
   Erwartung: Ein einzelner Vorgang entsteht mit der richtigen Seitenzahl (z. B. `total_pages: 3`).
 
@@ -91,11 +91,11 @@ Veröffentlichung über TestFlight hinaus).
 
 ## 5. Flugmodus und Offline-Szenarien
 
-- [ ] **Upload ohne Netz → Fehler mit „Erneut senden"**  
+- [x] **Upload ohne Netz → Fehler mit „Erneut senden"**  
   Ablauf: Flugmodus einschalten → Scan hochladen → Upload-Fehler  
   Erwartung: Button „Erneut senden" wird angezeigt, Datei bleibt in der Upload-Ansicht.
 
-- [ ] **„Erneut senden" funktioniert nach Flugmodus-Aus**  
+- [x] **„Erneut senden" funktioniert nach Flugmodus-Aus**  
   Ablauf: Nach Fehler (Flugmodus) → Flugmodus ausschalten (Netzwerk zurück) → „Erneut senden"  
   Erwartung: Upload erfolgreich. **Kein automatisches Nachholen** (die App wartet, bis die Person „Erneut senden" tippt).
 

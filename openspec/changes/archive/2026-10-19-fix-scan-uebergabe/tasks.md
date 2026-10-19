@@ -45,5 +45,5 @@ Testbefehle (aus `ios/README.md`):
 
 ## 6. Geräteabnahme (manuell, nach TestFlight-Upload)
 
-- [ ] 6.1 Auf dem iPhone einen dreiseitigen Beleg scannen. Prüfen: „An Lector übergeben“ erscheint, im Lector-Log steht `POST /api/v1/upload` mit 200, und in der Historie entsteht ein Vorgang mit drei Seiten.
-- [ ] 6.2 Scan im Flugmodus → Fehlschlag → Flugmodus aus → „Erneut senden“. Prüfen: Die Übergabe gelingt mit demselben PDF.
+- [x] 6.1 Auf dem iPhone einen dreiseitigen Beleg scannen. Prüfen: „An Lector übergeben“ erscheint, im Lector-Log steht `POST /api/v1/upload` mit 200, und in der Historie entsteht ein Vorgang mit drei Seiten.
+- [x] 6.2 Scan im Flugmodus → Fehlschlag → Flugmodus aus → „Erneut senden“. Prüfen: Die Übergabe gelingt mit demselben PDF.
