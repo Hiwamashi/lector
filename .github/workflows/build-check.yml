@@ -1,0 +1,14 @@
+name: build-check
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-check:
+    uses: Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml@v1
