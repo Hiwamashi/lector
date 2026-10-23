@@ -11,4 +11,4 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build-check:
-    uses: Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml@v1
+    uses: Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml@3b4129e591bf3adaa5179be3e8e501dfae7b2fe4 # v1
