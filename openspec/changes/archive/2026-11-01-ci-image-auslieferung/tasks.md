@@ -20,7 +20,7 @@ Konfiguration vor und hakt erst nach Rückmeldung ab.
 - [x] 3.1 Änderungen committen und pushen, Workflow per `gh workflow run image.yml --ref main` auslösen. Prüfen: Lauf grün (`gh run watch`); Fehler in `build-check` oder `lint` im Workflow beheben und erneut laufen lassen.
 - [x] 3.2 Registry prüfen. Prüfen: `docker buildx imagetools inspect rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:latest` listet `linux/amd64` und `linux/arm64`, und `latest` hat denselben Digest wie `git-<sha7>` des Laufs.
 - [x] 3.3 Prüfen, dass der Registry-Schlüssel nicht im Log steht. Prüfen: `gh run view --log` enthält keinen Klartext des Keys (GitHub maskiert ihn als `***`).
-- [ ] 3.4 **(manuell)** Auf dem NAS einmal wie bisher `sudo docker compose pull lector && sudo docker compose up -d lector`. Prüfen: Container `healthy`, Weboberfläche erreichbar.
+- [x] 3.4 **(manuell)** Auf dem NAS einmal wie bisher `sudo docker compose pull lector && sudo docker compose up -d lector`. Prüfen: Container `healthy`, Weboberfläche erreichbar. — Vom Anwender am 2026-11-01 bestätigt.
 
 ## 4. Push-Skript entfernen
 

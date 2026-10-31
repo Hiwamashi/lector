@@ -784,7 +784,7 @@ Doku: `feature-documentation/registry-deployment.md`.
 | Erster CI-Lauf, Registry-Index geprüft | ✅ Lauf 41253053418: `git-601a25b` = `latest`, amd64 + arm64, Schlüssel im Log maskiert |
 | Push-Skript entfernt | ✅ |
 | Doku (registry-deployment, README, Index) inkl. Renovate-Automerge | ✅ |
-| Einmaliger manueller Pull des CI-Images auf dem NAS | ⏳ Anwender |
+| Einmaliger manueller Pull des CI-Images auf dem NAS | ✅ vom Anwender bestätigt (2026-11-01) |
 | Ende-zu-Ende über Komodo | ⏳ wartet auf `nas-stacks` |
 
 Befund aus dem ersten Lauf: `test_absolute_grenze_90_tage_trotz_frischer_nutzung` hatte eine
