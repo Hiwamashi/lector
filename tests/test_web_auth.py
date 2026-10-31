@@ -19,6 +19,7 @@ from test_web import _setup_test_environment
 
 import app.config
 import app.main
+import app.worker
 from app.paperless import LoginResult
 from app.repository import Repository
 
@@ -710,8 +711,13 @@ def test_zweites_geraet_bleibt_nach_abmelden_angemeldet(auth_client):
     assert c.post("/logout", headers=EIGENE_HERKUNFT, follow_redirects=False).status_code == 303
 
 
-def test_absolute_grenze_90_tage_trotz_frischer_nutzung(auth_client):
+def test_absolute_grenze_90_tage_trotz_frischer_nutzung(auth_client, monkeypatch):
     c, application, _ = auth_client
+    # Der Retention-Loop des Workers räumt beim Start im Hintergrund abgelaufene Sitzungen
+    # ab. Träfe er die hier auf 91 Tage gesetzte Zeile, liefe das spätere UPDATE auf 89 Tage
+    # ins Leere (auf langsamen CI-Runnern beobachtet). Geprüft wird hier die Leseprüfung,
+    # nicht das Aufräumen.
+    monkeypatch.setattr(app.worker, "purge_web_sessions", lambda repo: 0)
     sid = _sid(c)
     conn = application.state.repo._conn
     assert c.get("/auth/status").status_code == 204
