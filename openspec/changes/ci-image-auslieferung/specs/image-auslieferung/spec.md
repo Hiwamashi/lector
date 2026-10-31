@@ -11,8 +11,10 @@ diese Capability ab, dass nur geprüfte, vollständige und nachvollziehbare Stä
 ### Requirement: Nur ein geprüfter Stand von `main` wird zum Image
 
 Ein Image MUSS ausschließlich aus einem Commit entstehen, der auf dem Branch `main` des
-GitHub-Repositorys liegt. Vor dem Bau MÜSSEN die Lint-Prüfung und die vollständige Testsuite
-für genau diesen Commit erfolgreich durchlaufen. Schlägt eine davon fehl, DARF KEIN Image in
+GitHub-Repositorys liegt. Vor dem Bau MÜSSEN für genau diesen Commit die Lint-Prüfung, die
+vollständige Testsuite, ein Probebau des Dockerfiles und die Prüfung der Compose-Dateien
+erfolgreich durchlaufen. Die Prüfungen MÜSSEN demselben Standard folgen wie die Prüfung von Pull
+Requests. Schlägt eine davon fehl, DARF KEIN Image in
 die Registry geschrieben werden. Pushes auf andere Branches DÜRFEN KEIN Image erzeugen. Ein
 manuell ausgelöster Lauf MUSS denselben Prüfungen unterliegen.
 

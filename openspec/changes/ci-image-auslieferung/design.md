@@ -14,6 +14,12 @@ Siehe `proposal.md` (Why). Ausgangslage im Code:
 - Das Repository auf GitHub (`Hiwamashi/lector`) ist öffentlich.
 - `uv run ruff check .` ist grün, `ruff format --check .` nicht (27 Dateien). Die Lint-Stufe
   in CI nutzt deshalb nur `ruff check`.
+- Seit 2026-10-21 (Renovate-Onboarding) gibt es `.github/workflows/build-check.yml`: Aufruf des
+  wiederverwendbaren Workflows `Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml`
+  (gepinnt auf `3b4129e…`) bei Pull Requests, Push auf `main` und manuell. Er erkennt die
+  prüfbaren Teile selbst; für Lector laufen die Jobs `python` (`uv sync --frozen --all-extras`,
+  `compileall`, `pytest`), `docker` (Build ohne Push) und `compose`. `ruff` ist nicht dabei.
+  Lauf auf `main` (`59442b7`) grün. Renovate aktualisiert u. a. `uv.lock`.
 - `Dockerfile` zieht `python:3.12-slim` und `ghcr.io/astral-sh/uv:latest` ohne Digest; jeder
   Neubau erzeugt daher einen neuen Image-Digest, auch ohne Codeänderung.
 - Das NAS (Zettlab, Intel/amd64) betreibt einen Compose-Stack
@@ -40,11 +46,14 @@ Siehe `proposal.md` (Why). Ausgangslage im Code:
 
 ## Decisions
 
-### D1 — Drei Jobs: Prüfen, Bauen pro Plattform, Zusammenführen
+### D1 — Prüfen (zentraler Build-Check + Lint), Bauen pro Plattform, Zusammenführen
 
 ```
-test (ubuntu-24.04)            ruff check, pytest
-  |
+build-check  (uses: Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml@<sha>)
+             Erkennung -> python (uv sync --frozen, compileall, pytest),
+                          docker (buildx build ohne Push), compose (Pruefung)
+lint         (ubuntu-24.04)   uv run ruff check .
+  |  beide gruen
   v
 build (Matrix)                 amd64 auf ubuntu-24.04, arm64 auf ubuntu-24.04-arm
   |   je Plattform: buildx build --push-by-digest, Digest als Artefakt
@@ -54,7 +63,15 @@ merge (ubuntu-24.04)           imagetools create -t git-<sha> <digest-amd64> <di
                                imagetools create -t latest git-<sha>
 ```
 
-`build` hängt von `test` ab, `merge` von beiden `build`-Läufen. Native Runner statt QEMU:
+Der Test-Gate ist der zentrale, wiederverwendbare Build-Check aus dem Renovate-Repository —
+derselbe Prüfstandard wie in `build-check.yml` für Pull Requests und `main`. Er führt kein
+`ruff` aus; deshalb ergänzt ein eigener Job `lint` die Prüfung (Spec: Lint und Tests). `build`
+hängt von `build-check` und `lint` ab, `merge` von beiden `build`-Läufen.
+
+*Alternativen:* eigener Test-Job (zweiter, abweichender Prüfweg; verworfen) oder Auslösung per
+`workflow_run` nach grünem `build-check.yml` (keine Doppelläufe, aber `workflow_run` kennt keinen
+Pfadfilter; verworfen). In Kauf genommen: Bei bildrelevanten Pushes auf `main` laufen die
+Prüfungen zweimal (in `build-check.yml` und in `image.yml`). Native Runner statt QEMU:
 Für öffentliche Repositorys sind arm64-Runner kostenlos, der Bau wird deutlich schneller als
 die bisherige Emulation. Das Muster „push by digest + Merge“ ist der von Docker dokumentierte
 Weg für Multi-Plattform-Builds auf getrennten Runnern.
@@ -96,8 +113,10 @@ in einem öffentlichen Repository.
 Fremde Actions (`actions/checkout`, `astral-sh/setup-uv`, `docker/setup-buildx-action`,
 `docker/login-action`, `docker/build-push-action`, `actions/upload-artifact`,
 `actions/download-artifact`) werden auf vollständige Commit-SHAs mit Versionskommentar
-gepinnt. Workflow-Rechte: `permissions: contents: read`. Grund: Der Workflow hält einen
-Registry-Schlüssel, aus dem automatisch Produktion wird.
+gepinnt, ebenso der eingebundene Build-Check (Commit-SHA wie in `build-check.yml`). Renovate
+(`renovate.json`, Basis `Krinke-IT-Consulting/renovate`) hält diese Pins aktuell. Workflow-Rechte:
+`permissions: contents: read`; der Build-Check bekommt keine Secrets. Grund: Der Workflow hält
+einen Registry-Schlüssel, aus dem automatisch Produktion wird.
 
 ### D6 — Push-Skript entfernen
 
@@ -128,8 +147,12 @@ dafür tun muss:
   unbenutztes SHA-Tag; harmlos.
 - [Image-Digest ändert sich bei jedem Neubau] → Pfadfilter verhindert Neubauten ohne
   Codeänderung; ein manueller Lauf startet Lector bewusst neu.
-- [Tests in CI hängen von lokaler Umgebung ab] → Aufgabe 3.1 prüft den ersten Lauf; Abweichungen
-  (fehlende Systembibliotheken für OpenCV) werden im Workflow nachgezogen.
+- [Gemergte Renovate-Updates von `uv.lock` oder `Dockerfile` landen ohne weiteren Halt auf dem
+  NAS] → gewollt (Sicherheitsupdates), abgesichert durch den Test-Gate; ob die gemeinsame
+  Renovate-Konfiguration Automerge nutzt, ist bei der Umsetzung zu prüfen und in der Doku zu
+  nennen.
+- [Der zentrale Build-Check ändert sich im Renovate-Repository] → per Commit-SHA gepinnt;
+  ein neuer Pin kommt als Renovate-PR und wird dort geprüft.
 
 ## Migration Plan
 

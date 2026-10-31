@@ -11,7 +11,8 @@ Handgriffe: `git push` → GitHub Actions baut → Scaleway-Registry → Komodo 
 ## What Changes
 
 - **Neu:** GitHub-Actions-Workflow, der bei Push auf `main` (und manuell) ausschließlich nach
-  grünem `ruff` und `pytest` ein Multi-Arch-Image (`linux/amd64`, `linux/arm64`) auf nativen
+  grünem zentralem Build-Check (derselbe wiederverwendbare Workflow wie in `build-check.yml`:
+  Tests, Docker-Build, Compose-Prüfung) und grünem `ruff check` ein Multi-Arch-Image (`linux/amd64`, `linux/arm64`) auf nativen
   Runnern baut, als eine Manifest-Liste zusammenführt, den Index prüft und erst dann
   `git-<sha>` und zuletzt `:latest` in die Scaleway-Registry schreibt.
 - **Neu:** Pfadfilter: Ein Image entsteht nur, wenn sich bildrelevante Dateien ändern
@@ -45,7 +46,8 @@ _keine_ — Verhalten des Dienstes selbst ändert sich nicht.
 
 ## Impact
 
-- **Neu:** `.github/workflows/image.yml`.
+- **Neu:** `.github/workflows/image.yml` (bindet den zentralen Build-Check ein; das vorhandene
+  `build-check.yml` bleibt unverändert).
 - **Entfällt:** `scripts/push-image.sh`, `tests/test_push_image_script.py`; der Kommentar in
   `.gitignore`, der die Ausschlüsse mit dem Push-Skript begründet, wird angepasst (die
   Ausschlüsse selbst bleiben).

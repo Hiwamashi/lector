@@ -1,0 +1,151 @@
+# Baut das Lector-Image und schiebt es in die Scaleway-Registry. Einziger Weg in die Registry.
+# Spec: openspec/specs/image-auslieferung, Doku: feature-documentation/registry-deployment.md.
+#
+# Ablauf: zentraler Build-Check + Lint -> Bau je Plattform (nativ, Push per Digest)
+#         -> Manifest-Liste git-<sha7> -> Plattformpruefung -> erst dann latest.
+# Das NAS (Komodo, Repository nas-stacks) rollt jedes neue latest automatisch aus.
+# Eingaben gelangen nur ueber `env:` in Shell-Befehle, nie per ${{ }} direkt in `run:`.
+name: image
+
+on:
+  push:
+    branches: [main]
+    # Nur bildrelevante Aenderungen: jeder Neubau ergibt einen neuen Digest und damit einen
+    # Neustart von Lector auf dem NAS.
+    paths:
+      - "app/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Ein neuerer Lauf bricht den aelteren ab, damit latest nie auf einen aelteren Stand faellt.
+concurrency:
+  group: image
+  cancel-in-progress: true
+
+env:
+  IMAGE: rg.nl-ams.scw.cloud/krinke-dockersolutions/lector
+
+jobs:
+  # Derselbe Pruefstandard wie fuer Pull Requests (.github/workflows/build-check.yml):
+  # pytest, Docker-Probebau, Compose-Pruefung. Pin identisch zu build-check.yml halten.
+  build-check:
+    uses: Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml@3b4129e591bf3adaa5179be3e8e501dfae7b2fe4 # v1
+
+  # Der zentrale Build-Check fuehrt kein ruff aus.
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install
+        run: uv sync --frozen --extra dev
+      - name: Lint
+        run: uv run ruff check .
+
+  build:
+    needs: [build-check, lint]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Registry-Login
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: rg.nl-ams.scw.cloud
+          username: nologin
+          password: ${{ secrets.SCW_REGISTRY_SECRET_KEY }}
+      - name: Bauen und per Digest pushen
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+      - name: Digest ablegen
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+          echo "ARCH=${PLATFORM#linux/}" >> "$GITHUB_ENV"
+      - name: Digest hochladen
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ env.ARCH }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Digests holen
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Registry-Login
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: rg.nl-ams.scw.cloud
+          username: nologin
+          password: ${{ secrets.SCW_REGISTRY_SECRET_KEY }}
+      - name: Manifest-Liste git-<sha7> anlegen
+        working-directory: /tmp/digests
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          TAG="$IMAGE:git-${SHA:0:7}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          docker buildx imagetools create -t "$TAG" $(printf "$IMAGE@sha256:%s " *)
+      - name: Plattformen pruefen
+        run: |
+          INSPECT="$(docker buildx imagetools inspect "$TAG")"
+          echo "$INSPECT"
+          for plattform in linux/amd64 linux/arm64; do
+            if ! grep -q "$plattform" <<<"$INSPECT"; then
+              echo "::error::$plattform fehlt im Index von $TAG"
+              exit 1
+            fi
+          done
+      - name: latest setzen
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker buildx imagetools create -t "$IMAGE:latest" "$TAG"
+          {
+            echo "### Image ausgeliefert"
+            echo "- \`$TAG\`"
+            echo "- \`$IMAGE:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
