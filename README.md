@@ -194,42 +194,35 @@ scp docai-sa.json sascha@<NAS-IP>:Teams/Docker/paperless-ngx-stack/lector/secret
 ### 2. Lector-Image auf den NAS bringen
 
 Das Image liegt als Multi-Arch-Image (amd64 + arm64) in der Scaleway Container
-Registry und wird auf dem NAS nur noch gezogen — der Build läuft auf dem
-Entwicklungsrechner. Da der Namespace öffentlich ist, braucht das NAS **keine**
-Zugangsdaten.
+Registry und wird auf dem NAS nur noch gezogen. Gebaut wird es ausschließlich von
+GitHub Actions (`.github/workflows/image.yml`): Bei jedem Push auf `main`, der
+Anwendungscode, `Dockerfile`, `pyproject.toml`, `uv.lock` oder diese README ändert,
+laufen der zentrale Build-Check und `ruff check`; nur wenn beide grün sind, entstehen
+die Tags `git-<sha>` und danach `latest`. Da der Namespace öffentlich ist, braucht das
+NAS **keine** Zugangsdaten, und auf dem Entwicklungsrechner ist kein Registry-Login
+nötig.
 
-Einmalig auf dem Entwicklungsrechner anmelden (Passwort = Scaleway Secret Key):
-
-```bash
-docker login rg.nl-ams.scw.cloud -u nologin --password-stdin
-```
-
-Bauen und pushen:
+Manuell neu bauen:
 
 ```bash
-./scripts/push-image.sh
+gh workflow run image.yml --ref main
 ```
 
-Das Skript baut für `linux/amd64` und `linux/arm64`, pusht die Tags `latest` und
-`git-<sha>` und prüft, dass beide Architekturen in der Manifest-Liste stehen. Es
-bricht ab, wenn der Registry-Login fehlt, der Worktree nicht sauber ist oder
-HEAD auf keinem Branch von `origin` liegt (ein rein lokaler Commit oder einer,
-der nur auf einem anderen Remote existiert, ist kein gültiges Rollback-Ziel) —
-in die Registry gelangen nur committete **und** nach `origin` gepushte
-Zustände, damit jedes `git-<sha>`-Tag aus dem gemeinsamen Repo reproduzierbar
-bleibt und als Rollback-Ziel taugt.
-
-Auf dem NAS:
+Lokal testen, ohne etwas zu pushen:
 
 ```bash
-ssh sascha@<NAS-IP>
-cd Teams/Docker/paperless-ngx-stack
-docker compose pull lector
-docker compose up -d lector
+docker buildx build --platform linux/arm64 -t lector:dev --load .
 ```
 
-Rollback auf einen früheren Stand: in der Compose `:latest` durch das
-gewünschte `:git-<sha>` ersetzen, dann erneut `pull` und `up -d`.
+Das Ausrollen auf dem NAS übernimmt Komodo, das neue `latest`-Images selbst erkennt
+(Repository `nas-stacks`). Solange Komodo nicht läuft, manuell im Stack-Ordner:
+
+```bash
+sudo docker compose pull lector && sudo docker compose up -d lector
+```
+
+Rollback auf einen früheren Stand: `:latest` durch das gewünschte `:git-<sha>`
+ersetzen und neu deployen.
 
 Details, Fehlerbilder und die Begründung der Architekturwahl:
 [feature-documentation/registry-deployment.md](feature-documentation/registry-deployment.md).

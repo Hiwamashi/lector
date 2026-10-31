@@ -34,10 +34,9 @@ prd/token-log.csv
 .superpowers/
 
 # Von OpenSpec je Agent-Harness erzeugte Spiegel derselben Befehle/Skills.
-# Nicht im Repo, damit push-image.sh einen sauberen Worktree sieht - es prueft
-# `git status --porcelain`, und das zaehlt auch unversionierte Dateien als
-# schmutzig. Die Quelle unter openspec/ ist dagegen versioniert: dort liegen
-# handgeschriebene Specs, die einen Clone ueberleben muessen.
+# Generiert und je Rechner verschieden, deshalb nicht im Repo. Die Quelle unter
+# openspec/ ist dagegen versioniert: dort liegen handgeschriebene Specs, die
+# einen Clone ueberleben muessen.
 .agents/
 .opencode/
 .claude/commands/

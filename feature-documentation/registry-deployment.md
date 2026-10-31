@@ -1,147 +1,130 @@
-# Deployment über die Scaleway Container Registry
+# Image-Auslieferung über GitHub Actions und die Scaleway Container Registry
 
-Lector wird nicht auf dem NAS gebaut, sondern als fertiges Multi-Arch-Image aus
-einer Registry gezogen. Der Build läuft auf dem Entwicklungs-Mac.
+Lector wird nicht auf dem NAS und nicht mehr auf dem Entwicklungsrechner gebaut. Der Workflow
+`.github/workflows/image.yml` baut bei jedem bildrelevanten Push auf `main` ein Multi-Arch-Image
+und schiebt es in die Scaleway-Registry. Er ist der **einzige** Weg in die Registry. Das NAS
+rollt jedes neue `latest` automatisch aus (Komodo, Repository `nas-stacks`).
+
+Anforderungen: Spec `image-auslieferung`. Test: `tests/test_image_workflow.py`.
+
+```
+git push main --(Pfadfilter)--> image.yml
+   build-check (zentral) + lint (ruff)
+        |  gruen
+        v
+   build amd64 (ubuntu-24.04) + build arm64 (ubuntu-24.04-arm), Push per Digest
+        v
+   merge: git-<sha7> als Manifest-Liste -> beide Plattformen? -> latest
+        v
+   Scaleway-Registry --(Komodo pollt latest)--> NAS
+```
 
 ## Registry
 
 | Feld | Wert |
 |---|---|
 | Endpoint | `rg.nl-ams.scw.cloud/krinke-dockersolutions` |
-| Region | `nl-ams` |
-| Sichtbarkeit | öffentlich |
+| Region / Projekt | `nl-ams` / `58816742-affb-4789-a04f-541ddf98e470` |
+| Sichtbarkeit | öffentlich (Pull ohne Login) |
 | Image | `lector` |
-| Tags | `latest`, `git-<short-sha>` |
+| Tags | `latest`, `git-<sha7>` |
 
-Weil der Namespace öffentlich ist, braucht das **NAS keine Zugangsdaten**.
-`docker compose pull` funktioniert dort ohne `docker login`.
+Beide Tags sind Manifest-Listen über `linux/amd64` (Zettlab-NAS) und `linux/arm64`
+(Entwicklungs-Mac). Jeder Host zieht seine Architektur; es gibt keine architekturspezifischen
+Tags.
 
-## Architektur: eine Manifest-Liste, zwei Plattformen
+## Der Workflow
 
-Beide Tags sind OCI-Manifest-Listen über `linux/amd64` und `linux/arm64`:
+| Job | Läuft auf | Aufgabe |
+|---|---|---|
+| `build-check` | zentraler Workflow `Krinke-IT-Consulting/renovate/.github/workflows/build-check.yml` (gepinnt, derselbe SHA wie in `build-check.yml`) | `pytest`, Docker-Probebau ohne Push, Compose-Prüfung — derselbe Standard wie für Pull Requests |
+| `lint` | `ubuntu-24.04` | `uv run ruff check .` (der zentrale Build-Check führt kein ruff aus) |
+| `build` | Matrix `ubuntu-24.04` / `ubuntu-24.04-arm` | baut je Plattform **nativ** (keine QEMU-Emulation) und pusht per Digest |
+| `merge` | `ubuntu-24.04` | legt `git-<sha7>` aus beiden Digests an, prüft per `imagetools inspect` beide Plattformen und setzt **erst dann** `latest` (nur auf `main`) |
 
-    lector:latest
-      ├── linux/amd64   → Zettlab NAS (Intel)
-      └── linux/arm64   → Entwicklungs-Mac (Apple Silicon)
+**Auslöser:** Push auf `main`, wenn sich eine dieser Dateien ändert: `app/**`, `Dockerfile`,
+`pyproject.toml`, `uv.lock`, `README.md` (wird ins Image kopiert), `.github/workflows/image.yml`.
+Reine Doku-, iOS-, OpenSpec- oder Test-Commits erzeugen kein Image — jeder Neubau ergibt einen
+neuen Digest (Basis-Images sind nicht per Digest gepinnt) und damit einen Neustart von Lector
+auf dem NAS.
 
-Jeder Host zieht automatisch seine Architektur, die Compose-Zeile ist überall
-identisch. Es gibt **keine** arch-spezifischen Tags — die würden die
-Architekturwahl in eine manuell gepflegte Textstelle verlagern.
+**Manueller Neubau:** `gh workflow run image.yml --ref main` (ohne Pfadfilter). Für einen
+anderen Ref entsteht nur `git-<sha7>`, kein `latest`.
 
-## Einmalige Einrichtung auf dem Mac
+**Nebenläufigkeit:** feste Gruppe `image` mit `cancel-in-progress`. Ein neuerer Lauf bricht den
+älteren ab; `latest` fällt so nie auf einen älteren Stand zurück. Ein Abbruch zwischen
+`git-<sha7>` und `latest` hinterlässt nur ein unbenutztes SHA-Tag.
 
-    docker login rg.nl-ams.scw.cloud -u nologin --password-stdin
+**Sicherheit:** `permissions: contents: read`, alle Actions auf Commit-SHAs gepinnt, Eingaben nur
+über `env:` in Shell-Befehlen. Der Build-Check bekommt keine Secrets. Das Repository ist
+öffentlich.
 
-Benutzername ist bei Scaleway konstant `nologin`, das Passwort ist der
-**Secret Key** eines API-Schlüssels (Scaleway-Konsole → IAM → API-Schlüssel).
-Das Credential landet im Docker-Credential-Store; das Push-Skript liest den
-Key niemals selbst.
+## Zugang der CI zur Registry
 
-Voraussetzung für Multi-Arch-Builds ist der containerd Image Store in Docker
-Desktop. Ist er aktiv, genügt der Default-Builder — ein eigener
-`docker-container`-Builder ist nicht nötig. Prüfen mit:
+| Was | Wert |
+|---|---|
+| Scaleway-IAM-Application | `lector-ci` (`4e5ef4d0-7c7e-457f-8c93-6c75b866a150`) |
+| Policy | `lector-ci-registry`: eine Regel, `ContainerRegistryFullAccess`, nur Projekt `58816742-…` |
+| API-Key | ohne Ablaufdatum, Beschreibung „GitHub-Secret SCW_REGISTRY_SECRET_KEY“ |
+| GitHub-Secret | `SCW_REGISTRY_SECRET_KEY` im Repository `Hiwamashi/lector` |
+| Login | Benutzer `nologin`, Passwort = Secret Key |
 
-    docker buildx ls          # muss linux/amd64 und linux/arm64 listen
+Scaleway kennt für die Registry nur ReadOnly und FullAccess; die CI kann im Registry-Projekt
+also auch Images löschen, aber nichts außerhalb der Registry.
 
-## Bauen und pushen
+**Key rotieren:** neuen API-Key für `lector-ci` erzeugen und direkt weiterreichen, ohne ihn
+anzuzeigen, danach den alten Key löschen:
 
-    ./scripts/push-image.sh              # baut, pusht, verifiziert den Index
-    ./scripts/push-image.sh --dry-run    # zeigt nur, was passieren würde
+    scw iam api-key create application-id=4e5ef4d0-7c7e-457f-8c93-6c75b866a150 \
+      default-project-id=58816742-affb-4789-a04f-541ddf98e470 -o json \
+      | jq -j .secret_key | gh secret set SCW_REGISTRY_SECRET_KEY -R Hiwamashi/lector
 
-Das Skript bricht **vor** dem Build ab, wenn
+## Renovate und automatische Auslieferung
 
-- kein Registry-Login vorliegt (sonst fiele das erst nach Minuten
-  Emulations-Build auf),
-- der Worktree nicht sauber ist, oder
-- HEAD auf keinem Branch von `origin` liegt.
+Renovate (`renovate.json`, Basis `github>Krinke-IT-Consulting/renovate`) aktualisiert
+Abhängigkeiten per Pull Request. Laut gemeinsamer Konfiguration (Stand 2026-11-01):
 
-### Warum kein Push aus schmutzigem Worktree
+| Update-Art | Automerge |
+|---|---|
+| Patch, Digest, Pin (z. B. Patch-Versionen in `uv.lock`, Action-SHAs) | **ja**, gruppiert, Zeitplan Wochenende, nur bei grünem Build-Check |
+| Minor | nein |
+| Major | nein, erst nach Freigabe im Dependency Dashboard |
+| Sicherheitsmeldungen (Vulnerability Alerts) | nein, PR sofort |
 
-Zwei verschiedene unkommittierte Zustände auf demselben HEAD ergäben denselben
-Tag, und der zweite Push überschriebe den ersten stillschweigend. Ein Rollback
-auf so ein Tag landet bei Code, der aus dem Repo nicht rekonstruierbar ist —
-womit der Zweck der SHA-Tags entfällt. Für schnelle Zwischenstände ist der
-lokale Build der richtige Weg, **nicht** ein Commit auf einem Wegwerf-Branch:
-ein nie gepushter Branch ist per Git-Garbage-Collection löschbar, und dann
-zeigt das Rollback-Tag auf Code, den es nirgends mehr gibt — dasselbe Problem
-wie beim schmutzigen Worktree, nur einen Schritt später. Committen allein
-reicht also nicht; siehe das dritte Gate unten. Für lokale Zwischenstände:
+Folge: Ein automatisch gemergtes Patch-Update von `uv.lock` oder ein neuer Action-Pin in
+`image.yml` erzeugt über den Pfadfilter ein neues Image, das das NAS **ohne weiteren Handgriff**
+ausrollt. Das ist gewollt; der Test-Gate fängt kaputte Updates ab, Rollback siehe unten.
+
+## Lokal bauen (ohne Push)
 
     docker buildx build --platform linux/arm64 -t lector:dev --load .
 
-Wer den Commit doch behalten will, pusht ihn (`git push`) — erst dann ist er
-als Rollback-Ziel brauchbar.
+Zum Testen eines Stands auf dem NAS: committen, pushen, auf `main` mergen — oder per
+`gh workflow run image.yml --ref <branch>` ein `git-<sha7>` bauen und dieses Tag auf dem NAS
+eintragen.
 
-### Drittes Gate: HEAD muss auf `origin` bekannt sein
+## Ausrollen und Rollback
 
-Ein sauber committeter Zustand kann trotzdem rein lokal existieren. Das Skript
-prüft daher zusätzlich `git for-each-ref --contains HEAD refs/remotes/origin`:
-ist das leer, bricht es ab, denn das `git-<sha>`-Tag wäre sonst für niemanden
-außer dem lokalen Rechner auflösbar — als Rollback-Ziel nutzlos, und im
-schlimmsten Fall (siehe oben) sogar gar nicht mehr existent.
-
-Das Gate ist bewusst auf `origin` beschränkt — den einen Remote, auf den
-`git push` ohne weitere Angabe zielt und den die dokumentierte Zusage
-("aus dem Repo reproduzierbar") meint. Ein Commit, der nur auf einem privaten
-Fork, einem Backup-Remote oder dem Repo eines Kollegen existiert, ist für
-niemand sonst auflösbar, obwohl dort ein Remote-Tracking-Ref ihn "enthält". Ein
-Gate, das stattdessen jeden beliebigen Remote-Tracking-Ref akzeptiert (z. B.
-`git branch -r --contains HEAD`), würde diesen Fall fälschlich durchwinken —
-und dabei zusätzlich die Stale-Ref-Lücke für jedes andere, nie aufgefrischte
-Remote wieder öffnen (siehe unten). Der Remote-Name steckt als Konstante
-`REMOTE="origin"` im Skriptkopf, damit Fetch und Prüfung nicht auseinanderlaufen
-können.
-
-Vor dieser Prüfung frischt das Skript die Remote-Tracking-Refs von `origin`
-per `git fetch --prune --quiet origin` auf. Ohne diesen Refresh könnten
-veraltete lokale Refs das Gate genau in dem Fall durchwinken, den es
-verhindern soll: nach einem Force-Push, einem gelöschten Remote-Branch oder
-einem neu aufgesetzten Remote-Repo zeigt der lokale Ref weiterhin auf einen
-Commit, den das Remote gar nicht mehr kennt. `--prune` entfernt dabei
-zusätzlich Refs zu Branches, die auf dem Remote gelöscht wurden. Schlägt der
-Fetch fehl (offline, Remote nicht erreichbar, Zugangsdaten ungültig), bricht
-das Skript ab, statt sich auf möglicherweise veraltete Refs zu verlassen —
-das kostet nichts, denn ohne Netzwerk würde der Push ohnehin wenig später
-scheitern. Abhilfe bei fehlgeschlagenem Fetch: Netzwerk und Zugangsdaten
-prüfen. Abhilfe bei "HEAD ist auf keinem Branch von 'origin' enthalten":
-`git push`.
-
-Der `amd64`-Teil des Multi-Arch-Builds läuft auf Apple Silicon per
-QEMU-Emulation und dauert daher merklich länger als der native `arm64`-Teil.
-
-## Rollout auf dem NAS
-
-Im Ordner des Paperless-Stacks (`Teams/Docker/paperless-ngx-stack`):
-
-    ssh sascha@<NAS-IP>
-    cd Teams/Docker/paperless-ngx-stack
-    docker compose pull lector
-    docker compose up -d lector
-
-Ein `docker login` ist hier nicht nötig — der Namespace ist öffentlich.
-
-## Rollback
-
-`:latest` in der Compose des NAS durch den zuletzt funktionierenden
-`:git-<sha>` ersetzen, dann erneut `pull` und `up -d`:
-
-    image: rg.nl-ams.scw.cloud/krinke-dockersolutions/lector:git-7ffcb4c
+Ausrollen, Rollback und Benachrichtigung beschreibt das Repository `nas-stacks`
+(`komodo/README.md`). Kurzfassung Rollback: im Stack `lector:latest` durch das zuletzt
+funktionierende `lector:git-<sha7>` ersetzen und neu deployen. Die verfügbaren Tags zeigt
+`scw registry tag list image-id=<id> region=nl-ams` bzw. die Scaleway-Konsole.
 
 ## Fehlerbilder
 
 | Symptom | Ursache | Behebung |
 |---|---|---|
-| `exec format error` beim Containerstart | Image enthält die Architektur des NAS nicht | `docker buildx imagetools inspect …:latest` — beide Plattformen müssen im Index stehen |
-| Compose baut auf dem NAS statt zu pullen | `build:` steht neben `image:` | `build:` auskommentieren; `tests/test_compose_files.py` hält das fest |
-| Push scheitert nach langem Build | Registry-Login fehlt | `docker login rg.nl-ams.scw.cloud -u nologin --password-stdin` |
-| Skript bricht mit „Worktree ist nicht sauber" ab | offene Änderungen | committen, oder lokal ohne Push bauen (siehe oben) |
-| Skript bricht mit „HEAD ist auf keinem Branch von 'origin' enthalten" ab | Commit ist nur lokal vorhanden, nur auf einem anderen Remote (Fork/Backup) oder nur auf einem ungepushten Branch | `git push`, dann erneut ausführen |
-| Skript bricht mit „'git fetch --prune origin' fehlgeschlagen" ab | Kein Netzwerk, Remote nicht erreichbar oder Zugangsdaten ungültig | Netzwerk/VPN prüfen, `git fetch origin` manuell testen, dann erneut ausführen |
+| Lauf rot in `build-check` | Test, Docker-Probebau oder Compose-Prüfung fehlgeschlagen | Fehler beheben; `latest` bleibt auf dem vorherigen Stand |
+| Lauf rot in `lint` | `ruff check` meldet Befunde | lokal `uv run ruff check .` |
+| `build` scheitert beim Login (401/403) | Secret fehlt, Key widerrufen oder Policy geändert | Key rotieren (siehe oben), Policy prüfen |
+| `merge` meldet „… fehlt im Index“ | ein Plattform-Build hat keinen Digest geliefert | Lauf neu starten; `latest` wurde nicht verändert |
+| Kein Lauf nach einem Push | nur Dateien außerhalb des Pfadfilters geändert | gewollt; bei Bedarf manueller Neubau |
+| `exec format error` auf dem NAS | Image ohne amd64-Teil | `docker buildx imagetools inspect …:latest` |
+| Compose baut auf dem NAS statt zu pullen | `build:` neben `image:` | `build:` auskommentieren; `tests/test_compose_files.py` hält das fest |
 
 ## Secrets
 
-Das Image enthält keine Secrets. Das `Dockerfile` kopiert nur
-`pyproject.toml`, `uv.lock`, `README.md` und `app/`; `.dockerignore` schließt
-zusätzlich `.env` und `secrets` aus. Konfiguration kommt ausschließlich über
-Umgebungsvariablen und Volumes aus der Compose. Das ist wichtig, weil das
-Image öffentlich abrufbar ist.
+Das Image enthält keine Secrets. Das `Dockerfile` kopiert nur `pyproject.toml`, `uv.lock`,
+`README.md` und `app/`; `.dockerignore` schließt `.env*` und `secrets` aus. Konfiguration kommt
+ausschließlich zur Laufzeit über Umgebungsvariablen und Volumes. Wichtig, weil das Image
+öffentlich abrufbar ist.

@@ -112,6 +112,10 @@ Das Image wird nicht mehr auf dem NAS gebaut, sondern als Multi-Arch-Image
 und Push laufen auf dem Entwicklungsrechner, der Rollout aufs NAS bleibt ein
 getrennter manueller Schritt.
 
+> **Abgelöst (2026-11-01):** Build und Push laufen jetzt in GitHub Actions, das Push-Skript ist
+> entfernt — siehe Abschnitt „CI-Image-Auslieferung“ unten. Die Tabelle beschreibt den Stand vom
+> September.
+
 | Feature | Status |
 |---|---|
 | Push-Skript Multi-Arch amd64+arm64 als Manifest-Liste (`scripts/push-image.sh`) | ✅ |
@@ -764,3 +768,25 @@ geprüft: nur für die ausgeschaltete semantische Suche). Doku: `feature-documen
 | Prüfung der Grenzen mit Agent-Token | ✅ bis auf Rechte setzen bei besitzerlosen Dokumenten (bewusst akzeptiert, siehe `rechte.md`) |
 | Dienst auf dem NAS, Proxy-Route `paperless-mcp.nerd-wg.eu` | ✅ (401 ohne Token, Tool-Aufruf über die Kette geprüft) |
 | claude.ai/Claude Desktop angebunden; Claude Code über den claude.ai-Connector; n8n, Tool-Sperren, Historie | ✅ claude.ai geprüft; Rest vom Anwender als erledigt erklärt |
+
+## Zusatz-Feature: CI-Image-Auslieferung (ci-image-auslieferung) — in Umsetzung
+
+`git push` auf `main` → `.github/workflows/image.yml` → Scaleway-Registry. Test-Gate ist der
+zentrale Build-Check aus dem Renovate-Repository plus `ruff check`; Bau nativ je Plattform,
+`git-<sha7>` vor `latest`, Pfadfilter auf bildrelevante Dateien. Einziger Weg in die Registry;
+`scripts/push-image.sh` entfällt. Ausrollen per Komodo wird im Repository `nas-stacks` geplant.
+Doku: `feature-documentation/registry-deployment.md`.
+
+| Punkt | Stand |
+|---|---|
+| IAM-Application `lector-ci` (nur Registry-Projekt), Secret `SCW_REGISTRY_SECRET_KEY` | ✅ |
+| Workflow `image.yml` + Regressionstest `tests/test_image_workflow.py` | ✅ |
+| Erster CI-Lauf, Registry-Index geprüft | ✅ Lauf 41253053418: `git-601a25b` = `latest`, amd64 + arm64, Schlüssel im Log maskiert |
+| Push-Skript entfernt | ✅ |
+| Doku (registry-deployment, README, Index) inkl. Renovate-Automerge | ✅ |
+| Einmaliger manueller Pull des CI-Images auf dem NAS | ⏳ Anwender |
+| Ende-zu-Ende über Komodo | ⏳ wartet auf `nas-stacks` |
+
+Befund aus dem ersten Lauf: `test_absolute_grenze_90_tage_trotz_frischer_nutzung` hatte eine
+Race mit dem Retention-Loop des Workers (Sitzung zwischen zwei Testschritten weggeräumt);
+im Test behoben.
