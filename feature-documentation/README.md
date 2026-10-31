@@ -38,6 +38,7 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 | [paperless-integration/](paperless-integration/README.md) | `app/paperless.py`, `app/girocode.py`, `app/sevdesk.py`, `app/paperless_sync.py` | GiroCode-Anzeige & SevDesk-Export (entkoppelt) |
 | [startvalidierung-und-healthcheck.md](startvalidierung-und-healthcheck.md) | `app/config.py`, `app/main.py`, `app/worker.py`, `app/repository.py` | Startvalidierung, `/healthz`, Container-`HEALTHCHECK` |
 | [docker-deployment.md](docker-deployment.md) | `Dockerfile`, `docker-compose.example.yml` | Deployment |
+| [agenten-zugang/](agenten-zugang/README.md) | `docker-compose.example.yml` (Dienst `paperless-mcp`) | MCP-Zugang der KI-Agents auf Paperless (kein Lector-Code) |
 | [ios-app/](ios-app/README.md) | `ios/` | Native SwiftUI-App für iOS: Einrichtung, Anmeldung, Historie, Live-Updates, Scanner, Fotoauswahl, Share Extension, PDF-Erzeugung |
 
 ## Bewusste Abweichungen vom PRD-Tech-Stack
