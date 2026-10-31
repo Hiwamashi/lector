@@ -745,3 +745,22 @@ grün, Release-Build mit `SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` sauber.
 
 **Stand:** Build 0.1.0 (2) am 2026-10-16 zu TestFlight hochgeladen (Merge `1018e20`). Auf dem iPhone bestätigt: dreiseitiger Scan wird übergeben, Fehlschlag im Flugmodus und
 „Erneut senden“ funktionieren (`feature-documentation/ios-app/abnahme.md`, Abschnitte 3 und 5).
+
+## Zusatz-Feature: Agenten-Zugang auf Paperless über MCP (paperless-mcp-anbindung) — im Einsatz
+
+KI-Agents (claude.ai, Claude Code, n8n) greifen über den Community-MCP-Server
+`OrellBuehler/paperless-mcp` (v1.4.1, gepinnt) auf Paperless zu. Kein Lector-Code: Begleitdienst
+im Paperless-Compose. Rechte- und Sichtbarkeitsgrenzen liegen in Paperless (Gruppe `agents`,
+ein Benutzer je Client, Stufe 2: lesen und Metadaten pflegen, kein Löschen/Hochladen/keine
+Rechteverwaltung). Der Dienst-Token ist ein Zufallswert ohne Paperless-Benutzer (im Quellcode
+geprüft: nur für die ausgeschaltete semantische Suche). Doku: `feature-documentation/agenten-zugang/`.
+
+| Punkt | Stand |
+|---|---|
+| Dienst `paperless-mcp` in `docker-compose.example.yml`, Variablen in `.env.example` | ✅ |
+| Regressionstests (Pinning, interner Weg, Platzhalter-Token, Embeddings aus, Host/Origin) | ✅ |
+| Doku (Überblick, Rechte, Dienst mit Update-Prüfliste, Clients) | ✅ |
+| Paperless: Gruppe, Benutzer, Tokens, Freigabe Bestand, Workflow | ✅ (2026-10-30, Workflow an neuen Dokumenten bestätigt) |
+| Prüfung der Grenzen mit Agent-Token | ✅ bis auf Rechte setzen bei besitzerlosen Dokumenten (bewusst akzeptiert, siehe `rechte.md`) |
+| Dienst auf dem NAS, Proxy-Route `paperless-mcp.nerd-wg.eu` | ✅ (401 ohne Token, Tool-Aufruf über die Kette geprüft) |
+| claude.ai/Claude Desktop angebunden; Claude Code über den claude.ai-Connector; n8n, Tool-Sperren, Historie | ✅ claude.ai geprüft; Rest vom Anwender als erledigt erklärt |

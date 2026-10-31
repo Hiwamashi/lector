@@ -221,3 +221,29 @@ services:
       AUTO_GENERATE_CREATED_DATE: "true"
       CREATE_NEW_TAGS: "false"    # auf "true", wenn die KI neue Tags anlegen darf
       LOG_LEVEL: info
+
+  # MCP-Zugang fuer KI-Agents (claude.ai, Claude Code, n8n) auf Paperless.
+  # Doku: feature-documentation/agenten-zugang/
+  # - Jeder Client meldet sich mit SEINEM Paperless-Token an
+  #   (Authorization: Bearer <token>); Paperless setzt die Rechte durch.
+  # - Image exakt gepinnt: Bei Auto-Update (Komodo) wuerde sonst ein Community-Dienst
+  #   mit Zugriff auf Agent-Tokens ungeprueft aktualisiert. Versionssprung nur nach
+  #   der Pruefliste in feature-documentation/agenten-zugang/mcp-dienst.md.
+  # - PAPERLESS_TOKEN ist ein Zufallswert, der KEINEM Paperless-Benutzer gehoert.
+  #   Der Dienst braucht ihn nur fuer die semantische Suche, die aus bleibt.
+  # - Oeffentlich nur ueber den Reverse-Proxy (HTTPS) unter PAPERLESS_MCP_HOST.
+  paperless-mcp:
+    image: ghcr.io/orellbuehler/paperless-mcp:1.4.1
+    restart: unless-stopped
+    depends_on:
+      - webserver
+    ports:
+      - "3001:3001"               # nur fuer den Reverse-Proxy
+    environment:
+      MCP_TRANSPORT: http
+      PORT: 3001
+      PAPERLESS_URL: http://webserver:8000
+      PAPERLESS_TOKEN: ${PAPERLESS_MCP_SERVICE_TOKEN}
+      EMBEDDINGS_ENABLED: "false"
+      MCP_ALLOWED_HOSTS: ${PAPERLESS_MCP_HOST}   # Host-Header-Pruefung (403 bei fremdem Host)
+      # MCP_ALLOWED_ORIGINS bewusst nicht gesetzt: Browser-Zugriffe fremder Herkunft gesperrt.
