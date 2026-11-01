@@ -40,5 +40,5 @@ Setzt voraus, dass Komodo aus `nas-stacks` den `paperless-ngx-stack` mit Auto-Up
 
 
 - [x ] 6.1 Einen kleinen Commit unter `app/` (z. B. Kommentar) auf `main` pushen. Prüfen: CI grün, nach höchstens Poll-Intervall läuft auf dem NAS der neue `git-<sha7>` (Komodo zeigt Redeploy nur für `lector`). Ergebnis 2026-11-01: `3a54573`, nur `lector` neu deployt; Auslöser ist die Komodo-Prozedur „Global Auto Update“ (alle 5 Minuten), nicht das Poll-Intervall.
-- [ ] 6.2 Einen reinen Doku-Commit pushen. Prüfen: Kein Workflow-Lauf, Lector auf dem NAS wird nicht neu gestartet.
-- [ ] 6.3 Rollback üben: in Komodo `lector:git-<vorheriger-sha>` setzen und redeployen, danach zurück auf `latest`. Prüfen: Lector läuft jeweils `healthy` mit der erwarteten Version.
+- [x ] 6.2 Einen reinen Doku-Commit pushen. Prüfen: Kein Workflow-Lauf, Lector auf dem NAS wird nicht neu gestartet. Ergebnis 2026-11-01: `6607f1a` startete keinen Lauf von `image.yml`; ohne neues Image gibt es nichts zu deployen.
+- [x ] 6.3 Rollback üben: in Komodo `lector:git-<vorheriger-sha>` setzen und redeployen, danach zurück auf `latest`. Prüfen: Lector läuft jeweils `healthy` mit der erwarteten Version. **Nicht erprobt** — auf Wunsch des Anwenders am 2026-11-01 ungeprüft abgehakt; offen in `nas-stacks/PROGRESS.md`.

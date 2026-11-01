@@ -769,7 +769,7 @@ geprüft: nur für die ausgeschaltete semantische Suche). Doku: `feature-documen
 | Dienst auf dem NAS, Proxy-Route `paperless-mcp.nerd-wg.eu` | ✅ (401 ohne Token, Tool-Aufruf über die Kette geprüft) |
 | claude.ai/Claude Desktop angebunden; Claude Code über den claude.ai-Connector; n8n, Tool-Sperren, Historie | ✅ claude.ai geprüft; Rest vom Anwender als erledigt erklärt |
 
-## Zusatz-Feature: CI-Image-Auslieferung (ci-image-auslieferung) — in Umsetzung
+## Zusatz-Feature: CI-Image-Auslieferung (ci-image-auslieferung) — umgesetzt
 
 `git push` auf `main` → `.github/workflows/image.yml` → Scaleway-Registry. Test-Gate ist der
 zentrale Build-Check aus dem Renovate-Repository plus `ruff check`; Bau nativ je Plattform,
@@ -786,8 +786,8 @@ Doku: `feature-documentation/registry-deployment.md`.
 | Doku (registry-deployment, README, Index) inkl. Renovate-Automerge | ✅ |
 | Einmaliger manueller Pull des CI-Images auf dem NAS | ✅ vom Anwender bestätigt (2026-11-01) |
 | Ende-zu-Ende 6.1: App-Commit → CI → Komodo-Auto-Update | ✅ 2026-11-01: `3a54573`, Lauf 41341701992, auf dem NAS `sha256:669a3c17…`, nur `lector` neu gestartet |
-| Ende-zu-Ende 6.2: Doku-Commit löst nichts aus | ⏳ dieser Commit |
-| Ende-zu-Ende 6.3: Rollback in Komodo | ⏳ |
+| Ende-zu-Ende 6.2: Doku-Commit löst nichts aus | ✅ `6607f1a`: kein Workflow-Lauf |
+| Ende-zu-Ende 6.3: Rollback in Komodo | ☑️ ungeprüft abgehakt (Entscheidung Anwender, 2026-11-01); Ablauf in `registry-deployment.md` |
 
 Befund aus dem ersten Lauf: `test_absolute_grenze_90_tage_trotz_frischer_nutzung` hatte eine
 Race mit dem Retention-Loop des Workers (Sitzung zwischen zwei Testschritten weggeräumt);
