@@ -785,8 +785,15 @@ Doku: `feature-documentation/registry-deployment.md`.
 | Push-Skript entfernt | ✅ |
 | Doku (registry-deployment, README, Index) inkl. Renovate-Automerge | ✅ |
 | Einmaliger manueller Pull des CI-Images auf dem NAS | ✅ vom Anwender bestätigt (2026-11-01) |
-| Ende-zu-Ende über Komodo | ⏳ wartet auf `nas-stacks` |
+| Ende-zu-Ende 6.1: App-Commit → CI → Komodo-Auto-Update | ✅ 2026-11-01: `3a54573`, Lauf 41341701992, auf dem NAS `sha256:669a3c17…`, nur `lector` neu gestartet |
+| Ende-zu-Ende 6.2: Doku-Commit löst nichts aus | ⏳ dieser Commit |
+| Ende-zu-Ende 6.3: Rollback in Komodo | ⏳ |
 
 Befund aus dem ersten Lauf: `test_absolute_grenze_90_tage_trotz_frischer_nutzung` hatte eine
 Race mit dem Retention-Loop des Workers (Sitzung zwischen zwei Testschritten weggeräumt);
 im Test behoben.
+
+Befund aus 6.1: Komodo sucht neue Images **nicht** im Takt von `KOMODO_RESOURCE_POLL_INTERVAL`,
+sondern nur in der Prozedur „Global Auto Update“ (Standard täglich 03:00). Auf dem NAS jetzt per
+Cron `0 */5 * * * ?`. Der Alarm `StackAutoUpdated` kam zunächst nicht an, weil der Typ am
+Alerter abgewählt war; inzwischen aktiviert. Details in `nas-stacks/komodo/README.md`.

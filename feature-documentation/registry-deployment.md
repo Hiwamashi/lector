@@ -16,7 +16,7 @@ git push main --(Pfadfilter)--> image.yml
         v
    merge: git-<sha7> als Manifest-Liste -> beide Plattformen? -> latest
         v
-   Scaleway-Registry --(Komodo pollt latest)--> NAS
+   Scaleway-Registry --(Komodo, Prozedur "Global Auto Update" alle 5 min)--> NAS
 ```
 
 ## Registry
