@@ -795,5 +795,6 @@ im Test behoben.
 
 Befund aus 6.1: Komodo sucht neue Images **nicht** im Takt von `KOMODO_RESOURCE_POLL_INTERVAL`,
 sondern nur in der Prozedur „Global Auto Update“ (Standard täglich 03:00). Auf dem NAS jetzt per
-Cron `0 */5 * * * ?`. Der Alarm `StackAutoUpdated` kam zunächst nicht an, weil der Typ am
+Cron täglich 04:00 (`0 0 4 * * ?`; kurzzeitig alle 5 Minuten, wegen des Docker-Hub-Kontingents
+zurückgenommen, Komodo-Issue #1652). Sofort ausrollen: Prozedur in Komodo von Hand starten. Der Alarm `StackAutoUpdated` kam zunächst nicht an, weil der Typ am
 Alerter abgewählt war; inzwischen aktiviert. Details in `nas-stacks/komodo/README.md`.
