@@ -21,6 +21,9 @@ colors:
   signal-red-bg: "#fbe6e4"
   signal-violet: "#6b4d9e"
   signal-violet-bg: "#efeaf8"
+  panel-surface: "#f7f8f9"
+  panel-border: "#d5dadf"
+  row-current: "#dcebf2"
   qr-white: "#ffffff"
   primary-dark: "#6cb2d0"
   primary-strong-dark: "#86c2dc"
@@ -40,6 +43,9 @@ colors:
   signal-red-bg-dark: "#3a1c1a"
   signal-violet-dark: "#b49ae0"
   signal-violet-bg-dark: "#2a2140"
+  panel-surface-dark: "#181b1f"
+  panel-border-dark: "#343a41"
+  row-current-dark: "#1d3b4a"
 typography:
   display:
     fontFamily: "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
@@ -222,6 +228,16 @@ Jede Signalfarbe existiert als Paar aus Schrift-/Linienton und blasser Fläche.
 - **Stellwerk-Violett** (`signal-violet`): „angehalten — wartet auf eine Entscheidung".
   Weder Fehler noch Wartezustand der Reihe; deshalb weder Amber noch Rot.
 
+### Seitenleiste
+- **Leistenfläche** (`panel-surface`): Grund der Seitenleiste, eine Spur dunkler als Tafelweiß,
+  damit die weißen Karten darin (Metadaten, Notizen) als Karten lesbar bleiben.
+- **Leistenkante** (`panel-border`): Rahmen und Trenner der Leiste, kräftiger als die Haarlinie.
+- **Aktuelle Zeile** (`row-current`): Fläche der geöffneten Listenzeile, Petrol-Hauch eine
+  Stufe tiefer als `primary-soft`; dazu eine 1px-Linie in Petrol. Kontrast Bleistift darauf
+  5,0:1 (hell) bzw. 4,7:1 (dunkel).
+- Zusätzlich liegt im `:root` das Schattentoken `--panel-shadow` (Hell: `-8px 0 24px`
+  mit 14 % Schwarz, dunkel 55 %); es gilt nur für die Überlagerungsstufe.
+
 ### Sonderwert
 - **QR-Weiß** (`qr-white`): feste weiße Ruhezone hinter dem GiroCode, in beiden Modi.
   Hardware-Semantik (Scanner brauchen hellen Grund), kein Gestaltungstoken.
@@ -293,6 +309,40 @@ Tabelle scrollt in sich statt die Seite zu verbreitern (Dateinamen-Spalte min. 1
 Lange Dateinamen dürfen überall an beliebiger Stelle umbrechen (`overflow-wrap: anywhere`). Ausnahme
 Rechnungstitel: Sie sind Sätze und brechen nur zwischen Wörtern (`overflow-wrap: break-word`,
 Mindestbreite 14rem, mobil 12rem), sonst schrumpft die Tabelle sie zur Buchstabensäule.
+
+## Seitenleiste
+
+Jede Liste (Rechnungen, Empfänger, Dokumente) öffnet einen Eintrag als Seitenleiste
+(`aside#panel`), ohne die Seite zu wechseln. Der Inhalt ist derselbe wie auf der vollen
+Seite (`#detail`); dort entfällt nur die Leistenkopfzeile (`.panel-bar`: „Schließen ✕“,
+„Als Seite öffnen“). Drei Stufen, nach Fensterbreite:
+
+- **≥ 1280px — nebeneinander.** `main.has-panel` wird zum Raster
+  `minmax(0, 1fr) minmax(28rem, 42%)` und der Container weitet sich auf 1680px (die Liste
+  soll neben der Leiste nicht zusammenfallen; gilt für alle drei Listen gleich). Alles
+  außer der Leiste bleibt links in Spalte 1, die Leiste steht rechts, `position: sticky`,
+  Höhe `100dvh − 5.5rem`, scrollt in sich. Spalten mit `col-secondary` entfallen.
+- **720–1279px — Überlagerung.** Leiste `position: fixed` rechts, Breite
+  `min(36rem, 90vw)`, volle Höhe, `panel-shadow`, eigene Scrollfläche. Die Liste bleibt
+  vollständig darunter. Einblenden: 0,18s Gleiten von rechts, entfällt bei
+  `prefers-reduced-motion`.
+- **< 720px — Vollbild.** `inset: 0`; die Kopfzeile klebt oben, „Schließen“ hat ein
+  44px-Ziel.
+
+Kante und Tiefe werden einmal erklärt: im Nebeneinander nur Rahmen (`panel-border`), in der
+Überlagerung Rand links plus `panel-shadow`, im Vollbild keins von beiden. Die Vorschau
+(`.doc-frame`) misst in der Leiste `clamp(18rem, 60dvh, 48rem)`, auf der vollen Seite wie
+bisher 70vh. Die geöffnete Zeile trägt `aria-current="true"` und die Fläche `row-current`;
+klickbare Zeilen (`tr[data-panel-url]`) zeigen `cursor: pointer` und Hover in Kopfzeilengrau.
+
+**Tastatur** (nur bei offener Leiste, nicht in Eingabefeldern, Auswahllisten oder der
+Vorschau): `↑`/`k` vorheriger, `↓`/`j` nächster Eintrag, `Esc` schließt, `Enter` öffnet
+die volle Seite.
+
+**Fokusführung.** Nach dem Laden eines Dokuments in die Leiste springt der Fokus auf deren
+Überschrift (`#panel-title`, `tabindex="-1"`), damit Screenreader den Wechsel melden. Nach
+dem Schließen geht der Fokus zurück auf die Zeile, aus der die Leiste kam. Der Fokusring
+ist der globale (`:focus-visible`).
 
 ## Elevation & Depth
 

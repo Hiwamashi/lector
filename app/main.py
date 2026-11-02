@@ -11,7 +11,7 @@ import hashlib
 import logging
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -77,7 +77,7 @@ from .models import (
 )
 from .ocr import get_adapter
 from .paperless import LoginResult, obtain_token
-from .paperless_sync import PaperlessSync
+from .paperless_sync import PaperlessSync, _parse_paperless_date
 from .recovery import resolve_stale_processing
 from .repository import Repository
 from .sevdesk_export_checks import ExportStatus
@@ -232,6 +232,11 @@ def _fmt_date(value: datetime | None) -> str:
     return value.astimezone().strftime("%d.%m.%Y")
 
 
+def _fmt_iso_dt(value: str | None) -> str:
+    """ISO-Zeitstempel aus Paperless (``2026-03-04T10:15:00+01:00``) in Ortszeit."""
+    return _fmt_dt(_parse_paperless_date(value))
+
+
 SEVDESK_LABELS = {
     SevdeskStatus.NONE: "—",
     SevdeskStatus.QUEUED: "Vorgemerkt",
@@ -358,6 +363,7 @@ _static_versions: dict[str, str] = {}
 
 templates.env.filters["fmt_dt"] = _fmt_dt
 templates.env.filters["fmt_date"] = _fmt_date
+templates.env.filters["fmt_iso_dt"] = _fmt_iso_dt
 templates.env.filters["fmt_amount"] = _fmt_amount
 templates.env.filters["fmt_percent"] = _fmt_percent
 templates.env.filters["fmt_score"] = _fmt_score
@@ -745,12 +751,50 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse(checks, status_code=200 if healthy else 503)
 
 
+async def _list_panel_context(request: Request, kind: str, key: int | None) -> dict:
+    """Kontext der Seitenleiste einer Liste bei ``?doc=<key>`` (Design D5).
+
+    ``kind`` ist ``"paperless"`` (Schlüssel = Paperless-ID, Rechnungen und Empfänger) oder
+    ``"document"`` (Schlüssel = Lector-Vorgangs-ID, Dokumente-Liste). Das Ergebnis wird
+    flach in den Listenkontext gemischt; ein unbekannter Schlüssel lässt die Leiste zu. Ist
+    Paperless nicht erreichbar, bleibt die Liste bedienbar und die Leiste zeigt einen Hinweis.
+    """
+    if key is None:
+        return {}
+    if kind == "document":
+        ctx = _document_context(request, key)
+        if ctx is None:
+            return {}
+        return {
+            **ctx,
+            "panel_open": True,
+            "panel_kind": "document",
+            "panel_fragment": f"/fragment/documents/{key}",
+        }
+    fragment = f"/fragment/paperless/{key}"
+    try:
+        ctx = await _paperless_view_context(request, key)
+    except httpx.HTTPError as exc:
+        log.warning("Seitenleiste: Paperless nicht erreichbar (%s)", exc)
+        return {
+            "panel_open": True,
+            "panel_kind": "paperless",
+            "panel_fragment": fragment,
+            "panel_page_url": f"/paperless/{key}",
+            "panel_error": "Paperless ist derzeit nicht erreichbar. Die Liste bleibt bedienbar.",
+        }
+    if ctx is None:
+        return {}
+    return {**ctx, "panel_open": True, "panel_kind": "paperless", "panel_fragment": fragment}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
     status: str | None = Query(None),
     q: str | None = Query(None),
     period: str | None = Query(None),
+    doc: int | None = Query(None),
     upload_ok: int | None = Query(None),
     # `list[str] = Query(...)` liesse sich nicht ohne Suppressions-Kommentar schreiben:
     # ruff (B008) lehnt bei Listen-Annotationen jeden Funktionsaufruf als Default ab, auch
@@ -764,10 +808,14 @@ async def dashboard(
     status_enum, search, since = _filters(status, q, period)
     documents = repo.list_documents(status=status_enum, search=search, since=since)
     counts = repo.status_counts()
+    panel = await _list_panel_context(request, "document", doc)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
+            **panel,
+            "panel_enabled": True,
+            "current_doc": doc,
             "documents": documents,
             "counts": counts,
             "filters": {"status": status or "", "q": q or "", "period": period or ""},
@@ -787,6 +835,7 @@ async def history_fragment(
     status: str | None = Query(None),
     q: str | None = Query(None),
     period: str | None = Query(None),
+    doc: int | None = Query(None),
 ):
     repo: Repository = request.app.state.repo
     status_enum, search, since = _filters(status, q, period)
@@ -794,7 +843,11 @@ async def history_fragment(
     return templates.TemplateResponse(
         request,
         "partials/history_rows.html",
-        {"documents": documents, "filtered": bool(status_enum or search or since)},
+        {
+            "documents": documents,
+            "filtered": bool(status_enum or search or since),
+            "current_doc": doc,
+        },
     )
 
 
@@ -936,42 +989,34 @@ def _decision_response(result: DecisionResult, document_id: int) -> Response:
     return RedirectResponse(f"/documents/{document_id}", status_code=303)
 
 
-@app.get("/documents/{document_id}", response_class=HTMLResponse)
-async def document_detail(request: Request, document_id: int):
+def _document_context(request: Request, document_id: int) -> dict | None:
+    """Kontext der Vorgangsansicht (Seite, Fragment und Seitenleiste); ``None`` wenn unbekannt."""
     repo: Repository = request.app.state.repo
     doc = repo.get_document(document_id)
     if doc is None:
+        return None
+    return {
+        "doc": doc,
+        "events": repo.list_events(document_id),
+        "page_limit": _page_limit(request),
+        "retry_max": request.app.state.settings.retry_max,
+    }
+
+
+@app.get("/documents/{document_id}", response_class=HTMLResponse)
+async def document_detail(request: Request, document_id: int):
+    ctx = _document_context(request, document_id)
+    if ctx is None:
         return HTMLResponse("Dokument nicht gefunden", status_code=404)
-    events = repo.list_events(document_id)
-    return templates.TemplateResponse(
-        request,
-        "detail.html",
-        {
-            "doc": doc,
-            "events": events,
-            "page_limit": _page_limit(request),
-            "retry_max": request.app.state.settings.retry_max,
-        },
-    )
+    return templates.TemplateResponse(request, "detail.html", ctx)
 
 
 @app.get("/fragment/documents/{document_id}", response_class=HTMLResponse)
 async def document_fragment(request: Request, document_id: int):
-    repo: Repository = request.app.state.repo
-    doc = repo.get_document(document_id)
-    if doc is None:
+    ctx = _document_context(request, document_id)
+    if ctx is None:
         return HTMLResponse("", status_code=404)
-    events = repo.list_events(document_id)
-    return templates.TemplateResponse(
-        request,
-        "partials/detail_body.html",
-        {
-            "doc": doc,
-            "events": events,
-            "page_limit": _page_limit(request),
-            "retry_max": request.app.state.settings.retry_max,
-        },
-    )
+    return templates.TemplateResponse(request, "partials/detail_body.html", ctx)
 
 
 # Beide Entscheidungen fassen das Dateisystem an (Existenzprüfung bzw. Verschieben in den
@@ -1046,6 +1091,7 @@ def _overview_context(
     review: str | None,
     sort: str | None,
     dir: str | None,
+    doc: int | None = None,
 ) -> dict:
     """Gemeinsamer Kontext von Seite und Fragment der Export-Übersicht.
 
@@ -1126,6 +1172,9 @@ def _overview_context(
         "sync_state": overview.sync_state,
         "sync_available": overview.sync_available,
         "option_missing": option is False,
+        # Seitenleiste: nur mit Paperless-Anbindung; ``current_doc`` markiert die Zeile.
+        "panel_enabled": sync.view_enabled,
+        "current_doc": doc,
     }
 
 
@@ -1138,6 +1187,7 @@ def _overview_params(
     review: str | None = Query(None),
     sort: str | None = Query(None),
     dir: str | None = Query(None),
+    doc: int | None = Query(None),
 ) -> dict:
     return {
         "sevdesk": sevdesk,
@@ -1148,6 +1198,7 @@ def _overview_params(
         "review": review,
         "sort": sort,
         "dir": dir,
+        "doc": doc,
     }
 
 
@@ -1156,9 +1207,10 @@ OverviewParams = Annotated[dict, Depends(_overview_params)]
 
 @app.get("/invoices", response_class=HTMLResponse)
 async def invoices(request: Request, params: OverviewParams):
-    return templates.TemplateResponse(
-        request, "invoices.html", _overview_context(request, **params)
-    )
+    ctx = _overview_context(request, **params)
+    if ctx["panel_enabled"]:
+        ctx.update(await _list_panel_context(request, "paperless", params["doc"]))
+    return templates.TemplateResponse(request, "invoices.html", ctx)
 
 
 @app.get("/fragment/invoices", response_class=HTMLResponse)
@@ -1251,8 +1303,6 @@ def _invoice_detail_context(request: Request, invoice_id: int, ask: bool = False
     inv = repo.get_invoice(invoice_id)
     if inv is None:
         return None
-    public_url = (settings.paperless_public_url or settings.paperless_url).rstrip("/")
-    document_url = f"{public_url}/documents/{inv.paperless_id}/details" if public_url else ""
     option = sync.recipient_option_available(settings.sevdesk_context_label)
     overview = build_rows(
         repo,
@@ -1272,44 +1322,111 @@ def _invoice_detail_context(request: Request, invoice_id: int, ask: bool = False
         "giro_svg": _giro_svg(inv),
         "events": repo.list_invoice_events(invoice_id),
         "feature_sevdesk": settings.feature_sevdesk_export,
-        "document_url": document_url,
-        "preview_enabled": bool(settings.paperless_url and settings.paperless_token),
     }
 
 
-@app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
+# Alte Adresse der Rechnungsdetailseite: leitet auf die Dokumentansicht um (Design D1).
+@app.get("/invoices/{invoice_id}")
 async def invoice_detail(request: Request, invoice_id: int, ask: str | None = Query(None)):
-    ctx = _invoice_detail_context(request, invoice_id, ask=_truthy(ask))
-    if ctx is None:
+    repo: Repository = request.app.state.repo
+    inv = repo.get_invoice(invoice_id)
+    if inv is None:
         return HTMLResponse("Rechnung nicht gefunden", status_code=404)
-    return templates.TemplateResponse(request, "invoice_detail.html", ctx)
+    target = f"/paperless/{inv.paperless_id}"
+    if _truthy(ask):
+        target += "?ask=1"
+    return RedirectResponse(target, status_code=303)
 
 
 @app.get("/fragment/invoices/{invoice_id}", response_class=HTMLResponse)
 async def invoice_detail_fragment(
     request: Request, invoice_id: int, ask: str | None = Query(None)
 ):
-    ctx = _invoice_detail_context(request, invoice_id, ask=_truthy(ask))
+    """Liefert für eine Rechnung das Fragment der Dokumentansicht — offene Tabs mit der
+    alten Adresse laden damit weiter nach (SSE-Refresh)."""
+    repo: Repository = request.app.state.repo
+    inv = repo.get_invoice(invoice_id)
+    if inv is None:
+        return HTMLResponse("", status_code=404)
+    ctx = await _paperless_view_context(request, inv.paperless_id, ask=_truthy(ask))
     if ctx is None:
         return HTMLResponse("", status_code=404)
-    return templates.TemplateResponse(request, "partials/invoice_detail_body.html", ctx)
+    return templates.TemplateResponse(request, "partials/paperless_doc_body.html", ctx)
+
+
+async def _paperless_view_context(request: Request, paperless_id: int, ask: bool = False):
+    """Kontext der Dokumentansicht; ``None`` ohne Paperless-Anbindung oder bei unbekannter ID.
+
+    Paperless-Fehler (nicht erreichbar, 5xx) laufen als Ausnahme durch und landen im
+    ``httpx.HTTPError``-Handler. Der Rechnungsbereich kommt nur dazu, wenn das Feature
+    aktiv ist und Lector das Dokument als Rechnung führt (Design D2).
+    """
+    sync: PaperlessSync = request.app.state.sync
+    settings = request.app.state.settings
+    if not sync.view_enabled:
+        return None
+    view = await sync.load_document_view(paperless_id)
+    if view is None:
+        return None
+    public_url = (settings.paperless_public_url or settings.paperless_url).rstrip("/")
+    ctx: dict = {
+        "view": view,
+        "ask": ask,
+        "document_url": f"{public_url}/documents/{paperless_id}/details" if public_url else "",
+        "preview_url": f"/paperless/{paperless_id}/preview",
+        "show_invoice": False,
+        "recipient_enabled": sync.recipient_enabled,
+        "feature_llm": sync.recipient_llm_enabled,
+    }
+    if view.invoice is not None and sync.enabled:
+        invoice_ctx = _invoice_detail_context(request, view.invoice.id, ask=ask)
+        if invoice_ctx is not None:
+            ctx.update(invoice_ctx)
+            ctx["show_invoice"] = True
+    return ctx
+
+
+@app.get("/paperless/{paperless_id:int}", response_class=HTMLResponse)
+async def paperless_document(
+    request: Request, paperless_id: int, ask: str | None = Query(None)
+):
+    ctx = await _paperless_view_context(request, paperless_id, ask=_truthy(ask))
+    if ctx is None:
+        return HTMLResponse(
+            "Dokument nicht gefunden — Paperless kennt diese ID nicht, gibt sie für Lector "
+            "nicht frei oder ist nicht angebunden.",
+            status_code=404,
+        )
+    return templates.TemplateResponse(request, "paperless_doc.html", ctx)
+
+
+@app.get("/fragment/paperless/{paperless_id:int}", response_class=HTMLResponse)
+async def paperless_document_fragment(
+    request: Request, paperless_id: int, ask: str | None = Query(None)
+):
+    ctx = await _paperless_view_context(request, paperless_id, ask=_truthy(ask))
+    if ctx is None:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(request, "partials/paperless_doc_body.html", ctx)
 
 
 _PREVIEW_TYPE_RE = re.compile(r"application/pdf|image/(?:png|jpeg|gif|webp|tiff)")
 
 
-@app.get("/invoices/{invoice_id}/preview")
-async def invoice_preview(request: Request, invoice_id: int):
-    """Reicht die Paperless-Dokumentvorschau über Lectors eigene Origin durch.
+async def _preview_response(
+    fetch: Callable[[], Awaitable[tuple[bytes, str] | None]], label: str
+) -> Response:
+    """Reicht eine Paperless-Dokumentvorschau über Lectors eigene Origin durch.
 
     So funktioniert die eingebettete Vorschau ohne Paperless-Session im Browser und
-    ohne X-Frame-Options-/CORS-Probleme — die Token-Auth läuft serverseitig.
+    ohne X-Frame-Options-/CORS-Probleme — die Token-Auth läuft serverseitig. Gemeinsamer
+    Kern von ``/invoices/{id}/preview`` und ``/paperless/{id}/preview``; ``label`` benennt
+    das Dokument im Protokoll.
     """
-    sync: PaperlessSync = request.app.state.sync
     try:
-        result = await sync.fetch_preview(invoice_id)
+        result = await fetch()
     except Exception:
-        log.exception("Vorschau für Rechnung %s konnte nicht geladen werden", invoice_id)
+        log.exception("Vorschau für %s konnte nicht geladen werden", label)
         return Response("Vorschau nicht verfügbar", status_code=502)
     if result is None:
         return Response("Vorschau nicht verfügbar", status_code=404)
@@ -1317,9 +1434,7 @@ async def invoice_preview(request: Request, invoice_id: int):
     # Nur Dokumenttypen durchlassen: Ein von Paperless gelieferter text/html-Körper würde
     # sonst auf Lectors Origin ausgeführt (gespeichertes XSS über Dokumentinhalte).
     if not _PREVIEW_TYPE_RE.fullmatch(content_type.split(";", 1)[0].strip().lower()):
-        log.warning(
-            "Vorschau für Rechnung %s: Content-Type %r abgewiesen", invoice_id, content_type
-        )
+        log.warning("Vorschau für %s: Content-Type %r abgewiesen", label, content_type)
         return Response("Vorschau nicht verfügbar", status_code=415)
     # Eigene Frame-Header: Die Vorschau wird per <object> in die eigene Seite eingebettet, die
     # Standard-Header (frame-ancestors 'none', DENY) würden sie sperren. Die Schutz-Header-
@@ -1335,8 +1450,49 @@ async def invoice_preview(request: Request, invoice_id: int):
             "Content-Security-Policy": (
                 "default-src 'self'; script-src 'none'; frame-ancestors 'self'"
             ),
+            # Kurz zwischenspeichern: Hin- und Herblättern in der Seitenleiste lädt sonst
+            # jedes Mal neu. `private`, weil die Antwort hinter der Anmeldung liegt.
+            "Cache-Control": "private, max-age=300",
         },
     )
+
+
+@app.get("/invoices/{invoice_id}/preview")
+async def invoice_preview(request: Request, invoice_id: int):
+    """Vorschau einer bekannten Rechnung (bisherige Adresse, delegiert an den Proxy)."""
+    sync: PaperlessSync = request.app.state.sync
+    return await _preview_response(
+        lambda: sync.fetch_preview(invoice_id), f"Rechnung {invoice_id}"
+    )
+
+
+@app.get("/paperless/{paperless_id:int}/preview")
+async def paperless_preview(request: Request, paperless_id: int):
+    """Vorschau jedes Paperless-Dokuments, das Lectors Zugang lesen darf (Design D3).
+
+    Bewusst ohne Abgleich gegen „Lector kennt dieses Dokument“; die ID ist ein ``int``,
+    damit kein Pfad in die Paperless-API eingeschleust werden kann.
+    """
+    sync: PaperlessSync = request.app.state.sync
+    return await _preview_response(
+        lambda: sync.fetch_document_preview(paperless_id), f"Dokument {paperless_id}"
+    )
+
+
+def _panel_request(request: Request) -> bool:
+    """Kommt die Anfrage aus einem Formular der Seitenleiste (Kopf ``X-Lector-Panel: 1``)?"""
+    return request.headers.get("X-Lector-Panel") == "1"
+
+
+def _invoice_redirect(request: Request, invoice_id: int, ask: bool = False) -> RedirectResponse:
+    """Ziel nach einer Rechnungsaktion: die Rechnungsseite, aus der Seitenleiste das
+    Fragment der Dokumentansicht (Design D6)."""
+    suffix = "?ask=1" if ask else ""
+    if _panel_request(request):
+        inv = request.app.state.repo.get_invoice(invoice_id)
+        if inv is not None:
+            return RedirectResponse(f"/fragment/paperless/{inv.paperless_id}{suffix}", 303)
+    return RedirectResponse(f"/invoices/{invoice_id}{suffix}", status_code=303)
 
 
 @app.post("/invoices/{invoice_id}/giro")
@@ -1358,7 +1514,7 @@ async def invoice_save_giro(
         amount=_parse_amount(amount),
         purpose=purpose.strip() or None,
     )
-    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+    return _invoice_redirect(request, invoice_id)
 
 
 @app.post("/invoices/{invoice_id}/export")
@@ -1369,8 +1525,8 @@ async def invoice_export(request: Request, invoice_id: int, confirm: str = Form(
     sync: PaperlessSync = request.app.state.sync
     outcome = await sync.export_invoice(invoice_id, confirmed=_truthy(confirm))
     if outcome.status == ExportStatus.NEEDS_CONFIRMATION:
-        return RedirectResponse(f"/invoices/{invoice_id}?ask=1", status_code=303)
-    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+        return _invoice_redirect(request, invoice_id, ask=True)
+    return _invoice_redirect(request, invoice_id)
 
 
 @app.post("/invoices/{invoice_id}/dismiss")
@@ -1378,7 +1534,7 @@ async def invoice_dismiss(request: Request, invoice_id: int):
     """Verwirft einen Prüffall; bei exportierten/laufenden/unklaren Rechnungen wirkungslos."""
     sync: PaperlessSync = request.app.state.sync
     sync.dismiss_invoice(invoice_id)
-    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+    return _invoice_redirect(request, invoice_id)
 
 
 @app.post("/invoices/{invoice_id}/matches/{voucher_id}")
@@ -1399,7 +1555,7 @@ async def invoice_match_decision(
     pair_kinds = {m.kind for m in repo.list_matches([invoice_id]) if m.voucher_id == voucher_id}
     if wanted in pair_kinds:
         # Doppelklick/erneutes Absenden: die Entscheidung steht schon.
-        return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+        return _invoice_redirect(request, invoice_id)
     if MatchKind.SIMILAR not in pair_kinds:
         # Nur offene ähnliche Treffer sind entscheidbar — keine Sperre durch erfundene IDs.
         return HTMLResponse("Kein offener Treffer für dieses Paar", status_code=404)
@@ -1419,17 +1575,33 @@ async def invoice_match_decision(
             )
         sync.recompute_matches()
         repo.notify_vouchers()
-    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+    return _invoice_redirect(request, invoice_id)
 
 
 @app.post("/invoices/{invoice_id}/paid")
 async def invoice_paid(request: Request, invoice_id: int, paid: str = Form("true")):
     sync: PaperlessSync = request.app.state.sync
     await sync.set_paid(invoice_id, paid.lower() in ("1", "true", "on", "yes"))
-    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+    return _invoice_redirect(request, invoice_id)
 
 
-def _recipient_redirect(page: int, q: str | None, missing: bool) -> str:
+def _recipient_redirect(
+    page: int,
+    q: str | None,
+    missing: bool,
+    *,
+    request: Request | None = None,
+    paperless_id: int | None = None,
+    from_doc: bool = False,
+) -> str:
+    """Ziel nach einer Empfänger-Aktion: die Liste mit ihren Filtern, aus der Seitenleiste
+    (Kopf ``X-Lector-Panel: 1``) das Fragment der Dokumentansicht (Design D6), aus der
+    Dokumentseite ohne JavaScript (``view=doc``) die Dokumentseite."""
+    if request is not None and paperless_id is not None:
+        if _panel_request(request):
+            return f"/fragment/paperless/{paperless_id}"
+        if from_doc:
+            return f"/paperless/{paperless_id}"
     params = {"page": page}
     if q:
         params["q"] = q
@@ -1512,7 +1684,13 @@ async def _batch_status_context(
 
 
 async def _recipient_context(
-    request: Request, page: int, q: str | None, missing: bool, *, with_batch_status: bool = True
+    request: Request,
+    page: int,
+    q: str | None,
+    missing: bool,
+    *,
+    with_batch_status: bool = True,
+    doc: int | None = None,
 ) -> dict:
     sync: PaperlessSync = request.app.state.sync
     rows, page_obj, field = await sync.list_recipient_documents(
@@ -1532,6 +1710,9 @@ async def _recipient_context(
         # Batch-Status. Lag früher nur im Batch-Kontext und fehlte dadurch dem Fragment.
         "page": page_obj.page,
         "filters": {"q": q or "", "missing": missing},
+        # Seitenleiste: die Liste selbst setzt die Anbindung voraus.
+        "panel_enabled": True,
+        "current_doc": doc,
     }
     # ``partials/recipient_rows.html`` (das Zeilen-Fragment unter /fragment/empfaenger)
     # nutzt weder missing_total noch progress — der Batch-Kontext würde dort nur einen
@@ -1549,13 +1730,15 @@ async def recipients(
     page: int = Query(1, ge=1),
     q: str | None = Query(None),
     missing: str | None = Query(None),
+    doc: int | None = Query(None),
 ):
     sync: PaperlessSync = request.app.state.sync
     if not sync.recipient_enabled:
         ctx = await _batch_status_context(request, page, q or None, bool(missing))
         ctx["rows"] = []
         return templates.TemplateResponse(request, "recipients.html", ctx)
-    ctx = await _recipient_context(request, page, q or None, bool(missing))
+    ctx = await _recipient_context(request, page, q or None, bool(missing), doc=doc)
+    ctx.update(await _list_panel_context(request, "paperless", doc))
     return templates.TemplateResponse(request, "recipients.html", ctx)
 
 
@@ -1565,11 +1748,14 @@ async def recipients_fragment(
     page: int = Query(1, ge=1),
     q: str | None = Query(None),
     missing: str | None = Query(None),
+    doc: int | None = Query(None),
 ):
     sync: PaperlessSync = request.app.state.sync
     if not sync.recipient_enabled:
         return HTMLResponse("", status_code=404)
-    ctx = await _recipient_context(request, page, q or None, bool(missing), with_batch_status=False)
+    ctx = await _recipient_context(
+        request, page, q or None, bool(missing), with_batch_status=False, doc=doc
+    )
     return templates.TemplateResponse(request, "partials/recipient_rows.html", ctx)
 
 
@@ -1620,10 +1806,19 @@ async def recipient_set(
     page: int = Form(1),
     q: str = Form(""),
     missing: str = Form(""),
+    view: str = Form(""),
 ):
     sync: PaperlessSync = request.app.state.sync
     await sync.set_recipient(paperless_id, recipient.strip() or None)
-    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
+    target = _recipient_redirect(
+        page,
+        q or None,
+        bool(missing),
+        request=request,
+        paperless_id=paperless_id,
+        from_doc=view == "doc",
+    )
+    return RedirectResponse(target, status_code=303)
 
 
 @app.post("/empfaenger/{paperless_id}/suggest")
@@ -1633,13 +1828,22 @@ async def recipient_suggest(
     page: int = Form(1),
     q: str = Form(""),
     missing: str = Form(""),
+    view: str = Form(""),
 ):
     sync: PaperlessSync = request.app.state.sync
     try:
         await sync.suggest_recipient(paperless_id)
     except Exception:
         log.exception("KI-Empfänger-Vorschlag für Dokument %s fehlgeschlagen", paperless_id)
-    return RedirectResponse(_recipient_redirect(page, q or None, bool(missing)), status_code=303)
+    target = _recipient_redirect(
+        page,
+        q or None,
+        bool(missing),
+        request=request,
+        paperless_id=paperless_id,
+        from_doc=view == "doc",
+    )
+    return RedirectResponse(target, status_code=303)
 
 
 @app.get("/events")

@@ -18,6 +18,7 @@ import logging
 import mimetypes
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -36,6 +37,7 @@ from .models import (
     GiroStatus,
     InvoiceEventType,
     MatchKind,
+    PaperlessInvoice,
     RecipientCache,
     RecipientRow,
     RecipientStatus,
@@ -48,6 +50,7 @@ from .paperless import (
     CF_TYPE_DATE,
     CF_TYPE_STRING,
     DocumentPage,
+    NoteEntry,
     PaperlessClient,
     PaperlessDocument,
     SelectField,
@@ -77,6 +80,86 @@ BATCH_ERROR_STREAK = 10
 # Der Lauf meldet Fortschritt höchstens so oft — sonst erzeugt ein Lauf über 1500
 # Dokumente ebenso viele SSE-Ereignisse für jeden verbundenen Client.
 BATCH_PUBLISH_INTERVAL = 2.0
+
+
+# Lebensdauer der Namenslisten (Korrespondenten, Dokumenttypen, Tags, Felder), siehe Design D4.
+NAME_CACHE_TTL = 600.0
+
+# So lange gilt eine nach dem Neuladen weiter unbekannte ID als „fehlt“ und löst kein
+# weiteres Neuladen aus (gelöscht oder für Lectors Zugang nicht sichtbar).
+NAME_MISS_TTL = 60.0
+
+# Art der Namensliste -> Methode des Paperless-Clients, die ``{id: name}`` liefert.
+_NAME_LOADERS = {
+    "correspondent": "correspondent_map",
+    "document_type": "document_type_map",
+    "tag": "tag_map",
+    "field": "custom_field_map",
+}
+
+
+@dataclass
+class CustomFieldValue:
+    """Ein Custom Field eines Dokuments mit Namen und lesbarem Wert (nur Anzeige)."""
+
+    name: str
+    value: str
+
+
+@dataclass
+class DocumentView:
+    """Alles, was die Dokumentansicht zu einem Paperless-Dokument anzeigt."""
+
+    paperless_id: int
+    title: str
+    correspondent: str | None
+    document_type: str | None
+    created: datetime | None
+    added: datetime | None
+    archive_serial_number: int | None
+    page_count: int | None
+    tags: list[str]
+    custom_fields: list[CustomFieldValue]
+    notes: list[NoteEntry]
+    # Lector-Rechnung zu diesem Dokument (nur bei bekannter Rechnung), sonst ``None``.
+    invoice: PaperlessInvoice | None
+    # Empfänger-Feld: existiert es, welche Optionen gibt es, welcher Wert ist gesetzt.
+    recipient_field_present: bool
+    recipient_options: list[str]
+    current_recipient: str | None
+
+
+def _select_options_of(definitions: list[dict]) -> dict[int, dict[str, str]]:
+    """Liest die Optionen aller select-Felder: ``{field_id: {wert: label}}``.
+
+    Paperless 2.x liefert ``extra_data.select_options`` als Liste von ``{id, label}`` (der
+    Wert am Dokument ist die Options-ID), ältere Versionen als Liste von Texten (der Wert ist
+    der Index).
+    """
+    result: dict[int, dict[str, str]] = {}
+    for f in definitions:
+        if f.get("data_type") != "select" or f.get("id") is None:
+            continue
+        options: dict[str, str] = {}
+        for index, opt in enumerate((f.get("extra_data") or {}).get("select_options") or []):
+            if isinstance(opt, dict):
+                if opt.get("id") is not None and opt.get("label"):
+                    options[str(opt["id"])] = str(opt["label"])
+            else:
+                options[str(index)] = str(opt)
+        result[int(f["id"])] = options
+    return result
+
+
+def _format_field_value(value: object) -> str:
+    """Lesbare Darstellung eines Custom-Field-Werts; leer wird zu „—“."""
+    if value is None or value == "" or value == []:
+        return "—"
+    if isinstance(value, bool):
+        return "Ja" if value else "Nein"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) or "—"
+    return str(value)
 
 
 def _write_back_error(exc: Exception) -> str:
@@ -133,7 +216,13 @@ class PaperlessSync:
         # Empfänger-Feature: aufgelöstes select-Feld + Korrespondenten-Map (lazy gecacht).
         self._recipient_field: SelectField | None = None
         self._recipient_field_resolved = False
-        self._corr_map: dict[int, str] | None = None
+        # Namenslisten je Art: ``{art: (Ladezeitpunkt, {id: name})}``, siehe ``_names``.
+        self._name_cache: dict[str, tuple[float, dict[int, str]]] = {}
+        # Negativ-Cache: ``{(art, id): Zeitpunkt}`` für IDs, die nach einem Neuladen fehlten.
+        self._name_misses: dict[tuple[str, int], float] = {}
+        # Select-Optionen je Custom Field (``{field_id: {wert: label}}``), zusammen mit der
+        # Feldnamen-Liste geladen und von ihr verwaltet.
+        self._field_options: dict[int, dict[str, str]] = {}
         self._progress = BatchProgress()
         self._batch_stop = False
         # Referenz auf den laufenden Batch-Task halten, damit der Event-Loop ihn nicht
@@ -149,6 +238,12 @@ class PaperlessSync:
     def enabled(self) -> bool:
         s = self.settings
         return bool(s.feature_paperless_sync and s.paperless_url and s.paperless_token)
+
+    @property
+    def view_enabled(self) -> bool:
+        """Dokumentansicht und Vorschau-Proxy brauchen nur URL + Token (wie die Empfänger)."""
+        s = self.settings
+        return bool(s.paperless_url and s.paperless_token)
 
     @property
     def sevdesk_enabled(self) -> bool:
@@ -896,10 +991,146 @@ class PaperlessSync:
             self._recipient_field_resolved = True
         return self._recipient_field
 
+    async def _names(
+        self, client: PaperlessClient, kind: str, need: Iterable[int] = ()
+    ) -> dict[int, str]:
+        """Liefert die Namensliste ``{id: name}`` der Art ``kind`` aus dem Zwischenspeicher.
+
+        Geladen wird neu, wenn die Liste älter als ``NAME_CACHE_TTL`` ist oder eine der in
+        ``need`` genannten IDs fehlt (z. B. ein Tag, der seit dem letzten Abruf neu
+        entstand) — dann genau einmal je Aufruf. Bleibt eine ID auch danach unbekannt, löst
+        der Aufrufer sie als ``#<id>`` auf, und ``NAME_MISS_TTL`` Sekunden lang löst diese ID
+        kein weiteres Neuladen aus.
+        """
+        now = time.monotonic()
+        entry = self._name_cache.get(kind)
+        if entry is not None and now - entry[0] < NAME_CACHE_TTL:
+            unknown = [
+                i
+                for i in need
+                if i not in entry[1]
+                and now - self._name_misses.get((kind, i), -NAME_MISS_TTL) >= NAME_MISS_TTL
+            ]
+            if not unknown:
+                return entry[1]
+        if kind == "field":
+            # Eine Abfrage liefert Namen und Select-Optionen.
+            definitions = await client.list_custom_fields()
+            mapping = {
+                int(f["id"]): str(f.get("name") or "")
+                for f in definitions
+                if f.get("id") is not None
+            }
+            self._field_options = _select_options_of(definitions)
+        else:
+            mapping = await getattr(client, _NAME_LOADERS[kind])()
+        loaded = time.monotonic()
+        self._name_cache[kind] = (loaded, mapping)
+        for i in need:
+            if i not in mapping:
+                self._name_misses[(kind, i)] = loaded
+        return mapping
+
     async def _corr_map_cached(self, client: PaperlessClient) -> dict[int, str]:
-        if self._corr_map is None:
-            self._corr_map = await client.correspondent_map()
-        return self._corr_map
+        return await self._names(client, "correspondent")
+
+    async def load_document_view(self, paperless_id: int) -> DocumentView | None:
+        """Liest ein Paperless-Dokument samt Notizen und löst alle Namen auf.
+
+        Dokument und Notizen laufen parallel. Kennt Paperless das Dokument nicht oder gibt es
+        für Lectors Zugang nicht frei (404/403), kommt ``None`` zurück; jeder andere Fehler
+        (Paperless nicht erreichbar, 5xx) läuft als Ausnahme durch.
+        """
+        if not self.view_enabled:
+            return None
+        async with self._paperless() as client:
+            doc_res, notes_res = await asyncio.gather(
+                client.get_document(paperless_id),
+                client.get_note_entries(paperless_id),
+                return_exceptions=True,
+            )
+            if isinstance(doc_res, httpx.HTTPStatusError) and doc_res.response.status_code in (
+                403,
+                404,
+            ):
+                return None
+            if isinstance(doc_res, BaseException):
+                raise doc_res
+            if isinstance(notes_res, BaseException):
+                raise notes_res
+            doc: PaperlessDocument = doc_res
+            field_ids = [
+                int(cf["field"]) for cf in doc.custom_fields if cf.get("field") is not None
+            ]
+            corr_ids = [doc.correspondent_id] if doc.correspondent_id else []
+            type_ids = [doc.document_type_id] if doc.document_type_id else []
+            corr, types, tags, fields, recipient_field = await asyncio.gather(
+                self._names(client, "correspondent", corr_ids),
+                self._names(client, "document_type", type_ids),
+                self._names(client, "tag", doc.tag_ids),
+                self._names(client, "field", field_ids),
+                self._recipient_field_cached(client),
+            )
+
+        current_recipient = None
+        values: list[CustomFieldValue] = []
+        for cf in doc.custom_fields:
+            if cf.get("field") is None:
+                continue
+            fid = int(cf["field"])
+            value = cf.get("value")
+            if recipient_field is not None and fid == recipient_field.field_id:
+                current_recipient = recipient_field.id_to_label.get(str(value)) if value else None
+                value = current_recipient
+            options = self._field_options.get(fid)
+            if options is not None and value not in (None, "", []):
+                value = options.get(str(value), value)
+            values.append(
+                CustomFieldValue(
+                    name=fields.get(fid) or f"#{fid}", value=_format_field_value(value)
+                )
+            )
+        return DocumentView(
+            paperless_id=doc.id,
+            title=doc.title or f"#{doc.id}",
+            correspondent=(
+                (corr.get(doc.correspondent_id) or f"#{doc.correspondent_id}")
+                if doc.correspondent_id
+                else None
+            ),
+            document_type=(
+                (types.get(doc.document_type_id) or f"#{doc.document_type_id}")
+                if doc.document_type_id
+                else None
+            ),
+            created=_parse_paperless_date(doc.created),
+            added=_parse_paperless_date(doc.added),
+            archive_serial_number=doc.archive_serial_number,
+            page_count=doc.page_count,
+            tags=[tags.get(t) or f"#{t}" for t in doc.tag_ids],
+            custom_fields=values,
+            notes=notes_res,
+            invoice=self.repo.get_invoice_by_paperless(doc.id),
+            recipient_field_present=recipient_field is not None,
+            recipient_options=recipient_field.labels if recipient_field else [],
+            current_recipient=current_recipient,
+        )
+
+    async def fetch_document_preview(self, paperless_id: int) -> tuple[bytes, str] | None:
+        """Lädt die Vorschau eines beliebigen Paperless-Dokuments (für den UI-Proxy).
+
+        Anders als ``fetch_preview`` ohne Rechnungs-Lookup (Design D3). ``None``, wenn die
+        Anbindung fehlt oder Paperless das Dokument nicht kennt bzw. nicht freigibt.
+        """
+        if not self.view_enabled:
+            return None
+        async with self._paperless() as client:
+            try:
+                return await client.download_preview(paperless_id)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (403, 404):
+                    return None
+                raise
 
     @property
     def recipient_options(self) -> list[str]:

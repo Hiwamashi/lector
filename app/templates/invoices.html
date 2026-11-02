@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Rechnungen — Lector{% endblock %}
 {# Elf Spalten passen nicht in das 1100px-Band, ohne dass der Titel zur Buchstabensäule wird. #}
-{% block container_class %} container--wide{% endblock %}
+{% block container_class %} container--wide{% if panel_open %} has-panel{% endif %}{% endblock %}
 {% block content %}
 <h1>Rechnungen</h1>
 
@@ -64,10 +64,10 @@
   {% endif %}
 </div>
 
-{% macro sort_th(key, label) -%}
+{% macro sort_th(key, label, secondary=false) -%}
   {%- set is_active = sort.key == key -%}
   {%- set next_dir = "desc" if (is_active and sort.dir == "asc") else "asc" -%}
-  <th class="sortable {{ 'sorted' if is_active else '' }}">
+  <th class="sortable {{ 'sorted' if is_active else '' }}{{ ' col-secondary' if secondary else '' }}">
     <a href="/invoices?sort={{ key }}&dir={{ next_dir }}{% if filter_query %}&{{ filter_query }}{% endif %}">
       {{ label }}
       <span class="sort-arrow">{% if is_active %}{{ "▲" if sort.dir == "asc" else "▼" }}{% else %}⇅{% endif %}</span>
@@ -83,14 +83,13 @@
       {% if sevdesk_enabled %}<th class="select-col"><span class="visually-hidden">Auswahl</span></th>{% endif %}
       {{ sort_th("date", "Datum") }}
       {{ sort_th("title", "Titel") }}
-      {{ sort_th("correspondent", "Korrespondent") }}
+      {{ sort_th("correspondent", "Korrespondent", true) }}
       {{ sort_th("amount", "Betrag") }}
-      <th>Kontext</th>
-      <th>Abgleich</th>
-      {{ sort_th("giro", "GiroCode") }}
+      <th class="col-secondary">Kontext</th>
+      <th class="col-secondary">Abgleich</th>
+      {{ sort_th("giro", "GiroCode", true) }}
       {{ sort_th("sevdesk", "SevDesk") }}
-      {{ sort_th("paid", "Überwiesen") }}
-      <th></th>
+      {{ sort_th("paid", "Überwiesen", true) }}
     </tr>
   </thead>
   <tbody id="invoice-body">
@@ -98,4 +97,6 @@
   </tbody>
 </table>
 </div>
+
+{% include "partials/panel_aside.html" %}
 {% endblock %}

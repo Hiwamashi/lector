@@ -147,3 +147,22 @@ Tokens im Frontmatter). Dieser Durchgang hat nur Mängel behoben, nichts umgesta
   `.alert` bleibt echten Fehlern vorbehalten.
 - **Browser-Bausteine eingefärbt:** `accent-color`, `::selection`, `::file-selector-button`.
 - **Tabellenziffern** für die ganze `.history`-Tabelle (Datumsangaben, Seiten, Versuche).
+
+## Seitenleiste (2026-11-02)
+
+Die Seitenleiste (`aside#panel`) öffnet die Dokumentansicht neben den Listen Rechnungen, Empfänger
+und Dokumente. Gestaltung und Tastatur stehen in `DESIGN.md` im Abschnitt „Seitenleiste“. Die
+Funktion beschreibt [paperless-integration/dokumentansicht.md](paperless-integration/dokumentansicht.md).
+
+- **Tokens:** `--panel-surface` (Fläche der Leiste), `--panel-border` (Kante), `--row-current`
+  (Fläche der geöffneten Zeile) und `--panel-shadow` (nur in der Überlagerung zwischen 720 und
+  1279 px). Alle drei haben eigene Werte im Dunkel-Modus. Keine Farbwerte außerhalb des `:root`.
+- **Geöffnete Zeile:** `aria-current="true"` trägt die Fläche `--row-current` und eine 1px-Linie in
+  `--accent`. Kein Randbalken und kein Fettdruck, damit die Zeile nicht springt. Der Hover klickbarer
+  Zeilen nutzt `--surface-alt`.
+- **Drei Stufen:** ab 1280 px nebeneinander mit Rahmen statt Schatten. 720 bis 1279 px als
+  Überlagerung rechts. Unter 720 px Vollbild mit einem Schließen-Knopf von 44 px Höhe und Breite.
+- **Bewegung:** Das Einblenden (0,18 s, Gleiten von rechts) entfällt unter
+  `prefers-reduced-motion`.
+- **Fokus:** Der globale `:focus-visible`-Ring gilt auch in der Leiste. Nach dem Laden springt der
+  Fokus auf die Überschrift, nach dem Schließen auf die Zeile.

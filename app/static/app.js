@@ -70,15 +70,17 @@
   // beheben soll. Mit Frist scheitert der Request stattdessen sichtbar (Veraltet-Hinweis)
   // und der Takt laeuft weiter.
   var FRAGMENT_TIMEOUT_MS = 15000;
+  // Aktionen der Leiste (z.B. SevDesk-Export) duerfen deutlich laenger dauern als ein Abruf.
+  var POST_TIMEOUT_MS = 120000;
 
   // Race statt reinem AbortController: Die Frist muss auch dann greifen, wenn
   // AbortController fehlt. Der Abbruch kommt obendrauf und gibt die Verbindung frei.
-  function withDeadline(promise, abbruch) {
+  function withDeadline(promise, abbruch, dauer) {
     return new Promise(function (resolve, reject) {
       var frist = setTimeout(function () {
         if (abbruch) abbruch.abort();
         reject(new Error("timeout"));
-      }, FRAGMENT_TIMEOUT_MS);
+      }, dauer || FRAGMENT_TIMEOUT_MS);
       promise.then(
         function (wert) { clearTimeout(frist); resolve(wert); },
         function (fehler) { clearTimeout(frist); reject(fehler); }
@@ -164,24 +166,33 @@
     }
   }
 
-  function loadFragment(url, options, apply, mine) {
+  // mine: Zyklusnummer des Aufrufers. Ohne (undefined) entfaellt die Zyklusprüfung — die
+  // Seitenleiste fuehrt ihre eigene Reihenfolge (panelSeq), weil ein Listen-Refresh sie
+  // sonst beim Blaettern verwerfen wuerde. halter: optionales Objekt, das eine abort()-
+  // Funktion bekommt, damit der Aufrufer den Request gezielt abbrechen kann.
+  // apply bekommt zusaetzlich die endgueltige URL (nach Redirects, z.B. nach einem POST).
+  function loadFragment(url, options, apply, mine, halter, dauer) {
     var abbruch = typeof AbortController === "function" ? new AbortController() : null;
     var opts = {};
     if (options) { for (var k in options) opts[k] = options[k]; }
     if (abbruch) opts.signal = abbruch.signal;
+    if (halter) halter.abort = function () { if (abbruch) abbruch.abort(); };
     return withDeadline(
       fetch(url, opts)
         .then(function (r) {
           // 401 ist KEIN Fehlerzustand fuer den Hinweis (siehe refreshFragment), sondern
           // fuehrt zur Anmeldung. Der Throw verhindert nur, dass apply() laeuft.
           if (r.status === 401) { zurAnmeldung(); throw new Error("401"); }
-          if (!r.ok) throw new Error(r.status);
-          return r.text();
+          if (!r.ok) { var e = new Error(r.status); e.status = r.status; throw e; }
+          return r.text().then(function (html) { return { html: html, url: r.url }; });
         })
         // Inhalt nur einsetzen, solange dieser Zyklus der juengste ist: sonst schreibt eine
         // spaet eintreffende Antwort aelteren Inhalt ueber den bereits aktuelleren.
-        .then(function (html) { if (mine === cycle) apply(html); }),
-      abbruch
+        .then(function (erg) {
+          if (mine === undefined || mine === cycle) apply(erg.html, erg.url);
+        }),
+      abbruch,
+      dauer
     );
   }
 
@@ -223,7 +234,9 @@
     }, BATCH_POLL_MS);
   }
 
-  function refreshFragment() {
+  // ohnePanel: nach einer Aktion in der Seitenleiste ist deren Inhalt schon frisch — nur
+  // die Liste muss nachziehen.
+  function refreshFragment(ohnePanel) {
     if (umgeleitet) return Promise.resolve();  // Seite wird gerade verlassen
     var mine = ++cycle;
     var jobs = [];
@@ -231,10 +244,29 @@
     var table = document.querySelector("table.history[data-fragment]");
     if (table) {
       var body = table.querySelector("tbody");
+      // Aktuelles Dokument mitgeben, damit der Server die Markierung (aria-current) setzt.
+      var tabellenUrl = table.getAttribute("data-fragment");
+      if (panelKey) tabellenUrl = mitDoc(tabellenUrl, panelKey);
       jobs.push(loadFragment(
-        table.getAttribute("data-fragment"),
+        tabellenUrl,
         { headers: { "X-Requested-With": "fetch" } },
-        function (html) { if (body) applyRows(body, html); },
+        function (html) { if (body) { applyRows(body, html); markiereAktuelle(); } },
+        mine
+      ));
+    }
+    var panel = document.getElementById("panel");
+    if (!ohnePanel && panel && !panel.hidden && panel.getAttribute("data-fragment") &&
+        !panelBlockiert()) {
+      var panelUrl = panel.getAttribute("data-fragment");
+      jobs.push(loadFragment(
+        panelUrl, undefined,
+        function (html) {
+          // Nur wenn die Leiste noch dasselbe zeigt und der Nutzer inzwischen nichts
+          // eingegeben hat — eine laufende Eingabe darf nie ueberschrieben werden.
+          if (panel.getAttribute("data-fragment") === panelUrl && !panelBlockiert()) {
+            setzePanelInhalt(html, "refresh", schluessel(panelUrl));
+          }
+        },
         mine
       ));
     }
@@ -279,8 +311,441 @@
     if (doc) return { type: "doc", id: parseInt(doc[1], 10) };
     var inv = path.match(/^\/invoices\/(\d+)/);
     if (inv) return { type: "inv", id: parseInt(inv[1], 10) };
+    // Paperless-Dokumentseite: die ID ist eine PAPERLESS-ID, die SSE-Tokens "inv:<id>"
+    // tragen aber die Lector-Rechnungs-ID. Ein Abgleich waere falsch, also nicht filtern
+    // (siehe passtZurDetailseite).
+    var pl = path.match(/^\/paperless\/(\d+)/);
+    if (pl) return { type: "paperless", id: parseInt(pl[1], 10) };
     return null;
   }
+
+  // Betrifft das SSE-Ereignis die geoeffnete Detailseite? Konservativ: im Zweifel ja.
+  function passtZurDetailseite(detail, type, id) {
+    if (detail.type === "paperless") {
+      // Vorgangs-Ereignisse ("doc:") zeigt die Paperless-Seite nicht; alles andere (inv,
+      // vouchers, batch) kann sie betreffen und laesst sich nicht der Paperless-ID zuordnen.
+      return type !== "doc";
+    }
+    return type === detail.type && id === detail.id;
+  }
+
+  // ---- Seitenleiste (#panel) --------------------------------------------------
+  // Zeilen mit data-panel-url (Fragment) und data-page-url (Seite) oeffnen die Ansicht
+  // neben der Liste. Die Adresse traegt ?doc=<Schluessel> (letzte Zahl der Fragment-URL),
+  // damit Neuladen, Zurueck-Taste und geteilte Links denselben Zustand herstellen. Ohne JS
+  // fuehrt der Titel-Link auf die eigene Seite; nichts davon ist dafuer noetig.
+  var panelKey = null;       // Schluessel des geoeffneten Dokuments, null = geschlossen
+  var panelInhaltKey = null; // Dokument, zu dem der JETZT gerenderte Inhalt gehoert
+  var letzterKey = null;     // zuletzt geoeffnet — Fokusziel nach dem Schliessen
+  var panelSeq = 0;          // Reihenfolge der Ladevorgaenge: nur der juengste wirkt
+  var panelLadung = null;    // {abort} des laufenden Ladevorgangs
+  var panelHtml = "";        // zuletzt gesetzter Inhalt (verhindert sinnloses Neuzeichnen)
+  var panelDirty = false;    // Nutzer hat in der Leiste etwas eingegeben
+  var panelSendet = 0;       // laufende Formular-Requests der Leiste
+
+  function panelEl() { return document.getElementById("panel"); }
+
+  function istOffen() {
+    var p = panelEl();
+    return !!p && !p.hidden;
+  }
+
+  function schluessel(url) {
+    var m = /(\d+)(?:[?#].*)?$/.exec(String(url || ""));
+    return m ? m[1] : null;
+  }
+
+  function panelZeilen() { return document.querySelectorAll("tr[data-panel-url]"); }
+
+  function zeileFuer(key) {
+    var rows = panelZeilen();
+    for (var i = 0; i < rows.length; i++) {
+      if (schluessel(rows[i].getAttribute("data-panel-url")) === key) return rows[i];
+    }
+    return null;
+  }
+
+  // URL mit gesetztem (key) bzw. entferntem (null) doc-Parameter; uebrige Query bleibt.
+  function mitDoc(url, key) {
+    var teile = String(url).split("#");
+    var hash = teile.length > 1 ? "#" + teile.slice(1).join("#") : "";
+    var pq = teile[0].split("?");
+    var pfad = pq[0];
+    var params = pq.length > 1 && pq[1] ? pq.slice(1).join("?").split("&") : [];
+    var rest = [];
+    for (var i = 0; i < params.length; i++) {
+      if (params[i] && params[i].indexOf("doc=") !== 0) rest.push(params[i]);
+    }
+    if (key) rest.push("doc=" + encodeURIComponent(key));
+    return pfad + (rest.length ? "?" + rest.join("&") : "") + hash;
+  }
+
+  function aktuellerDocParam() {
+    var m = /[?&]doc=([^&#]*)/.exec(window.location.search || "");
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  function markiereAktuelle() {
+    var rows = panelZeilen();
+    for (var i = 0; i < rows.length; i++) {
+      var ist = !!panelKey && schluessel(rows[i].getAttribute("data-panel-url")) === panelKey;
+      if (ist) rows[i].setAttribute("aria-current", "true");
+      else rows[i].removeAttribute("aria-current");
+    }
+  }
+
+  function setzeContainerKlasse(offen) {
+    var main = document.querySelector("main.container");
+    if (!main) return;
+    if (offen) main.classList.add("has-panel");
+    else main.classList.remove("has-panel");
+  }
+
+  function fokussiere(el) {
+    if (!el || !el.focus) return;
+    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+  }
+
+  // Zeigt einen Hinweis oben in der Leiste; der Inhalt darunter bleibt stehen.
+  function panelHinweis(text) {
+    var p = panelEl();
+    if (!p) return;
+    var alt = p.querySelector("[data-panel-alert]");
+    if (alt && alt.parentNode) alt.parentNode.removeChild(alt);
+    var hinweis = document.createElement("p");
+    hinweis.className = "alert";
+    hinweis.setAttribute("role", "alert");
+    hinweis.setAttribute("data-panel-alert", "");
+    hinweis.textContent = text;
+    p.insertBefore(hinweis, p.firstChild);
+  }
+
+  // Eingaben in der Leiste duerfen weder vom SSE-Refresh noch vom Zeilen-Diff verloren gehen.
+  // Unabhaengig vom Fokus: wer eine IBAN tippt und dann auf eine leere Flaeche klickt, hat
+  // sie trotzdem noch nicht gespeichert. Das Merkmal gilt bis zum naechsten Setzen des
+  // Inhalts (Speichern, Dokumentwechsel).
+  function panelBlockiert() {
+    return panelSendet > 0 || panelDirty;
+  }
+
+  // Vorschau-Adresse (object data) — gleiche Adresse heisst: nicht neu laden.
+  function vorschauDaten(v) {
+    var o = v ? v.querySelector("object") : null;
+    return o ? (o.getAttribute("data") || null) : null;
+  }
+
+  // Ersetzt den Inhalt der Leiste. Bleibt die Vorschau dieselbe, wird ihr Element nicht
+  // angefasst: ein Verschieben oder Neuerzeugen laedt das PDF neu und setzt es zurueck.
+  // Nur die Geschwister davor und danach werden getauscht.
+  function ersetzeInhalt(p, html) {
+    var alt = p.querySelector(".doc-preview");
+    if (alt && alt.parentNode === p && vorschauDaten(alt)) {
+      var tmp = document.createElement("div");
+      tmp.innerHTML = html;
+      var neu = tmp.querySelector(".doc-preview");
+      if (neu && neu.parentNode === tmp && vorschauDaten(neu) === vorschauDaten(alt)) {
+        while (p.firstChild && p.firstChild !== alt) p.removeChild(p.firstChild);
+        while (alt.nextSibling) p.removeChild(alt.nextSibling);
+        while (tmp.firstChild && tmp.firstChild !== neu) p.insertBefore(tmp.firstChild, alt);
+        tmp.removeChild(neu);
+        while (tmp.firstChild) p.appendChild(tmp.firstChild);
+        return;
+      }
+    }
+    p.innerHTML = html;
+  }
+
+  // modus: "wechsel" (anderes Dokument: nach oben, Fokus auf den Titel), "aktion" (Antwort
+  // auf ein Formular: Scrollposition bleibt, Fokus auf das ausloesende Element) oder
+  // "refresh" (SSE: nichts bewegt sich). key: Dokument, zu dem der Inhalt gehoert.
+  function setzePanelInhalt(html, modus, key, fokusIds) {
+    var p = panelEl();
+    if (!p) return;
+    // Unveraendert: nichts neu zeichnen.
+    if (modus === "refresh" && html === panelHtml) return;
+    var oben = p.scrollTop;
+    var ae = document.activeElement;
+    var imPanel = !!ae && p.contains(ae);
+    var ids = (fokusIds || []).slice();
+    if (imPanel && ae.id) ids.push(ae.id);
+    ersetzeInhalt(p, html);
+    panelHtml = html;
+    panelDirty = false;
+    if (key) panelInhaltKey = key;
+    p.removeAttribute("aria-busy");
+    if (modus === "wechsel") {
+      p.scrollTop = 0;
+      fokussiere(document.getElementById("panel-title"));
+      return;
+    }
+    p.scrollTop = oben;
+    for (var i = 0; i < ids.length; i++) {
+      var el = ids[i] ? document.getElementById(ids[i]) : null;
+      if (el && p.contains(el)) { fokussiere(el); return; }
+    }
+    // Das fokussierte Element ist weg: der Fokus faellt nicht ins Leere (ohne zu scrollen).
+    if (modus === "aktion" && (imPanel || ids.length)) {
+      fokussiere(document.getElementById("panel-title"));
+    }
+  }
+
+  // Waehrend ein anderes Dokument laedt, bleibt der alte Inhalt sichtbar, ist aber
+  // gesperrt: ein Formular darin wuerde sonst fuer das neue Dokument gelten.
+  function sperrePanel() {
+    var p = panelEl();
+    if (!p) return;
+    p.setAttribute("aria-busy", "true");
+    for (var i = 0; i < p.children.length; i++) {
+      var k = p.children[i];
+      if (!k.classList.contains("panel-bar")) k.setAttribute("inert", "");
+    }
+  }
+
+  function bricheLadungAb() {
+    if (panelLadung && panelLadung.abort) panelLadung.abort();
+    panelLadung = null;
+  }
+
+  function oeffnePanel(url, push) {
+    var p = panelEl();
+    var key = schluessel(url);
+    if (!p || !key) return;
+    var gleich = panelKey === key && !p.hidden;
+    if (!gleich) {
+      panelDirty = false;  // Wer das Dokument verlaesst, verwirft ungespeicherte Eingaben
+      sperrePanel();
+    }
+    panelKey = key;
+    letzterKey = key;
+    p.hidden = false;
+    p.setAttribute("data-fragment", url);
+    setzeContainerKlasse(true);
+    markiereAktuelle();
+    if (push && !gleich) {
+      window.history.pushState({ doc: key }, "", mitDoc(
+        window.location.pathname + (window.location.search || ""), key
+      ));
+    }
+    // Schnelles Weiterblaettern: der vorige Ladevorgang wird abgebrochen und seine Antwort,
+    // falls sie doch noch eintrifft, am Zaehler erkannt und verworfen.
+    bricheLadungAb();
+    var seq = ++panelSeq;
+    var halter = {};
+    panelLadung = halter;
+    loadFragment(url, undefined, function (html) {
+      if (seq !== panelSeq) return;
+      panelLadung = null;
+      setzePanelInhalt(html, "wechsel", key);
+    }, undefined, halter).catch(function () {
+      if (seq !== panelSeq || umgeleitet) return;
+      panelLadung = null;
+      // Markierung und Adresse stehen schon auf dem neuen Dokument, der alte Inhalt bleibt
+      // gesperrt: nur der Hinweis ist bedienbar.
+      p.removeAttribute("aria-busy");
+      panelHinweis("Die Ansicht konnte nicht geladen werden.");
+    });
+  }
+
+  function schliessePanel(push, fokus) {
+    var p = panelEl();
+    if (!p || p.hidden) return;
+    bricheLadungAb();
+    panelSeq++;
+    p.hidden = true;
+    p.removeAttribute("data-fragment");
+    p.innerHTML = "";
+    panelHtml = "";
+    panelDirty = false;
+    panelKey = null;
+    panelInhaltKey = null;
+    p.removeAttribute("aria-busy");
+    setzeContainerKlasse(false);
+    markiereAktuelle();
+    if (push) {
+      window.history.pushState({}, "", mitDoc(
+        window.location.pathname + (window.location.search || ""), null
+      ));
+    }
+    if (fokus) {
+      var zeile = letzterKey ? zeileFuer(letzterKey) : null;
+      var link = zeile ? zeile.querySelector("td.filename a") : null;
+      if (link && link.focus) link.focus();
+    }
+  }
+
+  function istTitelLink(el) {
+    return el.tagName === "A" && !!el.closest("td.filename");
+  }
+
+  // Klick auf eine Zeile oder ihren Titel oeffnet die Leiste. Modifikatoren und
+  // Mittelklick behalten das normale Link-Verhalten (neuer Tab), ebenso Bedienelemente in
+  // der Zeile — sie haben ihre eigene Aufgabe.
+  document.addEventListener("click", function (ev) {
+    var t = ev.target;
+    if (!t || !t.closest) return;
+    var schliesser = t.closest("[data-panel-close]");
+    if (schliesser) {
+      if (!istOffen()) return;
+      ev.preventDefault();
+      schliessePanel(true, true);
+      return;
+    }
+    if (ev.defaultPrevented || ev.button !== 0) return;
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    if (!panelEl() || !window.history || !window.history.pushState) return;
+    // Link in der Leiste mit data-panel-url (z.B. „Abbrechen“ der Export-Rueckfrage): laedt
+    // das Fragment in die Leiste — dasselbe Dokument, also kein neuer Verlaufseintrag.
+    var innen = t.closest("a[data-panel-url]");
+    if (innen && panelEl().contains(innen)) {
+      ev.preventDefault();
+      oeffnePanel(innen.getAttribute("data-panel-url"), false);
+      return;
+    }
+    var row = t.closest("tr[data-panel-url]");
+    if (!row) return;
+    var bedienelement = t.closest("input, select, textarea, button, label, form, a, summary");
+    if (bedienelement && row.contains(bedienelement) && !istTitelLink(bedienelement)) return;
+    ev.preventDefault();
+    oeffnePanel(row.getAttribute("data-panel-url"), true);
+  });
+
+  // Zurueck-/Vorwaerts-Taste: Zustand aus ?doc= herstellen (auch Schliessen).
+  window.addEventListener("popstate", function () {
+    var p = panelEl();
+    if (!p) return;
+    var key = aktuellerDocParam();
+    if (!key) { schliessePanel(false, false); return; }
+    var zeile = zeileFuer(key);
+    var url = zeile ? zeile.getAttribute("data-panel-url") : "";
+    if (!url) {
+      // Zeile nicht in der Liste (z.B. andere Seite): Fragment-URL aus dem Muster ableiten.
+      var basis = p.getAttribute("data-fragment") ||
+        (panelZeilen().length ? panelZeilen()[0].getAttribute("data-panel-url") : "");
+      url = basis ? basis.replace(/\d+(?=(?:[?#].*)?$)/, key) : "";
+    }
+    if (url) oeffnePanel(url, false);
+  });
+
+  // Tastatur (Design D8) — nur bei offener Leiste.
+  document.addEventListener("keydown", function (ev) {
+    if (ev.defaultPrevented || !istOffen()) return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+    var t = ev.target;
+    if (t && t.closest && (
+      t.closest("input, select, textarea, [contenteditable], object") || t.closest(".doc-preview")
+    )) return;
+    var key = ev.key;
+    var schritt = 0;
+    if (key === "ArrowUp" || key === "k") schritt = -1;
+    else if (key === "ArrowDown" || key === "j") schritt = 1;
+    else if (key === "Escape") {
+      ev.preventDefault();
+      schliessePanel(true, true);
+      return;
+    } else if (key === "Enter") {
+      // Auf Knoepfen und Links behaelt Enter seine eigene Aufgabe (z.B. „Schliessen“).
+      if (t && t.closest && t.closest("button, a, summary")) return;
+      var aktuell = panelKey ? zeileFuer(panelKey) : null;
+      var ziel = aktuell ? aktuell.getAttribute("data-page-url") : null;
+      if (!ziel) {
+        var voll = panelEl().querySelector("a.panel-full");
+        ziel = voll ? voll.getAttribute("href") : null;
+      }
+      if (ziel) { ev.preventDefault(); window.location.assign(ziel); }
+      return;
+    } else return;
+    ev.preventDefault();
+    var rows = panelZeilen();
+    var idx = -1;
+    for (var i = 0; i < rows.length; i++) {
+      if (schluessel(rows[i].getAttribute("data-panel-url")) === panelKey) { idx = i; break; }
+    }
+    var neu = idx === -1 ? (schritt > 0 ? 0 : -1) : idx + schritt;
+    if (neu < 0 || neu >= rows.length) return;  // Listenende: nichts tun
+    oeffnePanel(rows[neu].getAttribute("data-panel-url"), true);
+    if (rows[neu].scrollIntoView) rows[neu].scrollIntoView({ block: "nearest" });
+  });
+
+  // Eingaben in der Leiste merken (siehe panelBlockiert).
+  function eingabeInLeiste(ev) {
+    var p = panelEl();
+    if (p && ev.target && p.contains(ev.target)) panelDirty = true;
+  }
+  document.addEventListener("input", eingabeInLeiste);
+  document.addEventListener("change", eingabeInLeiste);
+
+  // Formulare der Leiste (data-panel-form) laufen per fetch; die Routen antworten bei
+  // X-Lector-Panel mit einem Redirect auf das Fragment, das hier die Leiste ersetzt.
+  document.addEventListener("submit", function (ev) {
+    var form = ev.target;
+    var p = panelEl();
+    if (!form || !form.matches || !form.matches("form[data-panel-form]")) return;
+    if (!p || !p.contains(form) || !window.fetch) return;
+    ev.preventDefault();
+    if (form.getAttribute("data-sending")) return;  // Doppelklick
+    // Der Inhalt gehoert noch zu einem anderen Dokument als dem gewaehlten (Wechsel laeuft):
+    // eine Aktion wuerde sonst am falschen Dokument ankommen.
+    if (panelInhaltKey !== panelKey) return;
+    // Erst Daten lesen, dann sperren: gesperrte Knoepfe fielen sonst aus den Daten.
+    var params = new URLSearchParams();
+    new FormData(form).forEach(function (wert, name) {
+      if (typeof wert === "string") params.append(name, wert);
+    });
+    var sender = ev.submitter;
+    if (sender && sender.name) params.append(sender.name, sender.value || "");
+    var knoepfe = form.querySelectorAll("button");
+    form.setAttribute("data-sending", "1");
+    for (var i = 0; i < knoepfe.length; i++) knoepfe[i].disabled = true;
+    panelSendet++;
+    // Das Dokument, zu dem das Formular gerendert wurde — nicht das, was inzwischen gewaehlt ist.
+    var gesendetFuer = panelInhaltKey;
+    var fokusIds = [form.id, sender && sender.id];
+    var erfolg = false;
+    var unklar = false;
+    loadFragment(
+      form.getAttribute("action") || p.getAttribute("data-fragment"),
+      {
+        method: (form.getAttribute("method") || "post").toUpperCase(),
+        headers: { "X-Requested-With": "fetch", "X-Lector-Panel": "1" },
+        body: params,
+      },
+      function (html, url) {
+        erfolg = true;  // Die Aktion lief, auch wenn die Leiste inzwischen etwas anderes zeigt.
+        // Nur uebernehmen, wenn die Leiste noch dieses Dokument zeigt.
+        if (panelKey !== gesendetFuer || panelInhaltKey !== gesendetFuer || !istOffen()) return;
+        // Landete der Redirect z.B. auf ?ask=1, soll auch der naechste Refresh dort bleiben.
+        if (url) p.setAttribute("data-fragment", String(url).replace(/^https?:\/\/[^\/]+/, ""));
+        setzePanelInhalt(html, "aktion", gesendetFuer, fokusIds);
+      },
+      undefined, undefined, POST_TIMEOUT_MS
+    ).catch(function (fehler) {
+      if (umgeleitet) return;
+      var st = fehler && fehler.status;
+      if (st >= 400 && st < 500) {
+        panelHinweis("Die Aktion konnte nicht ausgeführt werden. Bitte erneut versuchen.");
+      } else {
+        // Zeitueberschreitung, Abbruch, 5xx: die Aktion kann trotzdem gelaufen sein.
+        unklar = true;
+        panelHinweis("Ergebnis unklar – bitte die Liste prüfen.");
+      }
+    }).then(function () {
+      panelSendet--;
+      form.removeAttribute("data-sending");
+      for (var j = 0; j < knoepfe.length; j++) knoepfe[j].disabled = false;
+      if (erfolg || unklar) refreshFragment(true);
+    });
+  });
+
+  // Server hat die Leiste schon gerendert (?doc= beim Seitenaufruf): Zustand uebernehmen.
+  (function () {
+    var p = panelEl();
+    if (!p || p.hidden || !p.getAttribute("data-fragment")) return;
+    panelKey = schluessel(p.getAttribute("data-fragment"));
+    panelInhaltKey = panelKey;
+    letzterKey = panelKey;
+    setzeContainerKlasse(true);
+    markiereAktuelle();
+  })();
 
   // Vor dem EventSource-Check: Ohne SSE-Unterstuetzung soll der Fortschritt trotzdem laufen.
   syncBatchPolling();
@@ -320,7 +785,7 @@
     var type = parts[0];
     var id = parseInt(parts[1], 10);
     // Auf einer Detailseite nur reagieren, wenn das betroffene Objekt gemeint ist.
-    if (detail !== null && (type !== detail.type || id !== detail.id)) return;
+    if (detail !== null && !passtZurDetailseite(detail, type, id)) return;
     // Waehrend eines Laufs laeuft der Takt schon — SSE wuerde nur verdoppeln.
     if (batchPolling) return;
     if (pending) return;

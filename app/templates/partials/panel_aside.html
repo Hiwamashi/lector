@@ -1,0 +1,17 @@
+{# Seitenleiste der Listen (Design D5). Leer und versteckt, bis app.js sie füllt; mit `?doc=`
+   rendert der Server sie gleich mit (`panel_open`). Erwartet vom Aufrufer: `panel_enabled`
+   und optional `panel_open`, `panel_kind` ("paperless" | "document"), `panel_fragment`,
+   `panel_error` — dazu den Kontext der jeweiligen Ansicht (siehe main._list_panel_context). #}
+{% if panel_enabled %}
+<aside id="panel" class="panel" aria-label="Dokumentansicht"
+       {% if panel_open %}data-fragment="{{ panel_fragment }}"{% else %}hidden{% endif %}>
+  {% if panel_open and panel_error %}
+  {% with page_url=panel_page_url %}{% include "partials/panel_bar.html" %}{% endwith %}
+  <p class="alert">{{ panel_error }}</p>
+  {% elif panel_open and panel_kind == "document" %}
+  {% include "partials/detail_body.html" %}
+  {% elif panel_open %}
+  {% include "partials/paperless_doc_body.html" %}
+  {% endif %}
+</aside>
+{% endif %}

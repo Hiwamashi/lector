@@ -17,11 +17,12 @@
    geaendert haben. Wer hier ein Feld ergaenzt, das sich im Betrieb aendert, sollte es
    auch in die Signatur aufnehmen. #}
 {% for doc in documents %}
-<tr data-row-id="{{ doc.id }}"
+<tr data-row-id="{{ doc.id }}" data-panel-url="/fragment/documents/{{ doc.id }}" data-page-url="/documents/{{ doc.id }}"
+    {%- if current_doc == doc.id %} aria-current="true"{% endif %}
     data-rev="{{ doc.status }}:{{ doc.processed_pages }}:{{ doc.total_pages }}:{{ doc.attempt_count }}">
   <td class="filename"><a href="/documents/{{ doc.id }}">{{ doc.original_filename }}</a></td>
   <td><span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span></td>
-  <td>{{ doc.doc_type | doc_type_label }}</td>
+  <td class="col-secondary">{{ doc.doc_type | doc_type_label }}</td>
   <td class="progress-cell">
     {%- if doc.total_pages -%}
       {%- if doc.status == "processing" -%}
@@ -35,8 +36,8 @@
       <span class="progress-inline-text">{{ doc.processed_pages }}/{{ doc.total_pages }}</span>
     {%- else -%}—{%- endif -%}
   </td>
-  <td>{{ doc.attempt_count }}</td>
-  <td>{{ doc.created_at | fmt_dt }}</td>
+  <td class="col-secondary">{{ doc.attempt_count }}</td>
+  <td class="col-secondary">{{ doc.created_at | fmt_dt }}</td>
   <td><a class="link" href="/documents/{{ doc.id }}" aria-label="Details zu {{ doc.original_filename }}">Details</a></td>
 </tr>
 {% endfor %}

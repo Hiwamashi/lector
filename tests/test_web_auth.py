@@ -88,6 +88,18 @@ def plain_client(tmp_path, monkeypatch):
 # --- Zugangsprüfung ----------------------------------------------------------------------
 
 
+def _schreibe(repo, sql, params):
+    """Schreibt direkt in die Test-Datenbank, aber hinter der Sperre des Repositorys.
+
+    Die App teilt eine SQLite-Verbindung über Threads. Ein Commit an `repo._lock` vorbei
+    kollidiert mit gleichzeitigen Zugriffen der Hintergrundaufgaben („cannot commit - no
+    transaction is active“, auf CI-Runnern beobachtet).
+    """
+    with repo._lock:
+        repo._conn.execute(sql, params)
+        repo._conn.commit()
+
+
 def test_offene_pfade_ohne_sitzung(anon_client):
     c, _, _ = anon_client
     assert c.get("/healthz").status_code == 200
@@ -367,9 +379,7 @@ def test_reservierung_wird_bei_ausnahme_freigegeben(anon_client, monkeypatch):
 
 def test_leere_angaben_fragen_paperless_nicht(anon_client):
     c, _, fake = anon_client
-    resp = c.post(
-        "/login", data={"username": "", "password": ""}, headers=EIGENE_HERKUNFT
-    )
+    resp = c.post("/login", data={"username": "", "password": ""}, headers=EIGENE_HERKUNFT)
     assert resp.status_code == 200
     assert fake.calls == []
 
@@ -627,6 +637,34 @@ def test_vorschau_behaelt_eigene_frame_header(tmp_path, monkeypatch, mode):
         assert resp.headers["x-content-type-options"] == "nosniff"
 
 
+@pytest.mark.parametrize("mode", ["none", "paperless"])
+def test_paperless_vorschau_behaelt_frame_header_und_weist_aktive_inhalte_ab(
+    tmp_path, monkeypatch, mode
+):
+    with _make_client(tmp_path, monkeypatch, mode=mode) as (c, application, _):
+        if mode == "paperless":
+            anonym = c.get("/paperless/9/preview", headers=HTML, follow_redirects=False)
+            assert anonym.status_code == 303  # ohne Anmeldung nicht erreichbar
+            _login(c)
+
+        inhalt = {"typ": "application/pdf"}
+
+        async def fake_preview(paperless_id):
+            return b"%PDF-1.4 x", inhalt["typ"]
+
+        monkeypatch.setattr(application.state.sync, "fetch_document_preview", fake_preview)
+        resp = c.get("/paperless/9/preview")
+        assert resp.status_code == 200
+        assert "frame-ancestors 'self'" in resp.headers["content-security-policy"]
+        assert "script-src 'none'" in resp.headers["content-security-policy"]
+        assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["cache-control"] == "private, max-age=300"
+
+        inhalt["typ"] = "text/html"
+        assert c.get("/paperless/9/preview").status_code == 415
+
+
 @pytest.mark.parametrize(
     "content_type", ["application/pdf", "image/png", "image/jpeg", "image/tiff; x=1"]
 )
@@ -719,19 +757,18 @@ def test_absolute_grenze_90_tage_trotz_frischer_nutzung(auth_client, monkeypatch
     # nicht das Aufräumen.
     monkeypatch.setattr(app.worker, "purge_web_sessions", lambda repo: 0)
     sid = _sid(c)
-    conn = application.state.repo._conn
+    repo = application.state.repo
     assert c.get("/auth/status").status_code == 204
-    conn.execute(
+    _schreibe(
+        repo,
         "UPDATE web_sessions SET created_at = ?, last_seen_at = ? WHERE id = ?",
         (_ts(timedelta(days=91)), _ts(timedelta(seconds=5)), sid),
     )
-    conn.commit()
     assert c.get("/auth/status").status_code == 401
     # Knapp darunter gilt sie noch.
-    conn.execute(
-        "UPDATE web_sessions SET created_at = ? WHERE id = ?", (_ts(timedelta(days=89)), sid)
+    _schreibe(
+        repo, "UPDATE web_sessions SET created_at = ? WHERE id = ?", (_ts(timedelta(days=89)), sid)
     )
-    conn.commit()
     c.cookies.set("lector_session", _signiert("geheimnis-a", {"sid": sid}))
     assert c.get("/auth/status").status_code == 204
 
@@ -739,11 +776,12 @@ def test_absolute_grenze_90_tage_trotz_frischer_nutzung(auth_client, monkeypatch
 def test_leerlauf_30_tage_beendet_sitzung(auth_client):
     c, application, _ = auth_client
     sid = _sid(c)
-    conn = application.state.repo._conn
-    conn.execute(
-        "UPDATE web_sessions SET last_seen_at = ? WHERE id = ?", (_ts(timedelta(days=31)), sid)
+    repo = application.state.repo
+    _schreibe(
+        repo,
+        "UPDATE web_sessions SET last_seen_at = ? WHERE id = ?",
+        (_ts(timedelta(days=31)), sid),
     )
-    conn.commit()
     resp = c.get("/", headers=HTML, follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/login")
@@ -792,16 +830,13 @@ def test_last_seen_wird_gedrosselt_geschrieben(auth_client):
     c, application, _ = auth_client
     repo = application.state.repo
     sid = _sid(c)
-    conn = repo._conn
     frisch = _ts(timedelta(seconds=10))
-    conn.execute("UPDATE web_sessions SET last_seen_at = ? WHERE id = ?", (frisch, sid))
-    conn.commit()
+    _schreibe(repo, "UPDATE web_sessions SET last_seen_at = ? WHERE id = ?", (frisch, sid))
     for _ in range(3):
         assert c.get("/auth/status").status_code == 204
     assert repo.get_web_session(sid)[2] == frisch  # unter 60 s: nicht neu geschrieben
     alt = _ts(timedelta(minutes=5))
-    conn.execute("UPDATE web_sessions SET last_seen_at = ? WHERE id = ?", (alt, sid))
-    conn.commit()
+    _schreibe(repo, "UPDATE web_sessions SET last_seen_at = ? WHERE id = ?", (alt, sid))
     assert c.get("/auth/status").status_code == 204
     assert repo.get_web_session(sid)[2] > alt
 

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Empfänger — Lector{% endblock %}
+{% block container_class %}{% if panel_open %} has-panel{% endif %}{% endblock %}
 {% block content %}
 <h1>Empfänger</h1>
 
@@ -44,7 +45,7 @@
     <tr>
       <th>Datum</th>
       <th>Titel</th>
-      <th>Korrespondent</th>
+      <th class="col-secondary">Korrespondent</th>
       <th>Empfänger</th>
       <th></th>
     </tr>
@@ -65,4 +66,6 @@
   {% endif %}
 </nav>
 {% endif %}
+
+{% include "partials/panel_aside.html" %}
 {% endblock %}

@@ -15,19 +15,33 @@ gestoppt. Anmeldung ist optional per `AUTH_MODE` (siehe [web-zugang.md](web-zuga
 |---|---|
 | `GET /` | Dashboard: Status-Kacheln + filterbare Historientabelle |
 | `GET /fragment/history` | Tabellen-Fragment (Filter `status`,`q`,`period`) — auch für SSE-Refresh |
+| `GET /` | Dashboard: Status-Kacheln + filterbare Historientabelle; `?doc=<lector_dokument_id>` öffnet die Vorgangsansicht in der Seitenleiste |
+| `GET /fragment/history` | Tabellen-Fragment (Filter `status`,`q`,`period`) — auch für SSE-Refresh |
 | `GET /documents/{id}` | Detailseite (Metadaten, Fortschritt, Verlauf, Fehler) |
-| `GET /fragment/documents/{id}` | Detail-Fragment für SSE-Refresh |
-| `GET /events` | SSE-Stream der geänderten `document_id` |
+| `GET /fragment/documents/{id}` | Detail-Fragment für SSE-Refresh und Seitenleiste |
+| `GET /paperless/{id}` | Dokumentansicht eines Paperless-Dokuments (Seite), siehe [paperless-integration/dokumentansicht.md](paperless-integration/dokumentansicht.md) |
+| `GET /fragment/paperless/{id}` | Fragment der Dokumentansicht für Seitenleiste und SSE-Refresh |
+| `GET /events` | SSE-Stream: pro Ereignis eine Zeile `data: <token>` |
 | `GET /healthz` | Health-Check |
 
 ## Live-Updates
 
 - `EventBus`: Abonnenten sind asyncio-Queues. Der Worker (Threads) meldet Änderungen über
   `publish_threadsafe` → `loop.call_soon_threadsafe` speist die Verteilung in den Event-Loop.
-- `/events` streamt `data: <id>`-Zeilen plus Keepalive-Kommentare.
-- `app/static/app.js`: lauscht via `EventSource`; bei einem Ereignis wird (entprellt) das
-  dynamische Fragment der aktuellen Seite per `fetch` neu geladen und ersetzt — auf der
-  Detailseite nur, wenn die betroffene ID passt.
+- `/events` streamt pro Ereignis `data: <token>` (`doc:<id>` für Vorgänge, `inv:<id>` für
+  Rechnungen, `vouchers:sync` für den SevDesk-Belegabruf) plus Keepalive-Kommentare.
+- `app/static/app.js`: lauscht via `EventSource`. Ein Ereignis löst nach 250 ms Entprellung
+  `refreshFragment()` aus. Dieses lädt neu, was auf der Seite vorhanden ist: die Tabelle
+  (`table.history[data-fragment]`), die offene Seitenleiste (`#panel[data-fragment]`), `#detail`,
+  die Statuszeile `#overview-status` und `#batch-status`.
+- Auf einer Detailseite reagiert `app/static/app.js` nur, wenn das Ereignis passt
+  (`currentDetail()` und `passtZurDetailseite`). Erkannt werden `/documents/{id}` (nur `doc:`-Ereignisse
+  mit gleicher ID), `/invoices/{id}` (nur `inv:`-Ereignisse mit gleicher ID) und
+  `/paperless/{id}`. Auf der Dokumentansicht zählen alle Ereignisse außer `doc:`, weil die Paperless-ID
+  nicht zur Lector-Vorgangs-ID passt.
+- Auf Listenseiten gibt es keine Detailbindung: Jedes Ereignis lädt die Liste und die offene Leiste
+  neu. Die Leiste wird nicht ersetzt, solange der Nutzer in ihr etwas eingibt oder ein Formular sendet
+  (siehe [dokumentansicht.md](paperless-integration/dokumentansicht.md#seitenleiste)).
 
 ## Design
 
