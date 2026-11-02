@@ -981,6 +981,11 @@ Change: `openspec/changes/scan-paperless-verknuepfung/` (noch nicht archiviert).
 Keine Datenmigration außer den neuen Spalten (`design.md`, Migration Plan). Ein Rollback auf das
 vorherige Image ist ohne Eingriff möglich; die zusätzlichen Spalten werden dann ignoriert.
 
+Die Abnahme auf dem NAS (Aufgabe 6.3) ruht, bis der Fix aus dem Change `paperless-sync-ohne-stillstand`
+ausgerollt und abgenommen ist. Ohne den Fix blockiert der Rechnungs-Sync den Dienst rund 40 Sekunden je
+Lauf, und die Verknüpfung bricht in dieser Zeit mit Zeitüberschreitung ab. Eine Abnahme wäre dann nicht
+aussagekräftig (siehe unten).
+
 Bewusst nicht umgesetzt: Gegenrichtung (Paperless-Dokumente ohne Lector-Vorgang), manuelle Zuordnung
 nicht gefundener Dokumente, Abfrage über die Paperless-Tasks-API.
 
@@ -991,3 +996,41 @@ Offene Punkte aus der Umsetzung (Details und `TODO` in `feature-documentation/pa
 - Bei 2 bis 5 Prüfsummentreffern bleibt ein Vorgang `pending` und wird ohne Ende erneut gesucht.
 - Nach einem Neustart werden alle `not_found`-Vorgänge einmal erneut gesucht, auch ältere als 14 Tage.
 - Ein Wiederholversuch nach der Ablage kann eine zweite Datei in `consume` erzeugen.
+
+## Rechnungs-Sync ohne Stillstand (Change paperless-sync-ohne-stillstand) – umgesetzt, Abnahme offen
+
+**Ursache:** Der Rechnungs-Sync lief synchron im einzigen Prozess. Bei jedem Lauf wurde jede der rund 800
+Rechnungen mit eigenem Commit neu geschrieben, weil `last_synced_at` bei jedem Aufruf einen neuen Wert
+bekam, auch ohne Änderung. Alle fünf Minuten reagierte Lector dadurch rund 40 Sekunden lang nicht:
+Seitenaufrufe und `/healthz` hingen, und die gleichzeitig laufende Scan-Verknüpfung brach mit
+Zeitüberschreitung ab. Aufgefallen ist es bei der Abnahme der Scan-Verknüpfung. Der Fehler besteht seit
+Einführung des Syncs. Zweimal reproduziert; die Zeit je Commit auf dem NAS ist nicht direkt gemessen.
+
+**Fix:**
+
+- Vergleich vor dem Schreiben: Eine Rechnung wird nur geschrieben, wenn sie neu ist oder sich Titel,
+  Korrespondent, Rechnungsdatum, Empfänger oder Beleg-Vermerk ändern. Unveränderte Rechnungen erzeugen
+  weder Schreibzugriff noch Live-Signal.
+- Gesammeltes Schreiben: `upsert_invoices` schreibt die Änderungen eines Schritts in einer Transaktion mit
+  einem Commit. Der Sync sammelt zuerst, schreibt danach und läuft in den Folgeschritten wie bisher weiter.
+- `last_synced_at` bedeutet jetzt „zuletzt geändert“ und heißt in der Anzeige „Zuletzt geändert“. Keine
+  Schemaänderung.
+- Zeitmessung: eine INFO-Zeile je Lauf mit geprüften, neuen und geänderten Rechnungen und den Dauern je
+  Schritt, ohne Titel oder Namen.
+- Das Log der Scan-Verknüpfung nennt bei Abbruch den Fehlertyp.
+- Doppelte Dokumente aus der Paginierung (verschobene Seiten) werden vor dem Schreiben entfernt; im
+  Stapel gilt das erste Vorkommen einer `paperless_id` (Befund aus dem Review).
+
+Doku: `feature-documentation/paperless-integration/sync-und-aktionen.md`,
+`feature-documentation/paperless-integration/rechnungs-ui.md`,
+`feature-documentation/paperless-integration/scan-verknuepfung.md`. Rollback: Revert des Commits, die Daten
+bleiben kompatibel.
+
+**Offen (Aufgabe 4.3, manuell auf dem NAS):** `/healthz`-Antwortzeit über zwei Sync-Takte messen (keine
+Antwort über 2 s). Die Logzeile muss bei einem Lauf ohne Änderung `geändert=0` zeigen und die Schrittdauern
+ausweisen. Die Scan-Verknüpfung muss ohne Abbruch laufen. Der anonymisierte Befund wird hier eingetragen;
+bis dahin gilt der Fix als nicht abgenommen. Die Abnahme der Scan-Verknüpfung (Aufgabe 6.3) ruht bis dahin.
+
+**Bekannt, nicht Teil des Changes:** Scheitert die Auflösung eines Korrespondentennamens (ID fehlt in der
+je Lauf geladenen Liste und der Einzelabruf schlägt fehl), wird der Korrespondent der Rechnung bis zum
+nächsten Lauf geleert. Das Verhalten bestand schon vorher; es fällt jetzt als Änderung mit Ereignis auf.

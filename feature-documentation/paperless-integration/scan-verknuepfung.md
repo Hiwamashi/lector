@@ -209,8 +209,10 @@ Nachholen (je ein Aufruf pro Vorgang).
   Lauf nach dem vollen Takt versucht es erneut.
 - **Zu viele Treffer bei der Prüfsumme:** Ebenfalls Abbruch des Laufs, ohne Zustandsänderung.
 - **Unerwartete Ausnahme:** `_paperless_link_loop` im Worker protokolliert sie und läuft weiter.
-- Die Protokollmeldung lautet `Paperless-Verknüpfung abgebrochen: …` (Logger
-  `lector.paperless_link`).
+- Die Protokollmeldung lautet `Paperless-Verknüpfung abgebrochen: <Fehlertyp>: <Meldung>` (Logger
+  `lector.paperless_link`). Der Fehlertyp ist der Name der Ausnahmeklasse, z. B. `ReadTimeout`. Bei einer
+  Zeitüberschreitung ohne Text endet die Zeile nach dem zweiten Doppelpunkt. Vor dem Change
+  `paperless-sync-ohne-stillstand` stand nur die Meldung dort, bei Zeitüberschreitungen also nichts.
 
 ## Health
 

@@ -15,7 +15,7 @@ from app.models import (
 )
 from app.paperless import PaperlessClient
 from app.paperless_sync import PaperlessSync
-from app.repository import Repository
+from app.repository import InvoiceUpsert, Repository, UpsertResult
 
 
 def make_repo(tmp_path):
@@ -840,3 +840,189 @@ def test_set_review_and_dismiss_do_not_override_export_states(tmp_path, status):
     assert repo.set_review(a, "x") is False
     assert repo.dismiss(a) is False
     assert repo.get_invoice(a).sevdesk_status == status
+
+
+# ---- Änderungserkennung (Change paperless-sync-ohne-stillstand) -------------------------
+
+
+def _repo_mit_tokens(tmp_path):
+    tokens: list[str] = []
+    return Repository(tmp_path / "lector.db", notifier=tokens.append), tokens
+
+
+def _stamp(repo, inv_id, value="2020-01-01 00:00:00"):
+    """Setzt last_synced_at auf einen alten Wert, damit eine Verschiebung sichtbar wird."""
+    repo._conn.execute("UPDATE paperless_invoices SET last_synced_at = ? WHERE id = ?",
+                       (value, inv_id))
+    repo._conn.commit()
+
+
+def _synced_at(repo, inv_id):
+    return repo._conn.execute(
+        "SELECT last_synced_at FROM paperless_invoices WHERE id = ?", (inv_id,)
+    ).fetchone()[0]
+
+
+def test_upsert_unveraendert_schreibt_nichts_und_sendet_kein_signal(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    kwargs = dict(
+        paperless_id=1, title="Strom", correspondent="Acme",
+        document_date="2026-06-06T00:00:00+02:00", recipient_label="Familie",
+        paperless_voucher_ref="77",
+    )
+    inv_id = repo.upsert_invoice(**kwargs)
+    _stamp(repo, inv_id)
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    assert repo.upsert_invoice(**kwargs) == inv_id
+
+    assert repo._conn.total_changes == before
+    assert tokens == []
+    assert _synced_at(repo, inv_id) == "2020-01-01 00:00:00"
+
+
+@pytest.mark.parametrize(
+    "aenderung",
+    [
+        {"title": "Strom neu"},
+        {"correspondent": "Andere"},
+        {"recipient_label": "IT-Consulting"},
+        {"paperless_voucher_ref": "99"},
+        {"document_date": "2026-07-01T00:00:00+02:00"},
+    ],
+)
+def test_upsert_geaenderte_angabe_wird_geschrieben(tmp_path, aenderung):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    kwargs = dict(
+        paperless_id=1, title="Strom", correspondent="Acme",
+        document_date="2026-06-06T00:00:00+02:00", recipient_label="Familie",
+        paperless_voucher_ref="77",
+    )
+    inv_id = repo.upsert_invoice(**kwargs)
+    _stamp(repo, inv_id)
+    tokens.clear()
+
+    repo.upsert_invoice(**{**kwargs, **aenderung})
+
+    assert tokens == [f"inv:{inv_id}"]
+    assert _synced_at(repo, inv_id) != "2020-01-01 00:00:00"
+    inv = repo.get_invoice(inv_id)
+    for name, value in aenderung.items():
+        if name != "document_date":
+            assert getattr(inv, name) == value
+    if "document_date" in aenderung:
+        assert inv.document_date.month == 7
+
+
+def test_upsert_leerer_text_ist_gleich_none(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    inv_id = repo.upsert_invoice(
+        paperless_id=1, title="A", correspondent=None, recipient_label=None,
+        paperless_voucher_ref=None,
+    )
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    repo.upsert_invoice(
+        paperless_id=1, title="A", correspondent=None, recipient_label="",
+        paperless_voucher_ref="",
+    )
+
+    assert repo._conn.total_changes == before
+    assert tokens == []
+    assert repo.get_invoice(inv_id).recipient_label is None
+
+
+def test_upsert_nicht_uebergebenes_spiegelfeld_bleibt_unberuehrt(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    inv_id = repo.upsert_invoice(
+        paperless_id=1, title="A", correspondent=None, recipient_label="Familie",
+        paperless_voucher_ref="5",
+    )
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    # Ohne Spiegelfelder und ohne Änderung: nichts zu tun, Felder zählen nicht.
+    repo.upsert_invoice(paperless_id=1, title="A", correspondent=None)
+    assert repo._conn.total_changes == before
+    assert tokens == []
+
+    # Titel ändert sich: geschrieben, Spiegelfelder bleiben stehen.
+    repo.upsert_invoice(paperless_id=1, title="B", correspondent=None)
+    inv = repo.get_invoice(inv_id)
+    assert inv.title == "B"
+    assert inv.recipient_label == "Familie"
+    assert inv.paperless_voucher_ref == "5"
+
+
+def test_upsert_invoices_ein_commit_tokens_nur_fuer_neu_und_geaendert(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    unveraendert = repo.upsert_invoice(paperless_id=2, title="Gleich", correspondent=None)
+    geaendert = repo.upsert_invoice(paperless_id=3, title="Alt", correspondent=None)
+    tokens.clear()
+
+    commits: list[int] = []
+
+    class _Spy:
+        """Zählt Commits der echten Verbindung, ohne deren Verhalten zu ändern."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def commit(self):
+            commits.append(1)
+            return self._conn.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    repo._conn = _Spy(repo._conn)
+
+    result = repo.upsert_invoices(
+        [
+            InvoiceUpsert(paperless_id=1, title="Neu", correspondent=None),
+            InvoiceUpsert(paperless_id=2, title="Gleich", correspondent=None),
+            InvoiceUpsert(paperless_id=3, title="Neu betitelt", correspondent=None),
+        ]
+    )
+
+    assert len(commits) == 1
+    assert result[1].result == UpsertResult.NEW
+    assert result[1].before is None
+    assert result[2].result == UpsertResult.UNCHANGED
+    assert result[2].invoice_id == unveraendert
+    assert result[3].result == UpsertResult.CHANGED
+    assert result[3].invoice_id == geaendert
+    assert result[3].before.title == "Alt"
+    assert sorted(tokens) == sorted([f"inv:{result[1].invoice_id}", f"inv:{geaendert}"])
+    assert repo.get_invoice(geaendert).title == "Neu betitelt"
+
+
+def test_upsert_invoices_ohne_aenderung_kein_commit_und_leere_liste(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    repo.upsert_invoice(paperless_id=1, title="A", correspondent=None)
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    assert repo.upsert_invoices([]) == {}
+    result = repo.upsert_invoices([InvoiceUpsert(paperless_id=1, title="A", correspondent=None)])
+
+    assert result[1].result == UpsertResult.UNCHANGED
+    assert repo._conn.total_changes == before
+    assert tokens == []
+
+
+def test_upsert_invoices_doppelte_paperless_id_erstes_ergebnis_gilt(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+
+    result = repo.upsert_invoices(
+        [
+            InvoiceUpsert(paperless_id=1, title="Neu", correspondent=None),
+            InvoiceUpsert(paperless_id=1, title="Neu", correspondent=None),
+        ]
+    )
+
+    assert result[1].result == UpsertResult.NEW
+    assert result[1].before is None
+    assert tokens == [f"inv:{result[1].invoice_id}"]

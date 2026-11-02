@@ -104,7 +104,8 @@ Neue Spalten und Tabellen kommen über `_migrate()` bzw. `CREATE TABLE IF NOT EX
 bestehende Datenbanken. Die Rollback-Anweisung vor einem Image-Rollback steht in
 `prd/PROGRESS.md`.
 
-Repository-Methoden in `app/repository.py` (u. a. `upsert_invoice`, `set_giro_data`,
+Repository-Methoden in `app/repository.py` (u. a. `upsert_invoice`, `upsert_invoices` (gesammelt, ein Commit),
+`set_giro_data`,
 `set_sevdesk_status`, `set_paid`, `add_invoice_event`, `replace_vouchers`, `list_matches`,
 `decide_match`, `correspondent_context_history`, `set_review`, `dismiss`, …). SSE-Tokens tragen das
 Präfix `inv:` (Dokumente: `doc:`); der Belegabruf meldet `vouchers:sync`.

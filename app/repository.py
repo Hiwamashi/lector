@@ -199,6 +199,33 @@ class _Unset:
 
 _UNSET = _Unset()
 
+
+class UpsertResult(StrEnum):
+    NEW = "new"
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+
+
+@dataclass(frozen=True)
+class InvoiceUpsert:
+    """Eingabe für ``Repository.upsert_invoices`` (Felder wie bei ``upsert_invoice``)."""
+
+    paperless_id: int
+    title: str | None
+    correspondent: str | None
+    document_date: str | None = None
+    recipient_label: str | None | _Unset = _UNSET
+    paperless_voucher_ref: str | None | _Unset = _UNSET
+
+
+@dataclass(frozen=True)
+class InvoiceUpsertOutcome:
+    """Ergebnis je Rechnung: ID, was passiert ist und der Stand davor (``None`` bei neu)."""
+
+    invoice_id: int
+    result: UpsertResult
+    before: PaperlessInvoice | None
+
 # Sevdesk-Stati, die ein laufender oder abgeschlossener Export belegt; set_review/dismiss
 # dürfen sie nicht überschreiben (analog zur Ausschlussliste von claim_for_export).
 _EXPORT_LOCKED_STATUSES = (
@@ -886,7 +913,7 @@ class Repository:
         recipient_label: str | None | _Unset = _UNSET,
         paperless_voucher_ref: str | None | _Unset = _UNSET,
     ) -> int:
-        """Legt eine Rechnung an bzw. aktualisiert Titel/Korrespondent/Datum + Sync-Zeitpunkt.
+        """Legt eine Rechnung an bzw. aktualisiert Titel/Korrespondent/Datum + Änderungszeitpunkt.
 
         Bereits ermittelte Zahldaten und der Export-/Bezahlt-Status bleiben unangetastet.
 
@@ -894,42 +921,98 @@ class Repository:
         Wert übergeben, ersetzt er den lokalen — ``None`` heißt „in Paperless leer“ und setzt
         die Spalte auf NULL. Wird das Argument weggelassen, bleibt die Spalte unangetastet
         (bestehende Aufrufer, die die Felder nicht kennen, löschen so nichts).
+
+        Geschrieben wird nur, wenn die Rechnung neu ist oder sich eine übergebene Angabe
+        (in der gespeicherten Form) unterscheidet. Eine unveränderte Rechnung löst weder einen
+        Schreibzugriff noch ein Live-Signal aus und lässt ``last_synced_at`` („zuletzt
+        geändert“) stehen.
         """
-        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-        doc_date = _normalize_doc_date(document_date)
-        columns = ["paperless_id", "title", "correspondent", "document_date", "last_synced_at"]
-        values: list[object] = [paperless_id, title, correspondent, doc_date, now]
-        updates = [
-            "title=excluded.title",
-            "correspondent=excluded.correspondent",
-            "document_date=excluded.document_date",
-            "last_synced_at=excluded.last_synced_at",
-        ]
-        for name, value in (
-            ("recipient_label", recipient_label),
-            ("paperless_voucher_ref", paperless_voucher_ref),
-        ):
-            if isinstance(value, _Unset):
-                continue
-            columns.append(name)
-            # Leerer Text und None bedeuten beide „kein Wert“.
-            values.append(value or None)
-            updates.append(f"{name}=excluded.{name}")
-        placeholders = ", ".join("?" for _ in columns)
+        row = InvoiceUpsert(
+            paperless_id=paperless_id,
+            title=title,
+            correspondent=correspondent,
+            document_date=document_date,
+            recipient_label=recipient_label,
+            paperless_voucher_ref=paperless_voucher_ref,
+        )
         with self._lock:
-            cur = self._conn.execute(
-                f"INSERT INTO paperless_invoices ({', '.join(columns)}) "
-                f"VALUES ({placeholders}) "
-                f"ON CONFLICT(paperless_id) DO UPDATE SET {', '.join(updates)}",
-                values,
+            try:
+                outcome = self._upsert_invoice_locked(row, _ts())
+                if outcome.result is not UpsertResult.UNCHANGED:
+                    self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        if outcome.result is not UpsertResult.UNCHANGED:
+            self._notify_invoice(outcome.invoice_id)
+        return outcome.invoice_id
+
+    def upsert_invoices(self, rows: list[InvoiceUpsert]) -> dict[int, InvoiceUpsertOutcome]:
+        """Gesammeltes ``upsert_invoice``: alle Änderungen in EINER Transaktion, ein Commit.
+
+        Dieselbe Vergleichslogik wie ``upsert_invoice``. Die Live-Signale (``inv:<id>``)
+        gehen erst nach dem Commit und nur für neue bzw. geänderte Rechnungen raus. Der Lock
+        wird nur für die (rein synchrone) Schreibphase gehalten, nie über ein ``await``.
+        Rückgabe je ``paperless_id``: Rechnungs-ID, Ergebnis und Stand vor dem Schreiben.
+        """
+        if not rows:
+            return {}
+        stamp = _ts()
+        outcomes: dict[int, InvoiceUpsertOutcome] = {}
+        with self._lock:
+            try:
+                for row in rows:
+                    # Doppelte paperless_id (z. B. verschobene Seiten beim Paginieren):
+                    # das erste Ergebnis gilt, sonst überschriebe „unverändert“ ein „neu“.
+                    if row.paperless_id in outcomes:
+                        continue
+                    outcomes[row.paperless_id] = self._upsert_invoice_locked(row, stamp)
+                if any(o.result is not UpsertResult.UNCHANGED for o in outcomes.values()):
+                    self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        for outcome in outcomes.values():
+            if outcome.result is not UpsertResult.UNCHANGED:
+                self._notify_invoice(outcome.invoice_id)
+        return outcomes
+
+    def _upsert_invoice_locked(self, row: InvoiceUpsert, stamp: str) -> InvoiceUpsertOutcome:
+        """Vergleichen und ggf. schreiben — ohne Commit; der Aufrufer hält ``self._lock``."""
+        values: dict[str, object] = {
+            "title": row.title,
+            "correspondent": row.correspondent,
+            "document_date": _normalize_doc_date(row.document_date),
+        }
+        for name, value in (
+            ("recipient_label", row.recipient_label),
+            ("paperless_voucher_ref", row.paperless_voucher_ref),
+        ):
+            if not isinstance(value, _Unset):
+                # Leerer Text und None bedeuten beide „kein Wert“.
+                values[name] = value or None
+        existing = self._conn.execute(
+            f"SELECT {_INVOICE_COLUMNS} FROM paperless_invoices WHERE paperless_id = ?",
+            (row.paperless_id,),
+        ).fetchone()
+        if existing is not None:
+            before = _parse_invoice(existing)
+            if all(existing[name] == value for name, value in values.items()):
+                return InvoiceUpsertOutcome(before.id, UpsertResult.UNCHANGED, before)
+            assignments = ", ".join(f"{name} = ?" for name in values)
+            self._conn.execute(
+                f"UPDATE paperless_invoices SET {assignments}, last_synced_at = ? "
+                "WHERE paperless_id = ?",
+                [*values.values(), stamp, row.paperless_id],
             )
-            self._conn.commit()
-            row = self._conn.execute(
-                "SELECT id FROM paperless_invoices WHERE paperless_id = ?", (paperless_id,)
-            ).fetchone()
-            invoice_id = int(row["id"]) if row else int(cur.lastrowid)
-        self._notify_invoice(invoice_id)
-        return invoice_id
+            return InvoiceUpsertOutcome(before.id, UpsertResult.CHANGED, before)
+        columns = ["paperless_id", *values, "last_synced_at"]
+        cur = self._conn.execute(
+            f"INSERT INTO paperless_invoices ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            [row.paperless_id, *values.values(), stamp],
+        )
+        return InvoiceUpsertOutcome(int(cur.lastrowid), UpsertResult.NEW, None)
 
     def get_invoice(self, invoice_id: int) -> PaperlessInvoice | None:
         with self._lock:

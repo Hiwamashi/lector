@@ -202,6 +202,18 @@ async def test_network_error_aborts_without_state_change(tmp_path):
     assert len(client.calls) == 1  # Lauf abgebrochen, kein weiterer Versuch
 
 
+async def test_timeout_without_message_logs_error_type(tmp_path, caplog):
+    client = FakeClient(error=httpx.ReadTimeout(""))
+    repo, linker = _setup(tmp_path, client)
+    _doc(repo, link=PaperlessLink.PENDING, consumed_ago=timedelta(hours=30))
+
+    with caplog.at_level("WARNING", logger="lector.paperless_link"):
+        result = await linker.run_once()
+
+    assert result.aborted is True
+    assert any("ReadTimeout" in r.getMessage() for r in caplog.records)
+
+
 async def test_unsupported_filter_aborts_without_linking(tmp_path):
     client = FakeClient(error=PaperlessError("Filter nicht unterstützt: 1500 Treffer"))
     repo, linker = _setup(tmp_path, client)

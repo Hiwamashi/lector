@@ -56,7 +56,7 @@ from .paperless import (
     SelectField,
 )
 from .recipient_llm import RecipientSuggester
-from .repository import Repository
+from .repository import InvoiceUpsert, Repository, UpsertResult
 from .sevdesk import SevdeskClient, _as_iso_date
 from .sevdesk_export_checks import (
     ExportBlockers,
@@ -207,6 +207,31 @@ class BatchProgress:
     finished_at: datetime | None = None
 
 
+@dataclass
+class _StepStats:
+    """Zähler eines Sync-Schritts für die Laufzeit-Logzeile (nur Zahlen, keine Titel)."""
+
+    checked: int = 0
+    new: int = 0
+    changed: int = 0
+
+
+def _unique_docs(docs: list[PaperlessDocument]) -> list[PaperlessDocument]:
+    """Entfernt doppelte Dokumente (erstes Vorkommen gilt).
+
+    Paginiert Paperless nach ``-created`` und kommt während des Abrufs ein Dokument hinzu,
+    verschieben sich die Seiten und ein Dokument erscheint zweimal. Ohne Bereinigung liefen
+    Ereignis und Zahldaten-Auslese doppelt.
+    """
+    seen: set[int] = set()
+    unique: list[PaperlessDocument] = []
+    for doc in docs:
+        if doc.id not in seen:
+            seen.add(doc.id)
+            unique.append(doc)
+    return unique
+
+
 class PaperlessSync:
     def __init__(self, settings: Settings, repo: Repository) -> None:
         self.settings = settings
@@ -339,6 +364,8 @@ class PaperlessSync:
         if not self.enabled:
             return
         async with self._lock:
+            stats: dict[str, _StepStats] = {}
+            seconds: dict[str, float] = {}
             try:
                 async with self._paperless() as client:
                     ids = await self._resolve(client)
@@ -357,9 +384,19 @@ class PaperlessSync:
                     if recipient_field is not None:
                         self._recipient_field = recipient_field
                         self._recipient_field_resolved = True
-                    await self._sync_invoices(client, ids, corr_map, recipient_field)
-                    await self._sync_sevdesk_tag(client, ids, corr_map, recipient_field)
+                    started = time.monotonic()
+                    stats["invoices"] = await self._sync_invoices(
+                        client, ids, corr_map, recipient_field
+                    )
+                    seconds["invoices"] = time.monotonic() - started
+                    started = time.monotonic()
+                    stats["tag"] = await self._sync_sevdesk_tag(
+                        client, ids, corr_map, recipient_field
+                    )
+                    seconds["tag"] = time.monotonic() - started
+                    started = time.monotonic()
                     await self._retry_write_backs(client, ids)
+                    seconds["write_backs"] = time.monotonic() - started
             except httpx.ConnectError as exc:
                 # Paperless (noch) nicht erreichbar — typisch beim Start, wenn der
                 # webserver-Container später hochfährt. Nächster Lauf greift erneut.
@@ -368,10 +405,44 @@ class PaperlessSync:
                 log.exception("Paperless-Sync fehlgeschlagen")
         # Gespiegelte Felder (Empfänger, Beleg-Vermerk) und Rechnungen haben sich ggf.
         # geändert: Treffer neu berechnen — ohne SevDesk-Aufruf, auf Basis des Abzugs.
+        started = time.monotonic()
         try:
             self.recompute_matches()
         except Exception:
             log.exception("Neuberechnung des Belegabgleichs nach dem Sync fehlgeschlagen")
+        seconds["recompute"] = time.monotonic() - started
+        if stats:
+            self._log_run(stats, seconds)
+
+    @staticmethod
+    def _log_run(stats: dict[str, _StepStats], seconds: dict[str, float]) -> None:
+        """Eine INFO-Zeile je Lauf: Zahlen und Dauer je Schritt (keine Titel/Namen)."""
+        inv = stats.get("invoices", _StepStats())
+        tag = stats.get("tag", _StepStats())
+        log.info(
+            "Paperless-Sync: Rechnungen geprüft=%s neu=%s geändert=%s (%.2f s); "
+            "SevDesk-Tag geprüft=%s neu=%s geändert=%s (%.2f s); "
+            "Rückschriebe %.2f s; Belegabgleich %.2f s",
+            inv.checked,
+            inv.new,
+            inv.changed,
+            seconds.get("invoices", 0.0),
+            tag.checked,
+            tag.new,
+            tag.changed,
+            seconds.get("tag", 0.0),
+            seconds.get("write_backs", 0.0),
+            seconds.get("recompute", 0.0),
+        )
+
+    @staticmethod
+    def _count(stats: _StepStats, outcomes) -> None:
+        for outcome in outcomes.values():
+            stats.checked += 1
+            if outcome.result is UpsertResult.NEW:
+                stats.new += 1
+            elif outcome.result is UpsertResult.CHANGED:
+                stats.changed += 1
 
     def _mirrored_fields(
         self,
@@ -410,32 +481,53 @@ class PaperlessSync:
         ids: dict[str, int | None],
         corr_map: dict[int, str],
         recipient_field: SelectField | None = None,
-    ) -> None:
+    ) -> _StepStats:
+        stats = _StepStats()
         doctype_id = ids.get("doctype")
         if doctype_id is None:
             log.warning(
                 "Dokumententyp '%s' in Paperless nicht gefunden",
                 self.settings.paperless_invoice_doctype,
             )
-            return
-        for doc in await client.list_documents(document_type_id=doctype_id):
-            correspondent = await self._correspondent_name(client, doc, corr_map)
-            # Stammdaten vor dem Upsert lesen, damit ein SYNCED-Event nur bei echter
-            # Änderung (Neuanlage/geänderter Titel/Korrespondent) entsteht — sonst würde
-            # invoice_events bei jedem Idle-Sync unbegrenzt wachsen.
-            before = self.repo.get_invoice_by_paperless(doc.id)
-            invoice_id = self.repo.upsert_invoice(
-                paperless_id=doc.id,
-                title=doc.title,
-                correspondent=correspondent,
-                document_date=doc.created,
-                **self._mirrored_fields(client, ids, doc, recipient_field),
-            )
-            is_new = before is None
-            if is_new or before.title != doc.title or before.correspondent != correspondent:
-                self.repo.add_invoice_event(invoice_id, InvoiceEventType.SYNCED)
-            if is_new or before.giro_status == GiroStatus.NONE:
-                await self._extract_and_store(client, ids, invoice_id, doc, corr_map)
+            return stats
+        # Phase 1: Angaben sammeln (Korrespondentenname ggf. per await, kein DB-Schreiben).
+        docs = _unique_docs(await client.list_documents(document_type_id=doctype_id))
+        rows = [
+            await self._upsert_row(client, ids, doc, corr_map, recipient_field) for doc in docs
+        ]
+        # Phase 2: alle Änderungen in einer Transaktion; unveränderte Rechnungen bleiben
+        # unberührt (kein Schreiben, kein Live-Signal).
+        outcomes = self.repo.upsert_invoices(rows)
+        self._count(stats, outcomes)
+        # Phase 3: Folgeschritte je Rechnung. Das SYNCED-Ereignis entsteht nur bei echter
+        # Änderung (Neuanlage/geänderter Titel/Korrespondent) — sonst würde invoice_events
+        # bei jedem Idle-Sync unbegrenzt wachsen.
+        for doc, row in zip(docs, rows, strict=True):
+            outcome = outcomes[doc.id]
+            before = outcome.before
+            if before is None or (
+                before.title != doc.title or before.correspondent != row.correspondent
+            ):
+                self.repo.add_invoice_event(outcome.invoice_id, InvoiceEventType.SYNCED)
+            if before is None or before.giro_status == GiroStatus.NONE:
+                await self._extract_and_store(client, ids, outcome.invoice_id, doc, corr_map)
+        return stats
+
+    async def _upsert_row(
+        self,
+        client: PaperlessClient,
+        ids: dict[str, int | None],
+        doc: PaperlessDocument,
+        corr_map: dict[int, str],
+        recipient_field: SelectField | None,
+    ) -> InvoiceUpsert:
+        return InvoiceUpsert(
+            paperless_id=doc.id,
+            title=doc.title,
+            correspondent=await self._correspondent_name(client, doc, corr_map),
+            document_date=doc.created,
+            **self._mirrored_fields(client, ids, doc, recipient_field),
+        )
 
     async def _sync_sevdesk_tag(
         self,
@@ -443,18 +535,21 @@ class PaperlessSync:
         ids: dict[str, int | None],
         corr_map: dict[int, str],
         recipient_field: SelectField | None = None,
-    ) -> None:
+    ) -> _StepStats:
+        stats = _StepStats()
         tag_id = ids.get("sevdesk_tag")
         if tag_id is None:
-            return
-        for doc in await client.list_documents(tag_ids=[tag_id]):
-            invoice_id = self.repo.upsert_invoice(
-                paperless_id=doc.id,
-                title=doc.title,
-                correspondent=await self._correspondent_name(client, doc, corr_map),
-                document_date=doc.created,
-                **self._mirrored_fields(client, ids, doc, recipient_field),
-            )
+            return stats
+        # Zweiphasig wie ``_sync_invoices``: sammeln, einmal gesammelt schreiben, dann je
+        # Rechnung vormerken/exportieren.
+        docs = _unique_docs(await client.list_documents(tag_ids=[tag_id]))
+        rows = [
+            await self._upsert_row(client, ids, doc, corr_map, recipient_field) for doc in docs
+        ]
+        outcomes = self.repo.upsert_invoices(rows)
+        self._count(stats, outcomes)
+        for doc in docs:
+            invoice_id = outcomes[doc.id].invoice_id
             inv = self.repo.get_invoice(invoice_id)
             if not inv:
                 continue
@@ -503,6 +598,7 @@ class PaperlessSync:
                         outcome.status.value,
                         outcome.message,
                     )
+        return stats
 
     def _blockers_for(self, inv) -> ExportBlockers:
         """``export_blockers`` mit den aktuellen Treffern und dem lokalen Belegabzug."""
