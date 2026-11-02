@@ -35,6 +35,13 @@
      Wertung — die Blockade ist keine. Kontrast 6.3:1, im Band der uebrigen Badges. */
   --violet: #6b4d9e;
   --violet-bg: #efeaf8;
+  /* Seitenleiste: leicht abgesetzte Flaeche, kraeftigere Kante und Markierung der geoeffneten
+     Zeile (Petrol-Hauch eine Stufe dunkler als --accent-soft). Schatten nur fuer die
+     Ueberlagerungsstufen, wo die Leiste ueber der Liste liegt. */
+  --panel-surface: #f7f8f9;
+  --panel-border: #d5dadf;
+  --row-current: #dcebf2;
+  --panel-shadow: -8px 0 24px rgba(16, 24, 32, 0.14);
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 32, 0.06), 0 2px 8px rgba(16, 24, 32, 0.04);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -68,6 +75,10 @@
     --red-bg: #3a1c1a;
     --violet: #b49ae0;
     --violet-bg: #2a2140;
+    --panel-surface: #181b1f;
+    --panel-border: #343a41;
+    --row-current: #1d3b4a;
+    --panel-shadow: -8px 0 24px rgba(0, 0, 0, 0.55);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
   }
 }
@@ -566,3 +577,101 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
    die Daten sind nicht falsch, nur moeglicherweise aelter als sie aussehen. */
 .live-status { margin: 0 0 1rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--accent);
   background: var(--accent-soft); color: var(--ink); font-size: 0.9rem; }
+
+/* Seitenleiste neben den Listen (Design D7) */
+/* Klickbare Listenzeilen. Die geoeffnete Zeile (aria-current) ist deutlich, aber ruhig
+   markiert: Flaeche --row-current plus 1px-Linie im Akzent; kein Randbalken, kein Fettdruck
+   (die Zeile soll nicht springen). */
+.history tr[data-panel-url] { cursor: pointer; }
+.history tr[data-panel-url]:hover td { background: var(--surface-alt); }
+.history tr[data-panel-url][aria-current="true"] td { background: var(--row-current); }
+.history tr[data-panel-url][aria-current="true"] { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+.panel[hidden] { display: none; }
+.panel {
+  background: var(--panel-surface);
+  border: 1px solid var(--panel-border);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 1rem 1.5rem;
+}
+.panel > * { min-width: 0; }
+.panel h1 { margin: 0; }
+.panel h2 { margin-top: 1.25rem; }
+.panel .detail-head { flex-wrap: wrap; }
+.panel .invoice-grid { grid-template-columns: 1fr; }
+.panel .events li { grid-template-columns: 1fr; gap: 0.1rem; }
+.panel .doc-frame { height: clamp(18rem, 60dvh, 48rem); }
+
+/* Auf der vollen Seite steht derselbe Inhalt ohne Leiste: Kopf mit Schliessen entfaellt. */
+#detail .panel-bar { display: none; }
+.panel-bar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: 0.8rem;
+  margin: 0 -1rem 1rem; padding: 0.5rem 1rem;
+  background: var(--panel-surface); border-bottom: 1px solid var(--panel-border);
+}
+.panel-close {
+  min-height: 2.25rem; padding: 0.35rem 0.8rem;
+  background: transparent; color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px;
+  font: inherit; font-size: 0.9rem; cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.panel-close:hover { border-color: var(--ink-soft); }
+.panel-close:active { transform: translateY(1px); }
+.panel-full { font-size: 0.9rem; }
+
+/* Stufe 1: ab 1280px nebeneinander. Das Grid sitzt auf main; alle Geschwister der Leiste
+   (Titel, Hinweise, Filter, Tabelle, Seitenzahlen) bleiben links in Spalte 1, die Leiste
+   spannt rechts ueber alle Zeilen. Der negative untere Rand nimmt ihr die Hoehe aus der
+   Zeilenberechnung, sonst wuerde sie die Zeilen der Liste dehnen. Der Container wird bei
+   offener Leiste breiter (1680 statt 1100/1440px), damit die Liste neben 42% Leiste nicht
+   zusammenfaellt; weniger wichtige Spalten (col-secondary) fallen weg. */
+@media (min-width: 1280px) {
+  .container.has-panel {
+    max-width: 1680px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(28rem, 42%);
+    column-gap: 1.5rem;
+    align-items: start;
+  }
+  .has-panel > :not(.panel) { grid-column: 1; min-width: 0; }
+  .has-panel > .panel {
+    grid-column: 2; grid-row: 1 / span 40;
+    position: sticky; top: 1rem;
+    height: calc(100dvh - 5.5rem);
+    margin-bottom: calc(-1 * (100dvh - 5.5rem));
+    border-radius: var(--radius);
+  }
+  .has-panel .col-secondary { display: none; }
+}
+
+/* Stufe 2: 720–1279px als Ueberlagerung rechts, Liste bleibt vollstaendig darunter. */
+@media (max-width: 1279.98px) {
+  .panel {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 20;
+    width: min(36rem, 90vw);
+    border-width: 0 0 0 1px;
+    box-shadow: var(--panel-shadow);
+  }
+}
+
+/* Stufe 3: unter 720px Vollbild; Schliessen mit 44px-Ziel. */
+@media (max-width: 719.98px) {
+  .panel {
+    inset: 0; width: auto;
+    border-width: 0; box-shadow: none;
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+  }
+  .panel-close { min-height: 44px; min-width: 44px; padding: 0.5rem 1rem; }
+  .panel-full { display: inline-flex; align-items: center; min-height: 44px; }
+  /* Vollbild verdeckt die Liste: sie darf dahinter nicht mitscrollen. */
+  body:has(main.has-panel) { overflow: hidden; }
+}
+
+@media (max-width: 1279.98px) and (prefers-reduced-motion: no-preference) {
+  .panel { animation: panel-in 0.18s cubic-bezier(0.22, 1, 0.36, 1); }
+}
+@keyframes panel-in { from { opacity: 0; transform: translateX(1.5rem); } }

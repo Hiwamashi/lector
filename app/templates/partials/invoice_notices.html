@@ -1,0 +1,88 @@
+{# Hinweise und Rückfragen zur Rechnung (Fehler, Export-Rückfrage, Prüffall). Steht in
+   paperless_doc_body.html direkt unter dem Kopf, damit sie in der Seitenleiste nicht unter der
+   Vorschau verschwinden. Erwartet den Kontext aus main._invoice_detail_context. #}
+{# error_message stammt ausschliesslich aus dem SevDesk-Export (paperless_sync.py). #}
+{% if inv.error_message %}
+<div class="alert">
+  {% if not feature_sevdesk %}
+  <p class="notice-text"><strong>SevDesk-Export ist aus.</strong> Zum Aktivieren
+    <code>FEATURE_SEVDESK_EXPORT=true</code> und <code>SEVDESK_API_TOKEN</code> setzen.</p>
+  {% elif inv.sevdesk_status == "uncertain" %}
+  <p class="notice-text"><strong>Ob der Export nach SevDesk angekommen ist, ist unklar.</strong>
+    Bitte in SevDesk nachsehen, bevor erneut exportiert wird.</p>
+  {% else %}
+  <p class="notice-text"><strong>Export nach SevDesk fehlgeschlagen.</strong>
+    Daten prüfen und erneut exportieren.</p>
+  {% endif %}
+  <p class="notice-text">Grund: {{ inv.error_message }}</p>
+</div>
+{% endif %}
+
+{% set blockers = row.blockers %}
+
+{% if option_missing %}
+<div class="notice notice--info">
+  <p class="notice-text"><strong>Diese Rechnung ist nicht einstufbar.</strong> Im Paperless-Feld
+    „Empfänger“ fehlt die Option „{{ context_label }}“.</p>
+</div>
+{% endif %}
+
+{# Rückfrage nach einem Export-Versuch mit Rückfragegrund (`?ask=1`). Die Gründe werden live
+   berechnet, nicht aus dem Versuch übernommen — so bleibt der Block beim SSE-Refresh stehen
+   und verschwindet, sobald es nichts mehr zu klären gibt. #}
+{% if ask and row.exportable and blockers.reasons %}
+<div class="notice notice--blocked" id="export-ask">
+  <p class="notice-text"><strong>Vor dem Export klären</strong></p>
+  <ul>
+    {% for reason in blockers.reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+  <p class="notice-text">
+    Trotzdem nach SevDesk exportieren?
+    {% if inv.recipient_label and inv.recipient_label != context_label %}
+    Der Empfänger wird dabei auf {{ context_label }} umgestellt.
+    {% endif %}
+  </p>
+  <div class="notice-actions">
+    <form method="post" data-panel-form action="/invoices/{{ inv.id }}/export">
+      <input type="hidden" name="confirm" value="1" />
+      <button type="submit">Trotzdem exportieren</button>
+    </form>
+    <a class="link" href="/paperless/{{ inv.paperless_id }}" data-panel-url="/fragment/paperless/{{ inv.paperless_id }}">Abbrechen</a>
+  </div>
+</div>
+{% endif %}
+
+{% if inv.sevdesk_status == "exported" and not inv.written_back_at %}
+<div class="notice notice--blocked" id="writeback-open">
+  <p class="notice-text">Rückschrieb an Paperless offen — wird beim nächsten Sync nachgeholt.</p>
+</div>
+{% endif %}
+
+{% if inv.sevdesk_status == "review" %}
+<div class="notice notice--blocked" id="review-box">
+  {# Aktuelle Gründe live aus den Blockern; der beim Vormerken gespeicherte Grund steht nur
+     als Herkunft dabei. „Trotzdem exportieren“ schickt KEIN confirm: die Route leitet dann auf
+     die Rückfrage (?ask=1) mit den heutigen Gründen um. #}
+  <p class="notice-text"><strong>Zu prüfen.</strong></p>
+  {% if blockers.hard %}
+  <p class="notice-text">Aktuell gesperrt: {{ blockers.hard }}</p>
+  {% elif blockers.reasons %}
+  <ul>
+    {% for reason in blockers.reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="notice-text">Aktuell liegt kein Rückfragegrund mehr vor.</p>
+  {% endif %}
+  {% if inv.review_reason %}
+  <p class="notice-text">Ursprünglicher Grund: {{ inv.review_reason }}</p>
+  {% endif %}
+  <div class="notice-actions">
+    <form method="post" data-panel-form action="/invoices/{{ inv.id }}/export">
+      <button type="submit" {% if not feature_sevdesk or not row.exportable %}disabled{% endif %}>Trotzdem exportieren</button>
+    </form>
+    <form method="post" data-panel-form action="/invoices/{{ inv.id }}/dismiss">
+      <button type="submit" class="button--quiet">Verwerfen</button>
+    </form>
+  </div>
+</div>
+{% endif %}

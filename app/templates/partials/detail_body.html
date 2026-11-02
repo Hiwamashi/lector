@@ -1,5 +1,6 @@
+{% with page_url="/documents/" ~ doc.id %}{% include "partials/panel_bar.html" %}{% endwith %}
 <header class="detail-head">
-  <h1>{{ doc.original_filename }}</h1>
+  <h1 id="panel-title" tabindex="-1">{{ doc.original_filename }}</h1>
   <span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span>
 </header>
 

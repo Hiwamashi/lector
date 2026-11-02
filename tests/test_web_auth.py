@@ -627,6 +627,34 @@ def test_vorschau_behaelt_eigene_frame_header(tmp_path, monkeypatch, mode):
         assert resp.headers["x-content-type-options"] == "nosniff"
 
 
+@pytest.mark.parametrize("mode", ["none", "paperless"])
+def test_paperless_vorschau_behaelt_frame_header_und_weist_aktive_inhalte_ab(
+    tmp_path, monkeypatch, mode
+):
+    with _make_client(tmp_path, monkeypatch, mode=mode) as (c, application, _):
+        if mode == "paperless":
+            anonym = c.get("/paperless/9/preview", headers=HTML, follow_redirects=False)
+            assert anonym.status_code == 303  # ohne Anmeldung nicht erreichbar
+            _login(c)
+
+        inhalt = {"typ": "application/pdf"}
+
+        async def fake_preview(paperless_id):
+            return b"%PDF-1.4 x", inhalt["typ"]
+
+        monkeypatch.setattr(application.state.sync, "fetch_document_preview", fake_preview)
+        resp = c.get("/paperless/9/preview")
+        assert resp.status_code == 200
+        assert "frame-ancestors 'self'" in resp.headers["content-security-policy"]
+        assert "script-src 'none'" in resp.headers["content-security-policy"]
+        assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["cache-control"] == "private, max-age=300"
+
+        inhalt["typ"] = "text/html"
+        assert c.get("/paperless/9/preview").status_code == 415
+
+
 @pytest.mark.parametrize(
     "content_type", ["application/pdf", "image/png", "image/jpeg", "image/tiff; x=1"]
 )

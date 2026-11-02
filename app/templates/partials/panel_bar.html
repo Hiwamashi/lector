@@ -1,0 +1,7 @@
+{# Leiste oben in der Seitenleiste: Schließen und „Als Seite öffnen“. Erwartet `page_url` (per
+   `{% with %}` gesetzt). Steht im Fragment, damit sie einen Fragment-Refresh überlebt; auf der
+   vollen Seite (#detail) ist sie überflüssig und wird per CSS ausgeblendet. #}
+<div class="panel-bar">
+  <button type="button" class="panel-close" data-panel-close aria-label="Seitenleiste schließen">Schließen ✕</button>
+  <a class="link panel-full" href="{{ page_url }}">Als Seite öffnen</a>
+</div>

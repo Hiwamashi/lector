@@ -53,6 +53,7 @@ Rechnungen `queued`. Die Prüfungen laufen in beiden Wegen gleich (siehe
 | [sync-und-aktionen.md](sync-und-aktionen.md) | `app/paperless_sync.py`, `app/sevdesk_export_checks.py`, Worker-Loop, UI-Routen |
 | [rechnungs-ui.md](rechnungs-ui.md) | Rechnungs-UI: Export-Übersicht, Dokumentdatum, Spalten-Sortierung, Dokumentvorschau |
 | [empfaenger-zuordnung.md](empfaenger-zuordnung.md) | Empfänger pro Dokument (select-Feld) + KI-Vorschlag inkl. IT-Wahrscheinlichkeit (`app/recipient_llm.py`) |
+| [dokumentansicht.md](dokumentansicht.md) | `app/main.py` (Routen `/paperless/{id}`, Vorschau-Proxy, Seitenleiste), `app/paperless_sync.py` (`load_document_view`, Namens-Cache), `app/static/app.js` (Seitenleiste) | Dokumentansicht eines Paperless-Dokuments als Seite und Seitenleiste, lesend bis auf Lector-Angaben |
 
 Konfiguration aller Variablen: [../konfiguration.md](../konfiguration.md).
 

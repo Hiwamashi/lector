@@ -20,8 +20,53 @@ def client(tmp_path, monkeypatch):
 
     app.config.get_settings.cache_clear()
     importlib.reload(app.main)
+    _fake_document_view(monkeypatch)
     with TestClient(app.main.app) as c:
         yield c, app.main.app
+
+
+def _fake_document_view(monkeypatch):
+    """Ersetzt die Paperless-Abrufe der Dokumentansicht durch einen Stub.
+
+    ``view_enabled`` gilt als gegeben und ``load_document_view`` baut die Ansicht aus der
+    Lector-Rechnung (Paperless-ID 404404 steht für „Paperless kennt das Dokument nicht“).
+    ``recipient_enabled`` bleibt unberührt, damit die Empfänger-Tests ohne Anbindung gelten.
+    """
+    from datetime import UTC, datetime
+
+    from app.paperless_sync import DocumentView, PaperlessSync
+
+    async def fake_load(self, paperless_id):
+        if paperless_id == 404404:
+            return None
+        inv = self.repo.get_invoice_by_paperless(paperless_id)
+        return DocumentView(
+            paperless_id=paperless_id,
+            title=(inv.title if inv else None) or f"Dokument {paperless_id}",
+            correspondent=inv.correspondent if inv else None,
+            document_type=None,
+            created=datetime(2026, 6, 6, tzinfo=UTC),
+            added=None,
+            archive_serial_number=None,
+            page_count=None,
+            tags=["steuer"],
+            custom_fields=[],
+            notes=[],
+            invoice=inv,
+            recipient_field_present=False,
+            recipient_options=[],
+            current_recipient=None,
+        )
+
+    monkeypatch.setattr(PaperlessSync, "view_enabled", property(lambda self: True))
+    monkeypatch.setattr(PaperlessSync, "load_document_view", fake_load)
+
+
+def _rechnungsbereich_an(monkeypatch):
+    """Schaltet den Rechnungsbereich der Dokumentansicht ein (``sync.enabled``, ohne Netzwerk)."""
+    from app.paperless_sync import PaperlessSync
+
+    monkeypatch.setattr(PaperlessSync, "enabled", property(lambda self: True))
 
 
 def test_healthz(client):
@@ -676,9 +721,10 @@ def test_invoices_sorting_changes_order(client):
     assert frag.text.index("Alpha") < frag.text.index("Beta")
 
 
-def test_rechnungsdetail_zeigt_ereigniszeit_formatiert(client):
+def test_rechnungsdetail_zeigt_ereigniszeit_formatiert(client, monkeypatch):
     """Die Ereigniszeiten der Rechnungen standen roh und in UTC da, waehrend die
     uebrige App Ortszeit im Format TT.MM.JJJJ HH:MM zeigt."""
+    _rechnungsbereich_an(monkeypatch)
     import re
 
     c, application = client
@@ -707,7 +753,8 @@ def test_sort_links_url_encode_filters(client):
     assert "&q=Müller & Co=1" not in resp.text
 
 
-def test_invoice_detail_shows_document_date(client):
+def test_invoice_detail_shows_document_date(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     c, application = client
     repo = application.state.repo
     inv_id = repo.upsert_invoice(
@@ -2020,6 +2067,7 @@ def test_hinweis_bei_sicher_fehlender_kontext_option(client):
 
 
 def test_export_mit_rueckfragegrund_fragt_nach_statt_zu_exportieren(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     from app.models import SevdeskStatus
 
     c, application = client
@@ -2065,6 +2113,7 @@ def test_export_mit_confirm_reicht_die_bestaetigung_weiter(client, monkeypatch):
 
 
 def test_export_gesperrte_rechnung_zeigt_hinweis_ohne_bestaetigen(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     from app.models import SevdeskStatus
 
     c, application = client
@@ -2157,6 +2206,7 @@ def test_sevdesk_refresh_ruft_abruf_und_kehrt_mit_filtern_zurueck(client, monkey
 
 
 def test_entscheidung_ueber_treffer_berechnet_abgleich_neu(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     from app.models import InvoiceVoucherMatch, MatchKind, SevdeskVoucher
 
     c, application = client
@@ -2209,6 +2259,7 @@ def test_entscheidung_ueber_treffer_berechnet_abgleich_neu(client, monkeypatch):
 
 
 def test_dismiss_verwirft_pruefall(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     from app.models import SevdeskStatus
 
     c, application = client
@@ -2231,7 +2282,8 @@ def test_dismiss_verwirft_pruefall(client, monkeypatch):
     assert repo.list_invoice_events(inv_id)[-1]["event_type"] == "sevdesk_dismissed"
 
 
-def test_detail_zeigt_kontext_mit_quelle_und_begruendung(client):
+def test_detail_zeigt_kontext_mit_quelle_und_begruendung(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     c, application = client
     inv_id = _invoice(application.state.repo, 1, "Mit Empfaenger", label="IT-Consulting")
 
@@ -2247,6 +2299,7 @@ def test_detail_zeigt_kontext_mit_quelle_und_begruendung(client):
 
 
 def test_review_kasten_zeigt_aktuelle_gruende_und_sendet_kein_confirm(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     c, application = client
     _sevdesk_on(application, monkeypatch)
     repo = application.state.repo
@@ -2266,6 +2319,7 @@ def test_review_kasten_zeigt_aktuelle_gruende_und_sendet_kein_confirm(client, mo
 
 
 def test_review_kasten_ohne_aktuellen_grund_sagt_das(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     c, application = client
     _sevdesk_on(application, monkeypatch)
     repo = application.state.repo
@@ -2395,7 +2449,8 @@ def test_abgelehnter_treffer_bei_uncertain_aendert_status_nicht(client, monkeypa
     assert repo.get_invoice(inv_id).sevdesk_status == SevdeskStatus.UNCERTAIN
 
 
-def test_rueckschrieb_offen_in_detail_und_liste_bis_nachgeholt(client):
+def test_rueckschrieb_offen_in_detail_und_liste_bis_nachgeholt(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     from app.models import SevdeskStatus
 
     c, application = client
@@ -2413,7 +2468,8 @@ def test_rueckschrieb_offen_in_detail_und_liste_bis_nachgeholt(client):
     assert "Rückschrieb offen" not in c.get("/invoices").text
 
 
-def test_rueckschrieb_fehler_ereignis_hat_label_im_verlauf(client):
+def test_rueckschrieb_fehler_ereignis_hat_label_im_verlauf(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
     from app.models import InvoiceEventType
 
     c, application = client

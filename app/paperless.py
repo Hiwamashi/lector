@@ -38,6 +38,20 @@ class PaperlessDocument:
     original_file_name: str | None
     # Dokumentdatum aus Paperless (ISO-8601, Feld ``created``).
     created: str | None = None
+    # Hinzufügedatum (ISO-8601, Feld ``added``), Archivnummer (ASN) und Seitenzahl, falls
+    # Paperless sie liefert.
+    added: str | None = None
+    archive_serial_number: int | None = None
+    page_count: int | None = None
+
+
+@dataclass
+class NoteEntry:
+    """Eine Paperless-Notiz mit Verfasser und Zeitpunkt (nur zur Anzeige)."""
+
+    text: str
+    author: str | None
+    created: str | None
 
 
 @dataclass
@@ -286,6 +300,22 @@ class PaperlessClient:
         items = await self._paged("/api/correspondents/")
         return {int(c["id"]): c.get("name", "") for c in items if c.get("id") is not None}
 
+    async def _name_map(self, path: str) -> dict[int, str]:
+        items = await self._paged(path)
+        return {int(i["id"]): str(i.get("name") or "") for i in items if i.get("id") is not None}
+
+    async def document_type_map(self) -> dict[int, str]:
+        """Liefert ``{id: name}`` aller Dokumenttypen."""
+        return await self._name_map("/api/document_types/")
+
+    async def tag_map(self) -> dict[int, str]:
+        """Liefert ``{id: name}`` aller Tags."""
+        return await self._name_map("/api/tags/")
+
+    async def custom_field_map(self) -> dict[int, str]:
+        """Liefert ``{id: name}`` aller Custom Fields."""
+        return await self._name_map("/api/custom_fields/")
+
     async def download_original(self, doc_id: int) -> tuple[bytes, str]:
         resp = await self._client.get(
             f"/api/documents/{doc_id}/download/", params={"original": "true"}
@@ -321,6 +351,9 @@ class PaperlessClient:
             custom_fields=list(item.get("custom_fields") or []),
             original_file_name=item.get("original_file_name"),
             created=item.get("created"),
+            added=item.get("added"),
+            archive_serial_number=item.get("archive_serial_number"),
+            page_count=item.get("page_count"),
         )
 
     # ---- Custom Fields ---------------------------------------------------
@@ -425,3 +458,36 @@ class PaperlessClient:
         data = resp.json()
         items = data.get("results", []) if isinstance(data, dict) else data
         return [str(n.get("note") or "") for n in items if isinstance(n, dict)]
+
+    async def get_note_entries(self, doc_id: int) -> list[NoteEntry]:
+        """Liest die Notizen eines Dokuments mit Verfasser und Zeitpunkt (für die Anzeige).
+
+        Der Verfasser kommt je nach Paperless-Version als Objekt (``username``, Vor-/Nachname)
+        oder als ID; ohne Angabe bleibt er ``None``.
+        """
+        resp = await self._client.get(f"/api/documents/{doc_id}/notes/")
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("results", []) if isinstance(data, dict) else data
+        entries: list[NoteEntry] = []
+        for n in items:
+            if not isinstance(n, dict):
+                continue
+            entries.append(
+                NoteEntry(
+                    text=str(n.get("note") or ""),
+                    author=_note_author(n.get("user")),
+                    created=n.get("created"),
+                )
+            )
+        return entries
+
+
+def _note_author(user: object) -> str | None:
+    """Bildet den Verfassernamen einer Notiz (Objekt mit Namen oder ``username``)."""
+    if isinstance(user, dict):
+        full = " ".join(
+            p for p in (user.get("first_name"), user.get("last_name")) if p
+        ).strip()
+        return full or user.get("username") or None
+    return None

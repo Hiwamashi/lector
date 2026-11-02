@@ -884,3 +884,37 @@ Ungültige KI-Werte führen je Batch-Lauf weiterhin zu einer erneuten Anfrage (K
 - **Neu:** Schnellfilter als Chips in allen Listen (Rechnungen, Empfänger, Dokumente:
   Zeitraum), Klick filtert sofort. Details: `feature-documentation/ui-erscheinungsbild.md`,
   Komponente in `DESIGN.md`.
+
+## Zusatz-Feature: Paperless-Dokumentansicht (paperless-dokumentansicht) — umgesetzt, Abnahme auf dem NAS offen
+
+Lector zeigt Paperless-Dokumente lesend (Vorschau, Metadaten, Notizen) als eigene Seite
+`/paperless/{id}` und als Seitenleiste in Rechnungen, Empfänger und Dokumenten. Die bisherige
+Rechnungsdetailseite ist darin aufgegangen; alte Adressen leiten weiter. Bearbeitet wird nur, was zu
+Lector-Abläufen gehört (Empfänger, Rechnungsdaten, „überwiesen“, SevDesk-Export). Grenze und
+Sichtbarkeit (jedes Dokument, das Lectors Token lesen darf) stehen in `PRODUCT.md`. Change:
+`openspec/changes/paperless-dokumentansicht/`. Doku: `feature-documentation/paperless-integration/dokumentansicht.md`
+(neu), `feature-documentation/ui-erscheinungsbild.md` (Abschnitt „Seitenleiste“), `DESIGN.md`
+(Abschnitt „Seitenleiste“).
+
+| Feature | Status |
+|---|---|
+| Paperless-Client: Dokumentfelder, Namenslisten, Notizen mit Verfasser (`app/paperless.py`) | ✅ |
+| Namens-Cache mit 10 Minuten Lebensdauer (`app/paperless_sync.py`) | ✅ |
+| Dokumentansicht als Seite `/paperless/{id}` und als Fragment | ✅ |
+| Vorschau-Proxy `/paperless/{id}/preview` für jedes Dokument, Typprüfung und Frame-/CSP-Header | ✅ |
+| Rechnungsdetailseite in der Dokumentansicht, alte Adresse `/invoices/{id}` leitet weiter | ✅ |
+| Seitenleiste in Rechnungen, Empfänger und Dokumenten, Zustand in `?doc=` | ✅ |
+| Tastatur (↑/↓, j/k, Esc, Enter) | ✅ |
+| Aktionen aus der Seitenleiste per fetch ohne Neuladen, SSE-Refresh der Leiste | ✅ |
+| Gesamtprüfung `uv run pytest`, `uv run ruff check .`, `graphify update .` (Task 6.3) | offen |
+| Manuelle Browser-Prüfung: Öffnen, Wechseln, Tastatur, Formulare, SSE (Tasks 4.1 bis 4.4, 5.1) | offen (manuell) |
+| Abnahme auf dem NAS nach Rollout (Task 6.4) | offen (manuell) |
+
+Keine Datenmigration (`design.md`, Migration Plan). Rollback über das vorherige Image.
+
+Offen und bewusst nicht umgesetzt:
+
+- Die Leiste blättert am Listenende nicht auf die nächste Seite weiter.
+- Die Vorschau in der Leiste misst `clamp(18rem, 60dvh, 48rem)`; der Design-Entwurf sah `flex: 1` vor.
+- Folge-Change `scan-paperless-verknuepfung` (geplant): Verknüpfung von Scans mit Paperless über die
+  Prüfsumme und Vorschau des lokalen Originals in der Dokumente-Leiste.

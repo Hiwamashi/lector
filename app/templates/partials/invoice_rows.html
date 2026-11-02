@@ -1,4 +1,4 @@
-{% set cols = 11 if sevdesk_enabled else 10 %}
+{% set cols = 10 if sevdesk_enabled else 9 %}
 {% if not rows %}
 <tr class="empty"><td colspan="{{ cols }}">
   {% if filtered %}
@@ -17,6 +17,7 @@
 {% set inv = row.inv %}
 {% set m = row.match %}
 <tr data-row-id="{{ inv.id }}"
+    {%- if panel_enabled %} data-panel-url="/fragment/paperless/{{ inv.paperless_id }}" data-page-url="/paperless/{{ inv.paperless_id }}" data-paperless-id="{{ inv.paperless_id }}"{% if current_doc == inv.paperless_id %} aria-current="true"{% endif %}{% endif %}
     data-rev="{{ inv.giro_status }}:{{ inv.sevdesk_status }}:{{ '1' if inv.paid else '0' }}:{{ row.bucket }}:{{ m.state }}:{{ m.voucher_id or '' }}:{{ '1' if inv.written_back_at else '0' }}">
   {% if sevdesk_enabled %}
   <td class="select-col">
@@ -27,10 +28,10 @@
   </td>
   {% endif %}
   <td class="invoice-date">{{ inv.document_date | fmt_date }}</td>
-  <td class="filename"><a href="/invoices/{{ inv.id }}">{{ inv.title or ("#" ~ inv.paperless_id) }}</a></td>
-  <td>{{ inv.correspondent or "—" }}</td>
+  <td class="filename"><a href="{{ '/paperless/' ~ inv.paperless_id if panel_enabled else '/invoices/' ~ inv.id }}">{{ inv.title or ("#" ~ inv.paperless_id) }}</a></td>
+  <td class="col-secondary">{{ inv.correspondent or "—" }}</td>
   <td class="amount">{{ inv.amount | fmt_amount(inv.currency) }}</td>
-  <td>
+  <td class="col-secondary">
     <span class="badge badge--ctx-{{ row.bucket }}">{{ row | ctx_label(context_label) }}</span>
     {% set source = row.assessment | ctx_source_label %}
     {% if row.assessment.confidence is not none or source %}
@@ -40,19 +41,18 @@
     </span>
     {% endif %}
   </td>
-  <td>
+  <td class="col-secondary">
     <span class="badge badge--match-{{ m.state }}">{{ match_state_labels[m.state] }}</span>
     {% if m.voucher_id and m.state != "unavailable" %}
     <span class="cell-sub">Beleg {{ m.voucher_id }}{% if m.state == "possible_duplicate" and m.score is not none %} · Score {{ m.score | fmt_score }}{% endif %}</span>
     {% endif %}
   </td>
-  <td><span class="badge badge--giro-{{ inv.giro_status }}">{{ giro_labels[inv.giro_status] }}</span></td>
+  <td class="col-secondary"><span class="badge badge--giro-{{ inv.giro_status }}">{{ giro_labels[inv.giro_status] }}</span></td>
   <td><span class="badge badge--sevdesk-{{ inv.sevdesk_status }}">{{ sevdesk_labels[inv.sevdesk_status] }}</span>
     {% if inv.sevdesk_status == "exported" and not inv.written_back_at %}
     <span class="badge badge--pending" title="Der Rückschrieb nach Paperless steht noch aus">Rückschrieb offen</span>
     {% endif %}
   </td>
-  <td>{{ "Ja" if inv.paid else "—" }}</td>
-  <td><a class="link" href="/invoices/{{ inv.id }}" aria-label="Details zu {{ inv.title or ('Rechnung #' ~ inv.paperless_id) }}">Details</a></td>
+  <td class="col-secondary">{{ "Ja" if inv.paid else "—" }}</td>
 </tr>
 {% endfor %}

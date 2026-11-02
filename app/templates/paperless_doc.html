@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ view.title }} — Lector{% endblock %}
+{% block content %}
+{% if show_invoice %}
+<a class="link back" href="/invoices">← Alle Rechnungen</a>
+{% else %}
+<a class="link back" href="/empfaenger">← Empfänger</a>
+{% endif %}
+<div id="detail" data-fragment="/fragment/paperless/{{ view.paperless_id }}{% if ask %}?ask=1{% endif %}">
+  {% include "partials/paperless_doc_body.html" %}
+</div>
+{% endblock %}

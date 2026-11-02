@@ -35,7 +35,7 @@ Original → processed (Erfolg) / error (endgültiger Fehler)
 | [web-ui-sse.md](web-ui-sse.md) | `app/main.py`, `app/events.py`, `app/templates/`, `app/static/` | Web-UI & Live-Updates |
 | [ui-erscheinungsbild.md](ui-erscheinungsbild.md) | `app/static/app.css`, `app/static/app.js` (Markierung) | Farbtokens, Dunkel-Modus, Zustände, Aufleuchten |
 | [ui-texte.md](ui-texte.md) | `app/main.py` (Labels, Filter), `app/templates/**` | Anzeigenamen, Betragsformat, Leer-/Fehlerzustände, Glossar |
-| [paperless-integration/](paperless-integration/README.md) | `app/paperless.py`, `app/girocode.py`, `app/sevdesk.py`, `app/paperless_sync.py` | GiroCode-Anzeige & SevDesk-Export (entkoppelt) |
+| [paperless-integration/](paperless-integration/README.md) | `app/paperless.py`, `app/girocode.py`, `app/sevdesk.py`, `app/paperless_sync.py` | GiroCode-Anzeige, SevDesk-Export (entkoppelt) und Dokumentansicht mit Seitenleiste ([dokumentansicht.md](paperless-integration/dokumentansicht.md)) |
 | [startvalidierung-und-healthcheck.md](startvalidierung-und-healthcheck.md) | `app/config.py`, `app/main.py`, `app/worker.py`, `app/repository.py` | Startvalidierung, `/healthz`, Container-`HEALTHCHECK` |
 | [docker-deployment.md](docker-deployment.md) | `Dockerfile`, `docker-compose.example.yml` | Deployment |
 | [registry-deployment.md](registry-deployment.md) | `.github/workflows/image.yml` | Image-Auslieferung per GitHub Actions in die Scaleway-Registry (Ausrollen: Repository `nas-stacks`) |

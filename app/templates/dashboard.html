@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block container_class %}{% if panel_open %} has-panel{% endif %}{% endblock %}
 {% block content %}
 <section class="tiles">
   {% set tile_order = ["processing", "pending", "blocked", "done", "skipped_erechnung", "failed"] %}
@@ -81,8 +82,8 @@
        data-fragment="/fragment/history?status={{ filters.status }}&q={{ filters.q }}&period={{ filters.period }}">
   <thead>
     <tr>
-      <th>Datei</th><th>Status</th><th>Typ</th><th>Fortschritt</th>
-      <th>Versuche</th><th>Erstellt</th><th></th>
+      <th>Datei</th><th>Status</th><th class="col-secondary">Typ</th><th>Fortschritt</th>
+      <th class="col-secondary">Versuche</th><th class="col-secondary">Erstellt</th><th></th>
     </tr>
   </thead>
   <tbody id="history-body">
@@ -90,4 +91,6 @@
   </tbody>
 </table>
 </div>
+
+{% include "partials/panel_aside.html" %}
 {% endblock %}

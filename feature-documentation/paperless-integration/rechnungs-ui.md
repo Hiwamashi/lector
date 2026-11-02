@@ -1,6 +1,8 @@
 # Rechnungs-UI: Export-Übersicht, Dokumentdatum, Sortierung & Dokumentvorschau
 
-Erweiterungen der Rechnungsoberfläche (`/invoices` und `/invoices/{id}`). Abschnitt 1 bis 3 sind
+Erweiterungen der Rechnungsoberfläche (`/invoices`). Die Rechnungsdetailseite `/invoices/{id}` ist
+seit dem Change `paperless-dokumentansicht` eine Weiterleitung auf die Dokumentansicht
+(`/paperless/{paperless_id}`, siehe [dokumentansicht.md](dokumentansicht.md)). Abschnitt 1 bis 3 sind
 die Komfortfunktionen des Sync-Features, Abschnitt 4 ist die Export-Übersicht des Changes
 `sevdesk-export-uebersicht`. Alle bauen auf dem bestehenden
 [Sync-Feature](sync-und-aktionen.md) auf.
@@ -39,16 +41,19 @@ Jede Spaltenüberschrift der Liste ist ein Sortier-Link.
 
 ## 3. Sprung zum Dokument + eingebettete Vorschau
 
-In der Detailansicht (`partials/invoice_detail_body.html`):
+In der Dokumentansicht (Kopf und Vorschau in `partials/paperless_doc_body.html`, Seite
+`/paperless/{paperless_id}` bzw. Seitenleiste):
 
-- **„In Paperless öffnen"-Link:** öffnet das Dokument in Paperless. Verwendet
+- **„In Paperless öffnen ↗"-Link:** öffnet das Dokument in Paperless. Verwendet
   `PAPERLESS_PUBLIC_URL` (Fallback: `PAPERLESS_URL`). Wichtig, weil im Compose-Stack
   `PAPERLESS_URL` die container-interne Adresse (`http://webserver:8000`) ist, die im Browser
   **nicht** auflösbar ist.
-- **Eingebettete PDF-Vorschau:** `<object data="/invoices/{id}/preview">`. Die Route
-  `invoice_preview` (`app/main.py`) lädt die Vorschau serverseitig über
-  `PaperlessSync.fetch_preview` → `PaperlessClient.download_preview` (Paperless-Endpoint
-  `/api/documents/{id}/preview/`) und reicht sie über **Lectors eigene Origin** durch.
+- **Eingebettete PDF-Vorschau:** `<object data="/paperless/{paperless_id}/preview">`. Die Route
+  `paperless_preview` (`app/main.py`) lädt die Vorschau serverseitig über
+  `PaperlessSync.fetch_document_preview` → `PaperlessClient.download_preview` (Paperless-Endpoint
+  `/api/documents/{id}/preview/`) und reicht sie über **Lectors eigene Origin** durch. Die alte
+  Adresse `/invoices/{id}/preview` delegiert an denselben Kern (`_preview_response`), nutzt aber
+  `PaperlessSync.fetch_preview` und damit nur mit `FEATURE_PAPERLESS_SYNC`.
 
   **Warum Proxy statt direktem iframe?** Paperless sendet `X-Frame-Options: SAMEORIGIN`
   (gegen die Live-Instanz verifiziert). Ein iframe von Lectors Origin auf Paperless würde
@@ -68,7 +73,7 @@ Zeile zeigt Einstufung, Abgleich und Exportsperren. Die Berechnung liegt in
 |---|---|---|
 | Auswahl | Checkbox für die Mehrfachauswahl | nur bei aktivem SevDesk-Export; Checkbox nur bei Zeilen **ohne harte Sperre** |
 | Datum | Dokumentdatum | immer |
-| Titel | Link zur Detailseite | immer |
+| Titel | Link zur Dokumentansicht `/paperless/{paperless_id}`; mit Seitenleiste öffnet ein Klick die Leiste | immer |
 | Korrespondent | Name | immer |
 | Betrag | Betrag mit Währung | immer |
 | Kontext | Bereichslabel, Konfidenz, Quelle | siehe [kontext-einstufung.md](kontext-einstufung.md) |
@@ -76,7 +81,8 @@ Zeile zeigt Einstufung, Abgleich und Exportsperren. Die Berechnung liegt in
 | GiroCode | Zahldaten-Status | immer |
 | SevDesk | Export-Status | immer |
 | Überwiesen | „Ja“ oder „—“ | immer |
-| (Link) | „Details“ | immer |
+
+Eine Spalte „Details“ mit eigenem Link gibt es nicht mehr. Der Titel führt zur Dokumentansicht.
 
 Die Abgleich-Spalte zeigt je nach Zustand die Labels „Abgleich nicht verfügbar“, „In SevDesk“,
 „Beleg in SevDesk nicht gefunden“, „Mögliche Dublette“, „Ohne Betrag nicht prüfbar“ oder
@@ -149,7 +155,7 @@ Knöpfe (nur bei aktivem SevDesk-Export):
 - ein Link „← Alle Rechnungen“, der über das Feld `back` mit den Filtern zurückführt.
 
 Eine Rechnung mit Rückfragegrund wird übersprungen und nennt den Grund. Bestätigen lässt sich
-dort nichts. Dafür gibt es die Detailseite.
+dort nichts. Dafür gibt es die Dokumentansicht der Rechnung (`/paperless/{paperless_id}`).
 
 ### Rückkehr-URL (Feld `back`)
 
@@ -158,9 +164,12 @@ eine Rückkehr-URL, und zwar nur mit diesen Parametern: `q`, `sevdesk`, `ctx`, `
 `review`, `sort`, `dir`. Nur Parameter mit Wert bleiben erhalten. Die URL ist immer relativ auf
 `/invoices`. Ein fremder Pfad aus dem Formularfeld wird nie übernommen.
 
-### Detailseite (`/invoices/{id}`)
+### Rechnungsbereich der Dokumentansicht
 
-Die Detailseite zeigt zusätzlich zu den bisherigen Zahldaten und dem Verlauf:
+Die alte Adresse `/invoices/{id}` leitet mit 303 auf `/paperless/{paperless_id}` weiter (`?ask=1`
+bleibt erhalten). Der Rechnungsbereich erscheint dort nur, wenn `FEATURE_PAPERLESS_SYNC` aktiv ist
+und Lector das Dokument als Rechnung führt. Er steht in `partials/invoice_sections.html`, die Hinweise
+oben in `partials/invoice_notices.html`. Der Rechnungsbereich zeigt zusätzlich zu den Zahldaten und dem Verlauf:
 
 - **Kontext:** Bereichslabel, Konfidenz, Quelle und die Begründung je Quelle.
 - **SevDesk-Abgleich:** der Zustand mit Beleg-ID. Bei „In SevDesk“ ein Link „In SevDesk öffnen“.
@@ -191,8 +200,9 @@ Das Feld „Empfänger“ (Zahldaten, Rückschrieb) und die Ereignisse der Rechn
 |---|---|---|
 | `PAPERLESS_PUBLIC_URL` | — | Browser-erreichbare Paperless-URL für den Sprung-Link. Leer = Fallback auf `PAPERLESS_URL`. Für die Vorschau **nicht** nötig. |
 
-Die Vorschau ist aktiv, sobald `PAPERLESS_URL` und `PAPERLESS_TOKEN` gesetzt sind
-(`preview_enabled` im Detail-Kontext).
+Die Vorschau der Dokumentansicht ist aktiv, sobald `PAPERLESS_URL` und `PAPERLESS_TOKEN` gesetzt sind
+(`PaperlessSync.view_enabled`, unabhängig von `FEATURE_PAPERLESS_SYNC`). Das Kontextfeld
+`preview_enabled` der früheren Detailseite wird von keinem Template mehr gelesen.
 
 Die SevDesk-Variablen für die Übersicht (`SEVDESK_CONTEXT_LABEL`, `SEVDESK_CONTEXT_MIN_CONFIDENCE`,
 `SEVDESK_MATCH_WINDOW_DAYS`, `SEVDESK_MATCH_MIN_SCORE`, `SEVDESK_VOUCHER_SYNC_MINUTES`) stehen in

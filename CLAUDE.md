@@ -21,7 +21,7 @@ Auto-Rotate).
 
 Lector ist ein lokaler Backend-Service (zusätzlicher Docker-Container im bestehenden Paperless-ngx-Compose-Stack). Er überwacht einen Eingangsordner, veredelt eingehende Dokumente (Bilder, PDF, TIFF) per Cloud-OCR (Google Document AI) zu durchsuchbaren „Sandwich"-PDFs und legt sie für den automatischen Import in Paperless-ngx ab. E-Rechnungen (XRechnung, ZUGFeRD/Factur-X) werden deterministisch erkannt und **unverändert** durchgereicht.
 
-**Kernprinzip:** Lector schiebt sich als reiner Veredelungsschritt **vor** Paperless, ersetzt es nicht. Es kümmert sich ausschließlich um Texterkennung und Bildaufbereitung. Klassifizierung, Tags und Korrespondenten bleiben vollständig bei Paperless.
+**Kernprinzip:** Lector schiebt sich als Veredelungsschritt **vor** Paperless, ersetzt es nicht. Lector ist die Oberfläche für den Alltag, Paperless das Backend für Details und Pflege. Der Veredelungskern kümmert sich um Texterkennung und Bildaufbereitung; Rechnungs- und Empfängerabläufe sowie die lesende Dokumentansicht sind Zusätze darüber (Grenze siehe `PRODUCT.md`). Klassifizierung, Tags, Korrespondenten, Dokumenttypen und Berechtigungen bleiben vollständig bei Paperless.
 
 ## Tech-Stack
 
@@ -86,7 +86,9 @@ Vollständige Liste inkl. der Paperless-/SevDesk-Variablen: `.env.example` und
 - **Paperless muss `PAPERLESS_OCR_MODE: skip` setzen** (am `webserver`-Service), sonst überschreibt Tesseract den eingebetteten Document-AI-Textlayer.
 - **Ausgabe-Eigentümerschaft:** Ergebnis-PDFs nach `consume` mit UID/GID **1000** schreiben (geteilter Ordner mit Paperless).
 - **Anmeldung optional:** Standard `AUTH_MODE=none` (anmeldefrei, LAN-Betrieb), wahlweise `AUTH_MODE=paperless` (Anmeldung über Paperless, öffentlicher Betrieb hinter HTTPS-Proxy). Siehe `feature-documentation/web-zugang.md`.
-- **Explizit ausgeschlossen:** inhaltliche Datenextraktion/Klassifizierung/Tags (Aufgabe von Paperless), eigenes Scannen, Cloud-Anbindung außer der OCR-Engine.
+- **Explizit ausgeschlossen:** Klassifizierung im Sinn von Dokumenttyp, Tags und Korrespondent (Aufgabe von Paperless) und eigenes Scannen.
+- **Inhaltliche Auswertung nur für Lector-eigene Abläufe:** Zahldaten für den GiroCode, Empfänger-Vorschlag, Kontext-Einstufung „IT-Consulting“ und SevDesk-Abgleich (Paperless-Integration, standardmäßig aus).
+- **Externe Dienste:** Google Document AI (OCR, Kern); optional und nur wenn konfiguriert die SevDesk-API und die Anthropic-API (KI-Empfänger-Vorschlag). Weitere Cloud-Anbindungen nicht ohne ausdrückliche Entscheidung.
 - **Datei-Upload über Web-UI:** vorhanden, ohne Größenbegrenzung. Der Upload unterliegt dem Zugangsschutz der Oberfläche (bei `AUTH_MODE=paperless` ist Anmeldung erforderlich). Der Upload endet im Eingangsordner; von dort läuft der bestehende Watch-Folder-Weg.
 - **E-Rechnungs-Bypass ist deterministisch** — niemals per KI/OCR raten.
 

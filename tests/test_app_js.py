@@ -99,6 +99,8 @@ global.document = {
   // app.js haengt einen delegierten change-Listener fuer die Mehrfachauswahl der
   // Rechnungsliste an; der Harness braucht ihn nicht auszuloesen.
   addEventListener: () => {},
+  // Zeilen der Seitenleiste (tr[data-panel-url]): dieses Szenario hat keine.
+  querySelectorAll: () => [],
   querySelector: (sel) => {
     if (sel.startsWith("table.history")) return table;
     // Marker eines laufenden KI-Laufs — Signal fuer den Abfragetakt in app.js.
@@ -116,6 +118,8 @@ global.document = {
 // assign() zeichnet die Umleitung auf, statt zu navigieren.
 const umleitungen = [];
 global.window = {
+  // Seitenleiste (popstate) haengt am window; hier ungenutzt.
+  addEventListener: () => {},
   EventSource: function () {},
   location: {
     pathname: scenario.pathname || "/empfaenger", search: scenario.search || "",

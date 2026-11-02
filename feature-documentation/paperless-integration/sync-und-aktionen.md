@@ -2,7 +2,9 @@
 
 **Module:** `app/paperless_sync.py` (Orchestrierung), `app/sevdesk_export_checks.py`
 (Prüfungen vor dem Export, `ExportOutcome`), `app/worker.py` (`_paperless_loop`),
-`app/main.py` (Routen), Templates `invoices.html` / `invoice_detail.html` + Partials.
+`app/main.py` (Routen), Templates `invoices.html` und `partials/invoice_rows.html` sowie die
+Dokumentansicht (`paperless_doc.html`, `partials/paperless_doc_body.html`, Rechnungsbereich in
+`partials/invoice_sections.html` und `partials/invoice_notices.html`).
 Abgleich und Einstufung: [sevdesk-abgleich.md](sevdesk-abgleich.md),
 [kontext-einstufung.md](kontext-einstufung.md).
 
@@ -221,7 +223,7 @@ Der offene Rückschrieb ist außerdem sichtbar:
 
 - **Listenzeile:** Kennzeichen „Rückschrieb offen“, solange der Status `exported` ist und
   `written_back_at` leer bleibt.
-- **Detailseite:** Hinweis „Rückschrieb an Paperless offen — wird beim nächsten Sync nachgeholt.“
+- **Dokumentansicht (Rechnungsbereich):** Hinweis „Rückschrieb an Paperless offen — wird beim nächsten Sync nachgeholt.“ (`partials/invoice_notices.html`)
 - **Live-Aktualisierung:** `data-rev` der Zeile enthält den Stand von `written_back_at`. Ändert er
   sich, leuchtet die Zeile auf.
 
@@ -282,7 +284,8 @@ Ein erneutes Absenden ist harmlos, weil exportierte Rechnungen durch den Claim �
 Grund. Das Ereignis `sevdesk_dismissed` wird geschrieben. Bei `exported`, `exporting` oder
 `uncertain` bleibt es wirkungslos (`False`). Route: `POST /invoices/{id}/dismiss`.
 
-Die Detailseite zeigt den Knopf „Verwerfen“ nur bei Status `review`.
+Der Rechnungsbereich der Dokumentansicht zeigt den Knopf „Verwerfen“ nur im Prüffall-Kasten bei Status `review`
+(`partials/invoice_notices.html`).
 
 „Verwerfen“ heißt **nicht** „nicht exportieren“. Der Tag-Weg übergeht `dismissed` (keine erneute
 Vormerkung). Der manuelle Export bleibt aber möglich: Der Knopf „Nach SevDesk exportieren“ und der
@@ -290,11 +293,13 @@ Mehrfachexport sperren `dismissed` nicht. Das ist bewusst so (siehe „Bewusste 
 
 ## Rückfrage vor dem Export
 
-Die Übersicht und die Detailseite nutzen dieselbe Prüfung:
+Die Übersicht und der Rechnungsbereich der Dokumentansicht nutzen dieselbe Prüfung:
 
 - Ein Export ohne Bestätigung und mit Rückfragegründen liefert `needs_confirmation`. Die Route
-  `POST /invoices/{id}/export` (Formfeld `confirm`) leitet dann auf `/invoices/{id}?ask=1`.
-- Die Detailseite zeigt den Block „Vor dem Export klären“ mit den **live** berechneten Gründen
+  `POST /invoices/{id}/export` (Formfeld `confirm`) leitet dann auf `/invoices/{id}?ask=1`. Die alte
+  Adresse leitet weiter auf `/paperless/{paperless_id}?ask=1`. Aus der Seitenleiste (Kopf
+  `X-Lector-Panel: 1`) geht die Route direkt auf `/fragment/paperless/{paperless_id}?ask=1`.
+- Der Rechnungsbereich der Dokumentansicht zeigt den Block „Vor dem Export klären“ mit den **live** berechneten Gründen
   und dem Knopf „Trotzdem exportieren“ (`confirm=1`). Der Block verschwindet, sobald keine
   Gründe mehr bestehen.
 - Der Prüffall-Kasten (Status `review`) hat ebenfalls „Trotzdem exportieren“. Dieser Knopf sendet
@@ -324,14 +329,23 @@ Empfänger-Zuordnung sind in [kontext-einstufung.md](kontext-einstufung.md) und
 | `GET /fragment/invoices/overview-status` | Statuszeile: Abrufstand, Fehlerbox, Hinweis „nicht einstufbar“ (SSE `vouchers:sync`) |
 | `POST /invoices/sevdesk-refresh` | Belegabruf sofort, danach Weiterleitung (Formfeld `back`) |
 | `POST /invoices/export-batch` | Mehrfachexport (Formfeld `ids`, mehrfach), Ergebnisseite |
-| `GET /invoices/{id}` | Detailseite; `?ask=1` zeigt die Rückfrage nach einem Export-Versuch |
-| `GET /fragment/invoices/{id}` | Detail-Body (SSE-Refresh) |
-| `GET /invoices/{id}/preview` | PDF-Vorschau über Lector (Proxy) |
+| `GET /invoices/{id}` | Alte Adresse der Rechnungsdetailseite: 303 auf `/paperless/{paperless_id}` (`?ask=1` bleibt erhalten); unbekannte Rechnung: 404 |
+| `GET /fragment/invoices/{id}` | Fragment der Dokumentansicht für dieselbe Rechnung (SSE-Refresh alter Tabs); unbekannte Rechnung: 404 |
+| `GET /invoices/{id}/preview` | Bisherige Vorschau-Adresse, delegiert an den Vorschau-Kern; nutzt `fetch_preview` und braucht `FEATURE_PAPERLESS_SYNC` |
 | `POST /invoices/{id}/giro` | Zahldaten speichern |
 | `POST /invoices/{id}/export` | Nach SevDesk exportieren (Formfeld `confirm`) |
 | `POST /invoices/{id}/dismiss` | Prüffall verwerfen |
 | `POST /invoices/{id}/matches/{voucher_id}` | Ähnlichen Treffer bestätigen (`decision=confirm`) oder verwerfen (`decision=reject`). HTTP 404 bei unbekannter Rechnung und bei Paaren ohne offenen ähnlichen Treffer; dieselbe Entscheidung nochmals wirkt nicht |
 | `POST /invoices/{id}/paid` | Überwiesen-Status umschalten |
+
+Die Aktionsrouten (`giro`, `export`, `dismiss`, `matches`, `paid`) antworten ohne Kopf mit 303 auf
+`/invoices/{id}` (mit `?ask=1` bei Rückfrage). Mit dem Kopf `X-Lector-Panel: 1`, den nur die
+Seitenleiste per `fetch` sendet, antworten sie mit 303 auf `/fragment/paperless/{paperless_id}`
+(mit `?ask=1` bei Rückfrage). Die Herkunftsprüfung für POST gilt unverändert. Siehe
+[dokumentansicht.md](dokumentansicht.md), Abschnitt „Aktionen mit Kopf `X-Lector-Panel: 1`“.
+
+Die Routen der Dokumentansicht selbst (`/paperless/{id}`, `/fragment/paperless/{id}`,
+`/paperless/{id}/preview`) stehen in [dokumentansicht.md](dokumentansicht.md).
 
 Statische Pfade müssen vor den parametrisierten registriert sein. Sonst fängt
 `/fragment/invoices/{invoice_id}` den Pfad `/fragment/invoices/overview-status` ab (Kommentar in

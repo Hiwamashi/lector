@@ -1,95 +1,8 @@
-<header class="detail-head">
-  <h1>{{ inv.title or ("Rechnung #" ~ inv.paperless_id) }}</h1>
-  <span class="badge badge--giro-{{ inv.giro_status }}">GiroCode: {{ giro_labels[inv.giro_status] }}</span>
-  <span class="badge badge--sevdesk-{{ inv.sevdesk_status }}">SevDesk: {{ sevdesk_labels[inv.sevdesk_status] }}</span>
-</header>
-
-{# error_message stammt ausschliesslich aus dem SevDesk-Export (paperless_sync.py). #}
-{% if inv.error_message %}
-<div class="alert">
-  {% if not feature_sevdesk %}
-  <p class="notice-text"><strong>SevDesk-Export ist aus.</strong> Zum Aktivieren
-    <code>FEATURE_SEVDESK_EXPORT=true</code> und <code>SEVDESK_API_TOKEN</code> setzen.</p>
-  {% elif inv.sevdesk_status == "uncertain" %}
-  <p class="notice-text"><strong>Ob der Export nach SevDesk angekommen ist, ist unklar.</strong>
-    Bitte in SevDesk nachsehen, bevor erneut exportiert wird.</p>
-  {% else %}
-  <p class="notice-text"><strong>Export nach SevDesk fehlgeschlagen.</strong>
-    Daten prüfen und erneut exportieren.</p>
-  {% endif %}
-  <p class="notice-text">Grund: {{ inv.error_message }}</p>
-</div>
-{% endif %}
-
+{# Rechnungsabschnitte (Kontext, SevDesk-Abgleich, Zahldaten, Aktionen, Rechnungsdaten,
+   Verlauf). Eingebunden von paperless_doc_body.html, nur bei bekannter Rechnung und aktivem
+   Paperless-Sync. Alle Formulare tragen data-panel-form (Absenden aus der Seitenleiste). #}
 {% set blockers = row.blockers %}
 {% set m = row.match %}
-
-{% if option_missing %}
-<div class="notice notice--info">
-  <p class="notice-text"><strong>Diese Rechnung ist nicht einstufbar.</strong> Im Paperless-Feld
-    „Empfänger“ fehlt die Option „{{ context_label }}“.</p>
-</div>
-{% endif %}
-
-{# Rückfrage nach einem Export-Versuch mit Rückfragegrund (`?ask=1`). Die Gründe werden live
-   berechnet, nicht aus dem Versuch übernommen — so bleibt der Block beim SSE-Refresh stehen
-   und verschwindet, sobald es nichts mehr zu klären gibt. #}
-{% if ask and row.exportable and blockers.reasons %}
-<div class="notice notice--blocked" id="export-ask">
-  <p class="notice-text"><strong>Vor dem Export klären</strong></p>
-  <ul>
-    {% for reason in blockers.reasons %}<li>{{ reason }}</li>{% endfor %}
-  </ul>
-  <p class="notice-text">
-    Trotzdem nach SevDesk exportieren?
-    {% if inv.recipient_label and inv.recipient_label != context_label %}
-    Der Empfänger wird dabei auf {{ context_label }} umgestellt.
-    {% endif %}
-  </p>
-  <div class="notice-actions">
-    <form method="post" action="/invoices/{{ inv.id }}/export">
-      <input type="hidden" name="confirm" value="1" />
-      <button type="submit">Trotzdem exportieren</button>
-    </form>
-    <a class="link" href="/invoices/{{ inv.id }}">Abbrechen</a>
-  </div>
-</div>
-{% endif %}
-
-{% if inv.sevdesk_status == "exported" and not inv.written_back_at %}
-<div class="notice notice--blocked" id="writeback-open">
-  <p class="notice-text">Rückschrieb an Paperless offen — wird beim nächsten Sync nachgeholt.</p>
-</div>
-{% endif %}
-
-{% if inv.sevdesk_status == "review" %}
-<div class="notice notice--blocked" id="review-box">
-  {# Aktuelle Gründe live aus den Blockern; der beim Vormerken gespeicherte Grund steht nur
-     als Herkunft dabei. „Trotzdem exportieren“ schickt KEIN confirm: die Route leitet dann auf
-     die Rückfrage (?ask=1) mit den heutigen Gründen um. #}
-  <p class="notice-text"><strong>Zu prüfen.</strong></p>
-  {% if blockers.hard %}
-  <p class="notice-text">Aktuell gesperrt: {{ blockers.hard }}</p>
-  {% elif blockers.reasons %}
-  <ul>
-    {% for reason in blockers.reasons %}<li>{{ reason }}</li>{% endfor %}
-  </ul>
-  {% else %}
-  <p class="notice-text">Aktuell liegt kein Rückfragegrund mehr vor.</p>
-  {% endif %}
-  {% if inv.review_reason %}
-  <p class="notice-text">Ursprünglicher Grund: {{ inv.review_reason }}</p>
-  {% endif %}
-  <div class="notice-actions">
-    <form method="post" action="/invoices/{{ inv.id }}/export">
-      <button type="submit" {% if not feature_sevdesk or not row.exportable %}disabled{% endif %}>Trotzdem exportieren</button>
-    </form>
-    <form method="post" action="/invoices/{{ inv.id }}/dismiss">
-      <button type="submit" class="button--quiet">Verwerfen</button>
-    </form>
-  </div>
-</div>
-{% endif %}
 
 <section class="sevdesk-section" id="context-section">
   <h2>Kontext</h2>
@@ -141,11 +54,11 @@
         <td class="score">{{ c.match.score | fmt_score }}</td>
         <td>
           <div class="candidate-actions">
-            <form method="post" action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
+            <form method="post" data-panel-form action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
               <input type="hidden" name="decision" value="confirm" />
               <button type="submit" aria-label="Beleg {{ c.match.voucher_id }}: derselbe Beleg">Derselbe Beleg</button>
             </form>
-            <form method="post" action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
+            <form method="post" data-panel-form action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
               <input type="hidden" name="decision" value="reject" />
               <button type="submit" class="button--quiet" aria-label="Beleg {{ c.match.voucher_id }}: anderer Beleg">Anderer Beleg</button>
             </form>
@@ -171,7 +84,7 @@
 
   <section class="giro-form">
     <h2>Zahldaten</h2>
-    <form method="post" action="/invoices/{{ inv.id }}/giro">
+    <form method="post" data-panel-form action="/invoices/{{ inv.id }}/giro">
       <label>Empfänger
         <input type="text" name="creditor_name" value="{{ inv.creditor_name or '' }}" />
       </label>
@@ -195,7 +108,7 @@
 <section class="invoice-actions">
   {% set already_exported = inv.sevdesk_status == "exported" and inv.sevdesk_voucher_id %}
   {% set uncertain = inv.sevdesk_status == "uncertain" %}
-  <form method="post" action="/invoices/{{ inv.id }}/export">
+  <form method="post" data-panel-form action="/invoices/{{ inv.id }}/export">
     <button type="submit"
       {% if not feature_sevdesk %}disabled title="FEATURE_SEVDESK_EXPORT=false"
       {% elif blockers.hard %}disabled{% endif %}>
@@ -213,28 +126,11 @@
   {% if inv.sevdesk_voucher_id %}
   <span class="muted">Beleg-ID: {{ inv.sevdesk_voucher_id }}</span>
   {% endif %}
-  <form method="post" action="/invoices/{{ inv.id }}/paid">
+  <form method="post" data-panel-form action="/invoices/{{ inv.id }}/paid">
     <input type="hidden" name="paid" value="{{ 'false' if inv.paid else 'true' }}" />
     <button type="submit">{{ "Überweisung zurücksetzen" if inv.paid else "Als überwiesen markieren" }}</button>
   </form>
 </section>
-
-{% if document_url %}
-<section class="doc-preview">
-  <div class="doc-preview-head">
-    <h2>Dokument</h2>
-    <a class="link" href="{{ document_url }}" target="_blank" rel="noopener">In Paperless öffnen ↗</a>
-  </div>
-  {% if preview_enabled %}
-  <object class="doc-frame" data="/invoices/{{ inv.id }}/preview" type="application/pdf">
-    <p class="empty">
-      Vorschau kann nicht angezeigt werden.
-      <a class="link" href="/invoices/{{ inv.id }}/preview" target="_blank" rel="noopener">In neuem Tab öffnen</a>
-    </p>
-  </object>
-  {% endif %}
-</section>
-{% endif %}
 
 <dl class="meta">
   <dt>Dokumentdatum</dt><dd>{{ inv.document_date | fmt_date }}</dd>
