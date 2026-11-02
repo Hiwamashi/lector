@@ -54,6 +54,11 @@ Rechnungen `queued`. Die Prüfungen laufen in beiden Wegen gleich (siehe
 | [rechnungs-ui.md](rechnungs-ui.md) | Rechnungs-UI: Export-Übersicht, Dokumentdatum, Spalten-Sortierung, Dokumentvorschau |
 | [empfaenger-zuordnung.md](empfaenger-zuordnung.md) | Empfänger pro Dokument (select-Feld) + KI-Vorschlag inkl. IT-Wahrscheinlichkeit (`app/recipient_llm.py`) |
 | [dokumentansicht.md](dokumentansicht.md) | `app/main.py` (Routen `/paperless/{id}`, Vorschau-Proxy, Seitenleiste), `app/paperless_sync.py` (`load_document_view`, Namens-Cache), `app/static/app.js` (Seitenleiste) | Dokumentansicht eines Paperless-Dokuments als Seite und Seitenleiste, lesend bis auf Lector-Angaben |
+| [scan-verknuepfung.md](scan-verknuepfung.md) | `app/paperless_link.py` (Job), `app/paperless.py` (`find_documents`), `app/pipeline.py` (`mark_consumed`), `app/main.py` (`/documents/{id}/original`, `_document_context`), `app/worker.py` (Task `paperless-link`) | Verknüpfung Lector-Vorgang ↔ Paperless-Dokument über die SHA-256-Prüfsumme, Altbestand über Dateinamen, Original-Vorschau, Vorgangsleiste, Filter „Nicht in Paperless“ |
+
+Die Scan-Verknüpfung gehört nicht zum entkoppelten Rechnungsfeature. Ihr Ablageteil hängt an der
+Pipeline, und der Job läuft schon bei `PAPERLESS_URL` und `PAPERLESS_TOKEN`, auch ohne
+`FEATURE_PAPERLESS_SYNC` (siehe [scan-verknuepfung.md](scan-verknuepfung.md)).
 
 Konfiguration aller Variablen: [../konfiguration.md](../konfiguration.md).
 
@@ -91,6 +96,9 @@ Tabellen in `app/db.py`:
 - `invoice_voucher_matches` — Zuordnung Rechnung ↔ Beleg mit Art (`id`, `similar`, `confirmed`,
   `rejected`) und Score.
 - `sevdesk_sync_state` — Stand des letzten Belegabrufs (genau eine Zeile).
+- Spalten an `documents` — Verknüpfung mit dem Paperless-Dokument (`paperless_id`, `paperless_link`,
+  `output_hash`, `original_path`, `consumed_at`, `paperless_checked_at`). Siehe
+  [scan-verknuepfung.md](scan-verknuepfung.md#datenmodell).
 
 Neue Spalten und Tabellen kommen über `_migrate()` bzw. `CREATE TABLE IF NOT EXISTS` in
 bestehende Datenbanken. Die Rollback-Anweisung vor einem Image-Rollback steht in

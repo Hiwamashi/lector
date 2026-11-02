@@ -3,7 +3,7 @@
 **Module:** `app/pages.py` (`count_pages`), `app/pipeline.py` (`_block_oversized`,
 `_handle_ocr`), `app/decisions.py`, `app/repository.py`
 (`transition_from_blocked`), `app/main.py` (zwei POST-Routen),
-`app/templates/partials/detail_body.html`.
+`app/templates/partials/document_panel.html` (Vorgangsleiste, zuvor `detail_body.html`).
 
 ## Wozu
 

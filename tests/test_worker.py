@@ -6,6 +6,7 @@ from watchdog.observers import Observer
 from app.config import Settings
 from app.events import EventBus
 from app.ocr.base import OcrAdapter
+from app.paperless_link import PaperlessLinker
 from app.paperless_sync import PaperlessSync
 from app.repository import Repository
 from app.worker import TaskState, Worker
@@ -37,7 +38,8 @@ async def _finish(*tasks: asyncio.Task) -> None:
 
 
 async def test_fuenf_laufende_tasks_werden_als_laufend_gemeldet(tmp_path):
-    """4.1: An einem Worker mit fünf laufenden Tasks meldet jede Hintergrundarbeit 'läuft'."""
+    """4.1: An einem Worker mit allen laufenden Tasks (vier Kern-Tasks, Paperless-Sync und
+    Paperless-Verknüpfung) meldet jede Hintergrundarbeit 'läuft'."""
     settings = Settings(
         _env_file=None,
         FEATURE_PAPERLESS_SYNC="true",
@@ -47,8 +49,15 @@ async def test_fuenf_laufende_tasks_werden_als_laufend_gemeldet(tmp_path):
     repo = Repository(tmp_path / "lector.db")
     sync = PaperlessSync(settings, repo)
     assert sync.enabled is True
-    worker = Worker(settings, repo, _Adapter(), EventBus(), paperless_sync=sync)
-    names = ("scan", "process", "retry", "retention", "paperless-sync")
+    worker = Worker(
+        settings,
+        repo,
+        _Adapter(),
+        EventBus(),
+        paperless_sync=sync,
+        paperless_link=PaperlessLinker(settings, repo),
+    )
+    names = ("scan", "process", "retry", "retention", "paperless-sync", "paperless-link")
     worker._tasks = [asyncio.create_task(asyncio.sleep(10), name=name) for name in names]
     try:
         states = worker.background_task_states()
@@ -132,13 +141,57 @@ def test_leere_tasks_liste_ist_ein_fehlerfall(tmp_path):
 
     states = worker.background_task_states()
 
-    core = [s for s in states if s.name != "paperless-sync"]
+    core = [s for s in states if s.name not in ("paperless-sync", "paperless-link")]
     assert len(core) == 4
     assert all(s.state == TaskState.STOPPED for s in core)
     assert all(s.error is not None for s in core)
 
     paperless_status = next(s for s in states if s.name == "paperless-sync")
     assert paperless_status.state == TaskState.NOT_STARTED
+    link_status = next(s for s in states if s.name == "paperless-link")
+    assert link_status.state == TaskState.NOT_STARTED
+
+
+async def test_verknuepfungsjob_startet_nur_mit_anbindung(tmp_path):
+    """4.3: Ohne URL + Token wird der Job nicht gestartet (gesund); mit Anbindung startet
+    `start()` ihn, und ein Lauf wird tatsächlich ausgeführt."""
+    ohne = Settings(_env_file=None)
+    repo = Repository(tmp_path / "a.db")
+    worker = Worker(ohne, repo, _Adapter(), EventBus(), paperless_link=PaperlessLinker(ohne, repo))
+    status = worker._paperless_link_task_status(None)
+    assert status.state == TaskState.NOT_STARTED
+    assert status.state.healthy
+
+    mit = Settings(
+        _env_file=None,
+        PAPERLESS_URL="http://paperless.invalid",
+        PAPERLESS_TOKEN="token",
+        WATCH_DIR=str(tmp_path / "scan-in"),
+    )
+    (tmp_path / "scan-in").mkdir()
+    repo2 = Repository(tmp_path / "b.db")
+    linker = PaperlessLinker(mit, repo2)
+    laeufe = []
+
+    async def fake_run_once():
+        laeufe.append(1)
+        from app.paperless_link import LinkRunResult
+
+        return LinkRunResult()
+
+    linker.run_once = fake_run_once
+    worker2 = Worker(mit, repo2, _Adapter(), EventBus(), paperless_link=linker)
+    await worker2.start()
+    try:
+        await asyncio.sleep(0.05)
+        link = next(s for s in worker2.background_task_states() if s.name == "paperless-link")
+        assert link.state == TaskState.RUNNING
+        assert laeufe
+    finally:
+        await worker2.stop()
+    # Eine konfigurierte, aber nie gestartete Task ist ein Fehlerfall.
+    assert worker._paperless_link_task_status(None).state == TaskState.NOT_STARTED
+    assert worker2._paperless_link_task_status(None).state == TaskState.STOPPED
 
 
 def _running_observer(tmp_path) -> Observer:

@@ -1,9 +1,18 @@
 {# Dokumentansicht eines Paperless-Dokuments (Seite /paperless/{id} und Seitenleiste).
    Lesend bis auf Lectors eigene Angaben: Empfänger und — bei Rechnungen — Zahldaten,
-   „überwiesen“ und SevDesk-Export. Alle Formulare tragen data-panel-form. #}
+   „überwiesen“ und SevDesk-Export. Alle Formulare tragen data-panel-form.
+   `embedded` (gesetzt von partials/document_panel.html): Die Ansicht steckt in der
+   kombinierten Vorgangsleiste. Dann entfallen die Leiste (panel_bar) und h1#panel-title —
+   beide gehören der umgebenden Leiste — und der Titel ist eine h2; alles andere bleibt. #}
+{% if not embedded %}
 {% with page_url="/paperless/" ~ view.paperless_id %}{% include "partials/panel_bar.html" %}{% endwith %}
+{% endif %}
 <header class="detail-head">
+  {% if embedded %}
+  <h2 class="doc-title">{{ view.title }}</h2>
+  {% else %}
   <h1 id="panel-title" tabindex="-1">{{ view.title }}</h1>
+  {% endif %}
   {% if show_invoice %}
   <span class="badge badge--giro-{{ inv.giro_status }}">GiroCode: {{ giro_labels[inv.giro_status] }}</span>
   <span class="badge badge--sevdesk-{{ inv.sevdesk_status }}">SevDesk: {{ sevdesk_labels[inv.sevdesk_status] }}</span>
@@ -81,6 +90,7 @@
 <section class="recipient-section" id="recipient-section">
   <h2>Empfänger</h2>
   <form method="post" data-panel-form action="/empfaenger/{{ view.paperless_id }}" class="recipient-form">
+    {% include "partials/back_field.html" %}
     <input type="hidden" name="view" value="doc" />
     <select name="recipient" aria-label="Empfänger für {{ view.title }}">
       <option value="">— kein —</option>
@@ -92,6 +102,7 @@
   </form>
   {% if feature_llm %}
   <form method="post" data-panel-form action="/empfaenger/{{ view.paperless_id }}/suggest" class="recipient-form">
+    {% include "partials/back_field.html" %}
     <input type="hidden" name="view" value="doc" />
     <button type="submit" class="link-button" title="KI-Vorschlag für dieses Dokument">KI-Vorschlag</button>
   </form>

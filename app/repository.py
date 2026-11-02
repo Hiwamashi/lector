@@ -32,6 +32,7 @@ from .models import (
     MatchKind,
     OcrPage,
     PaperlessInvoice,
+    PaperlessLink,
     RecipientCache,
     RecipientStatus,
     SevdeskStatus,
@@ -99,7 +100,9 @@ _INVOICE_COLUMNS = (
 _DOC_COLUMNS = (
     "id, original_filename, source_path, file_hash, status, doc_type, ocr_engine, "
     "total_pages, processed_pages, attempt_count, next_retry_at, error_message, "
-    "output_path, page_limit_approved, created_at, started_at, finished_at"
+    "output_path, page_limit_approved, created_at, started_at, finished_at, "
+    "output_hash, original_path, consumed_at, paperless_id, paperless_link, "
+    "paperless_checked_at"
 )
 
 
@@ -149,6 +152,12 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         created_at=_parse_dt(row["created_at"]),
         started_at=_parse_dt(row["started_at"]),
         finished_at=_parse_dt(row["finished_at"]),
+        output_hash=row["output_hash"],
+        original_path=row["original_path"],
+        consumed_at=_parse_dt(row["consumed_at"]),
+        paperless_id=row["paperless_id"],
+        paperless_link=PaperlessLink(row["paperless_link"]) if row["paperless_link"] else None,
+        paperless_checked_at=_parse_dt(row["paperless_checked_at"]),
     )
 
 
@@ -336,11 +345,24 @@ class Repository:
         status: DocStatus | None = None,
         search: str | None = None,
         since: datetime | None = None,
+        paperless_missing: bool = False,
         limit: int = 200,
         offset: int = 0,
     ) -> list[Document]:
         clauses: list[str] = []
         params: list[object] = []
+        if paperless_missing:
+            # Schnellfilter „Nicht in Paperless“: abgeschlossene Vorgänge ohne Verknüpfung.
+            clauses.append("status IN (?, ?)")
+            params.extend([DocStatus.DONE.value, DocStatus.SKIPPED_ERECHNUNG.value])
+            clauses.append("paperless_link IN (?, ?, ?)")
+            params.extend(
+                [
+                    PaperlessLink.PENDING.value,
+                    PaperlessLink.NOT_FOUND.value,
+                    PaperlessLink.MISSING.value,
+                ]
+            )
         if status:
             clauses.append("status = ?")
             params.append(status.value)
@@ -359,6 +381,159 @@ class Repository:
                 params,
             ).fetchall()
         return [_row_to_document(r) for r in rows]
+
+    # ---- Verknüpfung mit Paperless ----------------------------------------
+
+    def mark_consumed(
+        self,
+        document_id: int,
+        *,
+        output_path: str,
+        output_hash: str,
+        link_pending: bool,
+    ) -> None:
+        """Hält die Ablage in `consume` fest: Pfad, SHA-256 der abgelegten Datei, Zeitpunkt.
+
+        `link_pending` setzt den Verknüpfungszustand auf `pending` (Paperless-Anbindung
+        konfiguriert); sonst bleibt er `NULL`, und ein späteres Nachholen holt den Vorgang ein.
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE documents SET output_path = ?, output_hash = ?, "
+                "consumed_at = datetime('now'), paperless_link = ? WHERE id = ?",
+                (
+                    output_path,
+                    output_hash,
+                    PaperlessLink.PENDING.value if link_pending else None,
+                    document_id,
+                ),
+            )
+            self._conn.commit()
+        self._notify(document_id)
+
+    def set_paperless_link(
+        self,
+        document_id: int,
+        link: PaperlessLink,
+        *,
+        paperless_id: int | None = None,
+    ) -> None:
+        """Setzt den Verknüpfungszustand und vermerkt die Suche (`paperless_checked_at`).
+
+        Ohne `paperless_id` bleibt eine vorhandene ID erhalten (z. B. bei `missing`).
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE documents SET paperless_link = ?, "
+                "paperless_id = COALESCE(?, paperless_id), "
+                "paperless_checked_at = datetime('now') WHERE id = ?",
+                (link.value, paperless_id, document_id),
+            )
+            self._conn.commit()
+        self._notify(document_id)
+
+    def touch_paperless_checked(self, document_id: int) -> None:
+        """Vermerkt eine Suche ohne Zustandsänderung (Fortschritt für Stapel und Nachholen)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE documents SET paperless_checked_at = datetime('now') WHERE id = ?",
+                (document_id,),
+            )
+            self._conn.commit()
+
+    def list_paperless_pending(self, limit: int = 50) -> list[Document]:
+        """Abgeschlossene Vorgänge mit Zustand `pending`; die am längsten ungeprüften zuerst."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_DOC_COLUMNS} FROM documents "
+                "WHERE status IN (?, ?) AND paperless_link = ? "
+                "ORDER BY paperless_checked_at IS NOT NULL, paperless_checked_at, id LIMIT ?",
+                (
+                    DocStatus.DONE.value,
+                    DocStatus.SKIPPED_ERECHNUNG.value,
+                    PaperlessLink.PENDING.value,
+                    limit,
+                ),
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def list_paperless_catchup(
+        self,
+        *,
+        recheck_before: datetime,
+        daily_before: datetime | None = None,
+        daily_consumed_after: datetime | None = None,
+        limit: int = 50,
+    ) -> list[Document]:
+        """Nachzuholende Vorgänge: abgeschlossen und ohne Verknüpfung (`NULL`), außerdem
+        `not_found`-Vorgänge, die seit `recheck_before` (Start des Dienstes) nicht erneut
+        gesucht wurden.
+
+        Mit `daily_before` und `daily_consumed_after` kommen `not_found`-Vorgänge MIT
+        Prüfsumme (`output_hash`, bei E-Rechnungen `file_hash`) hinzu, die seit
+        `daily_before` nicht gesucht wurden und deren Ablage nicht älter als
+        `daily_consumed_after` ist (tägliche Wiederholung, falls Paperless länger aus war).
+
+        Reihenfolge wie bei `list_paperless_pending`: am längsten ungeprüfte zuerst, damit
+        Dauerfälle nicht dauerhaft vorne stehen. Fehlgeschlagene und verworfene Vorgänge
+        kommen nie vor (nur `done`/`skipped_erechnung`).
+        """
+        fmt = "%Y-%m-%d %H:%M:%S"
+        not_found_conditions = ["paperless_checked_at IS NULL", "paperless_checked_at < ?"]
+        params: list[object] = [
+            DocStatus.DONE.value,
+            DocStatus.SKIPPED_ERECHNUNG.value,
+            PaperlessLink.NOT_FOUND.value,
+            recheck_before.strftime(fmt),
+        ]
+        if daily_before is not None and daily_consumed_after is not None:
+            not_found_conditions.append(
+                "(paperless_checked_at < ? AND consumed_at >= ? AND "
+                "(output_hash IS NOT NULL OR (doc_type IN (?, ?) AND file_hash IS NOT NULL)))"
+            )
+            params.extend(
+                [
+                    daily_before.strftime(fmt),
+                    daily_consumed_after.strftime(fmt),
+                    DocType.ERECHNUNG_XML.value,
+                    DocType.ERECHNUNG_PDF.value,
+                ]
+            )
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_DOC_COLUMNS} FROM documents "
+                "WHERE status IN (?, ?) AND (paperless_link IS NULL OR "
+                f"(paperless_link = ? AND ({' OR '.join(not_found_conditions)}))) "
+                "ORDER BY paperless_checked_at IS NOT NULL, paperless_checked_at, id LIMIT ?",
+                params,
+            ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def paperless_id_taken(self, paperless_id: int, *, exclude_document_id: int) -> bool:
+        """Ob die Paperless-ID bereits einem anderen Vorgang zugeordnet ist."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM documents WHERE paperless_id = ? AND id != ? "
+                "AND paperless_link IN (?, ?) LIMIT 1",
+                (
+                    paperless_id,
+                    exclude_document_id,
+                    PaperlessLink.LINKED.value,
+                    PaperlessLink.LINKED_BY_NAME.value,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def event_timestamp(self, document_id: int, event_type: EventType) -> datetime | None:
+        """Zeitpunkt des jüngsten Ereignisses dieser Art (z. B. `moved_to_consume`)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(timestamp) AS ts FROM document_events "
+                "WHERE document_id = ? AND event_type = ?",
+                (document_id, event_type.value),
+            ).fetchone()
+        return _parse_dt(row["ts"]) if row else None
 
     def status_counts(self) -> dict[str, int]:
         with self._lock:

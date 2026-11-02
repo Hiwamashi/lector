@@ -1,0 +1,15 @@
+{# Paperless-Bezug eines Vorgangs als Badge (Spalte „Paperless“ der Liste).
+   `None` (kein Ergebnis, nicht betrachtet) ist „—“. Die ID steht in der Liste im Badge,
+   weil dort kein Platz für einen zweiten Baustein ist; eine Verknüpfung über den
+   Dateinamen trägt den Zusatz „über Namen“, weil sie weniger sicher ist als die
+   Prüfsumme. #}
+{% macro link_badge(doc) -%}
+{%- if not doc.paperless_link -%}—
+{%- elif doc.paperless_link == "linked" and doc.paperless_id -%}
+<span class="badge badge--link-linked">#{{ doc.paperless_id }}</span>
+{%- elif doc.paperless_link == "linked_by_name" and doc.paperless_id -%}
+<span class="badge badge--link-linked_by_name" title="Über den Dateinamen verknüpft">#{{ doc.paperless_id }} · über Namen</span>
+{%- else -%}
+<span class="badge badge--link-{{ doc.paperless_link }}">{{ paperless_link_labels[doc.paperless_link] }}</span>
+{%- endif -%}
+{%- endmacro %}

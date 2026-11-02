@@ -4,7 +4,8 @@
 `_list_panel_context`, `_invoice_redirect`, `_recipient_redirect`), `app/paperless_sync.py`
 (`view_enabled`, `load_document_view`, `fetch_document_preview`, `_names`), `app/paperless.py`
 (Client-Helfer), `app/auth.py` (Zugangsschutz), Templates `paperless_doc.html`,
-`partials/paperless_doc_body.html`, `partials/panel_aside.html`, `partials/panel_bar.html`,
+`partials/paperless_doc_body.html`, `partials/document_panel.html` (Vorgangsleiste, bettet die Ansicht
+ein), `partials/panel_aside.html`, `partials/panel_bar.html`,
 `partials/invoice_sections.html`, `partials/invoice_notices.html`, Listen-Partials
 `partials/invoice_rows.html`, `partials/recipient_rows.html`, `partials/history_rows.html`;
 `app/static/app.js` (Abschnitt „Seitenleiste“), `app/static/app.css` (Abschnitt „Seitenleiste neben
@@ -14,7 +15,9 @@ den Listen“).
 
 Lector zeigt ein Paperless-Dokument lesend: Vorschau, Metadaten und Notizen. Die Ansicht gibt es
 als eigene Seite `/paperless/{paperless_id}` und als Seitenleiste neben den Listen Rechnungen,
-Empfänger und Dokumente. Sie gilt für jedes Dokument, das Lectors Paperless-Token lesen darf, nicht
+Empfänger und Dokumente. Ist ein Vorgang der Dokumente-Liste mit seinem Paperless-Dokument verknüpft,
+bettet die Vorgangsansicht dieselbe Darstellung ein (siehe „Einbettung in die Vorgangsansicht“).
+Sie gilt für jedes Dokument, das Lectors Paperless-Token lesen darf, nicht
 nur für Rechnungen.
 
 Bearbeitet werden nur Angaben, die Lector schon vorher bearbeitete: Empfänger, Rechnungsdaten
@@ -50,6 +53,24 @@ Das Empfänger-Formular erscheint nur, wenn das Custom Field `CF_RECIPIENT` (Sta
 am Dokument existiert (`recipient_field_present`). Der KI-Vorschlag-Knopf erscheint nur bei
 `FEATURE_RECIPIENT_LLM=true` mit `ANTHROPIC_API_KEY` (`PaperlessSync.recipient_llm_enabled`).
 
+## Einbettung in die Vorgangsansicht
+
+Die Vorgangsansicht der Dokumente-Liste (`/documents/{id}`, `/fragment/documents/{id}` und die
+Seitenleiste) bettet diese Ansicht ein, wenn der Vorgang verknüpft ist (`link_state = embedded` in
+`_document_context`, `app/main.py`). Dafür gibt es in `partials/paperless_doc_body.html` den Schalter
+`embedded`:
+
+- Die Leiste oben (`panel_bar`) und der Titel `h1#panel-title` entfallen. Beides gehört der umgebenden
+  Vorgangsleiste. Der Titel wird zu einem `h2`.
+- Alle übrigen Abschnitte (Vorschau, Angaben, Felder, Notizen, Empfänger und Rechnungsbereich) bleiben
+  gleich.
+- Formulare in der eingebetteten Ansicht senden das Feld `back=doc:<id>` (`partials/back_field.html`).
+  Die Antwort führt dann zurück in die Vorgangsansicht und nicht in die Listen-Seitenleiste.
+
+Ohne Verknüpfung zeigt die Vorgangsansicht stattdessen das lokale Original, und bei nicht erreichbarem
+oder gelöschtem Paperless-Dokument einen Hinweis. Aufbau, Zustände und den Rückweg beschreibt
+[scan-verknuepfung.md](scan-verknuepfung.md#leiste-vorgang-und-dokument-zusammen).
+
 ## Routen
 
 | Methode und Pfad | Wirkung |
@@ -69,7 +90,7 @@ Die Listen öffnen die Leiste serverseitig, wenn `?doc=` gesetzt ist (`_list_pan
 |---|---|---|
 | `GET /invoices?doc=<paperless_id>` | Paperless-ID | Dokumentansicht (Rechnungsbereich, wenn vorhanden) |
 | `GET /empfaenger?doc=<paperless_id>` | Paperless-ID | Dokumentansicht |
-| `GET /?doc=<lector_dokument_id>` | Lector-Dokument-ID | Vorgangsansicht (`partials/detail_body.html`) aus `GET /fragment/documents/{id}`, nicht die Paperless-Ansicht |
+| `GET /?doc=<lector_dokument_id>` | Lector-Dokument-ID | Vorgangsleiste (`partials/document_panel.html`) aus `GET /fragment/documents/{id}`: Kopf, Verlauf und darunter die eingebettete Paperless-Ansicht oder das lokale Original. Siehe „Einbettung in die Vorgangsansicht“ |
 
 Ein unbekannter Schlüssel lässt die Leiste zu, die Liste bleibt vollständig. Ist Paperless beim
 Öffnen nicht erreichbar, bleibt die Liste bedienbar und die Leiste zeigt den Hinweis „Paperless ist
@@ -292,9 +313,9 @@ dem NAS manuell abgenommen (Task 6.4 in
 - Manuelle Prüfung im Browser (Tasks 4.1 bis 4.4 und 5.1) und Abnahme auf dem NAS (Task 6.4) stehen
   aus.
 - Nicht Teil dieses Changes: Bearbeiten von Paperless-Metadaten (Titel, Korrespondent, Tags,
-  Dokumenttyp, sonstige Custom Fields), Verknüpfung von Scans mit Paperless über die Prüfsumme
-  (Folge-Change `scan-paperless-verknuepfung`), lokale Vorschau von Originalen und Volltextsuche über
-  Paperless.
+  Dokumenttyp, sonstige Custom Fields) und Volltextsuche über Paperless.
+- Umgesetzt im Folge-Change `scan-paperless-verknuepfung`: Verknüpfung von Scans mit Paperless über
+  die Prüfsumme und die Vorschau des lokalen Originals. Siehe [scan-verknuepfung.md](scan-verknuepfung.md).
 - Die Leiste blättert am Listenende nicht auf die nächste Seite weiter.
 - Der Design-Entwurf sah für die Vorschau in der Leiste `flex: 1` vor. Umgesetzt ist
   `clamp(18rem, 60dvh, 48rem)`, so wie es in [DESIGN.md](../../DESIGN.md) beschrieben ist.

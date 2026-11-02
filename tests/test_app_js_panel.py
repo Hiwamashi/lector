@@ -135,17 +135,22 @@ class El {
       }
     }
     if (this.tagName !== "TBODY") {
-      // Flach: Elemente mit id, die Vorschau (section.doc-preview > object) in Dokumentreihenfolge.
+      // Flach: Elemente mit id, die Vorschau (section.doc-preview > object) und der Verlauf
+      // (details.doc-log) in Dokumentreihenfolge. section.paperless-embedded ist ein
+      // Container: alles danach gehoert hinein (wie im echten Dokument, wo er zuletzt steht).
       const tre = /<(\w+)([^>]*)>/g;
-      let t, sektion = null;
+      let t, sektion = null, behaelter = this;
       while ((t = tre.exec(h)) !== null) {
         const attrs = {};
         const are = /([\w-]+)="([^"]*)"/g;
         let a;
         while ((a = are.exec(t[2])) !== null) attrs[a[1]] = a[2];
+        if (t[1] === "details" && /\sopen(\s|$)/.test(t[2])) attrs.open = "";
         if (t[1] === "object" && sektion) new El("object", attrs, sektion);
-        else if (t[1] === "section" && attrs.class === "doc-preview") sektion = new El("section", attrs, this);
-        else if (attrs.id) new El(t[1], attrs, this);
+        else if (t[1] === "section" && attrs.class === "doc-preview") sektion = new El("section", attrs, behaelter);
+        else if (t[1] === "section" && attrs.class === "paperless-embedded") behaelter = new El("section", attrs, this);
+        else if (t[1] === "details" && attrs.class === "doc-log") new El("details", attrs, behaelter);
+        else if (attrs.id) new El(t[1], attrs, behaelter);
       }
     }
   }
@@ -679,7 +684,7 @@ def test_dokumentseite_filtert_weiter_nach_id(tmp_path):
     erg = _run("""
         H.table.parent.removeChild(H.table);
         H.sse().onmessage({ data: "doc:4" });
-        H.sse().onmessage({ data: "inv:3" });
+        H.sse().onmessage({ data: "rec:3" });
         await H.sleep(400);
         const fremd = H.calls.length;
         H.sse().onmessage({ data: "doc:3" });
@@ -870,3 +875,123 @@ def test_link_in_der_leiste_mit_modifier_und_ausserhalb_bleibt_normal(tmp_path):
         return { r, calls: H.calls.length };
     """, tmp_path, panelOpen=12)
     assert erg == {"r": [False, False, False], "calls": 0}
+
+
+def test_dokumentseite_nimmt_rechnungs_und_belegereignisse_an(tmp_path):
+    """Der eingebettete Rechnungsbereich hängt an inv:/vouchers:, nicht an der Vorgangs-ID."""
+    erg = _run("""
+        H.table.parent.removeChild(H.table);
+        H.sse().onmessage({ data: "inv:99" });
+        await H.sleep(400);
+        const nachInv = H.calls.length;
+        H.sse().onmessage({ data: "vouchers:sync" });
+        await H.sleep(400);
+        return { nachInv, urls: H.calls.map(c => c.url) };
+    """, tmp_path, sse=True, pathname="/documents/3", detailFragment="/fragment/documents/3")
+    assert erg["nachInv"] == 1
+    assert erg["urls"] == ["/fragment/documents/3", "/fragment/documents/3"]
+
+
+# --- Kombinierte Vorgangsansicht: Vorschau und Verlauf überstehen den Tausch -----------
+
+_ANTWORT_K = ('<h1 id="panel-title">T</h1><details class="doc-log"{offen}></details>'
+              '<section class="paperless-embedded"><h2 id="titel">Z</h2>'
+              '<section class="doc-preview"><object data="{pdf}"></object></section>'
+              '<form id="zahl"></form>')
+
+_AUFBAU_K = """
+        const details = new H.El("details", { class: "doc-log", "data-server-open": "0" }, H.panel);
+        const emb = new H.El("section", { class: "paperless-embedded" }, H.panel);
+        new H.El("h2", { id: "titel" }, emb);
+        const vor = new H.El("section", { class: "doc-preview" }, emb);
+        new H.El("object", { data: "/vorschau.pdf" }, vor);
+        new H.El("form", { id: "zahl" }, emb);
+"""
+
+
+def test_eingebettete_vorschau_bleibt_bei_aktion_und_sse_erhalten(tmp_path):
+    erg = _run(_AUFBAU_K + """
+        vor.marker = "alt";
+        const form = H.panel.querySelector("#zahl");
+        form.attrs["data-panel-form"] = ""; form.attrs.action = "/empfaenger/12"; form.attrs.method = "post";
+        form.fields = [];
+        H.routes["POST /empfaenger/12"] = { body: '""" + _ANTWORT_K.format(offen="", pdf="/vorschau.pdf") + """' };
+        H.submit(form);
+        await H.sleep(60);
+        const jetzt = H.panel.querySelector(".doc-preview");
+        return { gleich: jetzt === vor, marker: jetzt && jetzt.marker,
+                 eltern: jetzt && jetzt.parent.getAttribute("class"),
+                 anzahlEmb: H.panel.querySelectorAll(".paperless-embedded").length };
+    """, tmp_path, panelOpen=12)
+    assert erg == {"gleich": True, "marker": "alt", "eltern": "paperless-embedded", "anzahlEmb": 1}
+
+
+def test_eingebettete_geaenderte_vorschau_wird_neu_aufgebaut(tmp_path):
+    erg = _run(_AUFBAU_K + """
+        const form = H.panel.querySelector("#zahl");
+        form.attrs["data-panel-form"] = ""; form.attrs.action = "/empfaenger/12"; form.fields = [];
+        H.routes["POST /empfaenger/12"] = { body: '""" + _ANTWORT_K.format(offen="", pdf="/neu.pdf") + """' };
+        H.submit(form);
+        await H.sleep(60);
+        const jetzt = H.panel.querySelector(".doc-preview");
+        return { gleich: jetzt === vor, daten: jetzt.querySelector("object").getAttribute("data") };
+    """, tmp_path, panelOpen=12)
+    assert erg == {"gleich": False, "daten": "/neu.pdf"}
+
+
+def test_vom_nutzer_geaenderter_verlauf_bleibt_beim_tausch_erhalten(tmp_path):
+    erg = _run(_AUFBAU_K + """
+        details.setAttribute("open", "");  // Nutzer klappt auf (Server hatte zu: data-server-open=0)
+        const form = H.panel.querySelector("#zahl");
+        form.attrs["data-panel-form"] = ""; form.attrs.action = "/empfaenger/12"; form.fields = [];
+        H.routes["POST /empfaenger/12"] = { body: '""" + _ANTWORT_K.format(offen="", pdf="/vorschau.pdf") + """' };
+        H.submit(form);
+        await H.sleep(60);
+        const neu = H.panel.querySelector("details.doc-log");
+        return { offen: neu.hasAttribute("open"), server: neu.getAttribute("data-server-open") };
+    """, tmp_path, panelOpen=12)
+    assert erg == {"offen": True, "server": "0"}
+
+
+def test_unveraenderter_verlauf_folgt_dem_server_und_dokumentwechsel_setzt_zurueck(tmp_path):
+    erg = _run(_AUFBAU_K + """
+        // Server rendert jetzt offen (z.B. Vorgang ist fehlgeschlagen), Nutzer hat nichts angefasst.
+        H.routes["/fragment/paperless/12"] = { body: '""" + _ANTWORT_K.format(offen=" open", pdf="/vorschau.pdf") + """' };
+        H.sse().onmessage({ data: "doc:12" });
+        await H.sleep(400);
+        const folgt = H.panel.querySelector("details.doc-log").hasAttribute("open");
+        // Nutzer klappt zu, dann Dokumentwechsel: Serverzustand (offen) gilt wieder.
+        H.panel.querySelector("details.doc-log").removeAttribute("open");
+        H.routes["/fragment/paperless/13"] = { body: '""" + _ANTWORT_K.format(offen=" open", pdf="/x.pdf") + """' };
+        H.click(H.titel(1));
+        await H.sleep(60);
+        return { folgt, nachWechsel: H.panel.querySelector("details.doc-log").hasAttribute("open") };
+    """, tmp_path, panelOpen=12, sse=True)
+    assert erg == {"folgt": True, "nachWechsel": True}
+
+
+def test_detailseite_setzt_unveraenderten_inhalt_nicht_neu_und_behaelt_vorschau(tmp_path):
+    erg = _run("""
+        H.table.parent.removeChild(H.table);
+        const detail = H.document.getElementById("detail");
+        const details = new H.El("details", { class: "doc-log", "data-server-open": "0" }, detail);
+        const emb = new H.El("section", { class: "paperless-embedded" }, detail);
+        const vor = new H.El("section", { class: "doc-preview" }, emb);
+        new H.El("object", { data: "/vorschau.pdf" }, vor);
+        vor.marker = "alt";
+        details.setAttribute("open", "");  // Nutzer klappt auf
+        const html = '""" + _ANTWORT_K.format(offen="", pdf="/vorschau.pdf") + """';
+        H.routes["/fragment/documents/3"] = { body: html };
+        H.sse().onmessage({ data: "doc:3" });
+        await H.sleep(400);
+        const v1 = detail.querySelector(".doc-preview");
+        const d1 = detail.querySelector("details.doc-log");
+        const erste = { gleich: v1 === vor, offen: d1.hasAttribute("open") };
+        d1.marker = "neu";
+        H.sse().onmessage({ data: "doc:3" });
+        await H.sleep(400);
+        const zweite = { gleichesDetails: detail.querySelector("details.doc-log").marker === "neu" };
+        return { erste, zweite };
+    """, tmp_path, sse=True, pathname="/documents/3", detailFragment="/fragment/documents/3")
+    assert erg["erste"] == {"gleich": True, "offen": True}
+    assert erg["zweite"] == {"gleichesDetails": True}  # identischer Inhalt: nichts neu gesetzt

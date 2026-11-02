@@ -25,6 +25,7 @@ from .detection import is_supported
 from .events import EventBus
 from .fileops import file_hash
 from .ocr.base import OcrAdapter
+from .paperless_link import BACKLOG_SLEEP_SECONDS, PaperlessLinker
 from .paperless_sync import PaperlessSync
 from .pipeline import run_pipeline
 from .repository import Repository
@@ -40,6 +41,7 @@ _RETENTION_POLL_SECONDS = 3600.0
 # Gegensatz zu "paperless-sync", die nur bei wirksamem Feature entsteht.
 _ALWAYS_STARTED_TASKS = ("scan", "process", "retry", "retention")
 _PAPERLESS_TASK_NAME = "paperless-sync"
+_PAPERLESS_LINK_TASK_NAME = "paperless-link"
 _OBSERVER_TASK_NAME = "watch-folder-observer"
 
 
@@ -98,12 +100,14 @@ class Worker:
         adapter: OcrAdapter,
         bus: EventBus,
         paperless_sync: PaperlessSync | None = None,
+        paperless_link: PaperlessLinker | None = None,
     ) -> None:
         self.settings = settings
         self.repo = repo
         self.adapter = adapter
         self.bus = bus
         self.paperless_sync = paperless_sync
+        self.paperless_link = paperless_link
         self.queue: asyncio.Queue[int] = asyncio.Queue()
         self.tracker = StabilityTracker(
             settings.partial_suffix_list, settings.stability_window_seconds
@@ -145,6 +149,16 @@ class Worker:
                 "Paperless-Sync aktiv (Intervall %ss)",
                 self.settings.paperless_sync_interval_seconds,
             )
+        if self.paperless_link is not None and self.paperless_link.enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._paperless_link_loop(), name=_PAPERLESS_LINK_TASK_NAME
+                )
+            )
+            log.info(
+                "Paperless-Verknüpfung aktiv (Intervall %ss)",
+                self.settings.paperless_link_interval_seconds,
+            )
         log.info("Worker gestartet, überwacht %s", self.settings.watch_dir)
 
     async def stop(self) -> None:
@@ -173,6 +187,7 @@ class Worker:
             self._core_task_status(name, by_name.get(name)) for name in _ALWAYS_STARTED_TASKS
         ]
         statuses.append(self._paperless_task_status(by_name.get(_PAPERLESS_TASK_NAME)))
+        statuses.append(self._paperless_link_task_status(by_name.get(_PAPERLESS_LINK_TASK_NAME)))
         return statuses
 
     def _core_task_status(self, name: str, task: asyncio.Task | None) -> BackgroundTaskStatus:
@@ -199,6 +214,20 @@ class Worker:
         return BackgroundTaskStatus(
             _PAPERLESS_TASK_NAME, TaskState.STOPPED, error=self._task_error(task)
         )
+
+    def _paperless_link_task_status(self, task: asyncio.Task | None) -> BackgroundTaskStatus:
+        """Wie die Paperless-Schleife: Ohne Anbindung (URL + Token) gilt „nicht gestartet"
+        als gesund."""
+        name = _PAPERLESS_LINK_TASK_NAME
+        if task is None:
+            if self.paperless_link is not None and self.paperless_link.enabled:
+                return BackgroundTaskStatus(
+                    name, TaskState.STOPPED, error="Task wurde nie gestartet"
+                )
+            return BackgroundTaskStatus(name, TaskState.NOT_STARTED)
+        if not task.done():
+            return BackgroundTaskStatus(name, TaskState.RUNNING)
+        return BackgroundTaskStatus(name, TaskState.STOPPED, error=self._task_error(task))
 
     def observer_state(self) -> BackgroundTaskStatus:
         """Meldet, ob der Watchdog-Observer des Eingangsordners noch lebt.
@@ -368,3 +397,16 @@ class Worker:
             except Exception:
                 log.exception("Fehler im Paperless-Sync-Loop")
             await asyncio.sleep(self.settings.paperless_sync_interval_seconds)
+
+    async def _paperless_link_loop(self) -> None:
+        assert self.paperless_link is not None
+        while not self._stop.is_set():
+            delay = self.settings.paperless_link_interval_seconds
+            try:
+                result = await self.paperless_link.run_once()
+                if result.more_work:
+                    # Voller Nachhol-Stapel: nicht den ganzen Takt abwarten.
+                    delay = min(delay, BACKLOG_SLEEP_SECONDS)
+            except Exception:
+                log.exception("Fehler im Paperless-Verknüpfungs-Loop")
+            await asyncio.sleep(delay)

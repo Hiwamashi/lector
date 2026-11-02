@@ -335,6 +335,13 @@ Kante und Tiefe werden einmal erklärt: im Nebeneinander nur Rahmen (`panel-bord
 bisher 70vh. Die geöffnete Zeile trägt `aria-current="true"` und die Fläche `row-current`;
 klickbare Zeilen (`tr[data-panel-url]`) zeigen `cursor: pointer` und Hover in Kopfzeilengrau.
 
+**Vorgangsansicht (`#detail` und Leiste der Dokumente-Liste).** Eine Leiste, ein
+`h1#panel-title` (Dateiname), Status und Paperless-Bezug im Kopf. Verlauf und Angaben zum
+Vorgang liegen in einem `<details class="doc-log">` (offen bei „Fehlgeschlagen“, „In Arbeit“,
+„Wartet“, „Angehalten“). Darunter steht die Paperless-Dokumentansicht eingebettet
+(`.paperless-embedded`, Haarlinie oben, Titel als `h2`, sonst unverändert) oder, ohne
+Verknüpfung, das lokale Original in `.doc-preview`.
+
 **Tastatur** (nur bei offener Leiste, nicht in Eingabefeldern, Auswahllisten oder der
 Vorschau): `↑`/`k` vorheriger, `↓`/`j` nächster Eintrag, `Esc` schließt, `Enter` öffnet
 die volle Seite.
@@ -409,6 +416,10 @@ die Pille gehört den Status-Badges, ein Chip ist ein Bedienelement.
 - Vollrunde Pille, 0.15rem × 0.6rem, Badge-Typo.
 - Immer Paar aus blasser Signalfläche + kräftigem Signalton; „kein Status" nutzt Pultgrau
   mit Bleistift.
+- **Paperless-Bezug** (`badge--link-*`, Spalte „Paperless“ und Kopf der Vorgangsansicht):
+  dieselben Paare, keine neue Farbe. Wartet = Pultgrau/Bleistift (nichts ist falsch),
+  verknüpft = Grün, über Dateinamen = Petrol-Hauch (weniger sicher), nicht gefunden = Amber,
+  nicht mehr vorhanden = Rot.
 
 ### Cards / Containers
 - **Corner Style:** 10px.

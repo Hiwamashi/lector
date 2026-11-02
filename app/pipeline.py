@@ -15,9 +15,10 @@ from .config import Settings
 from .detection import detect
 from .fileops import copy_into, move_into
 from .fileops import file_hash as compute_file_hash
-from .models import DocStatus, EventType
+from .models import DocStatus, EventType, PaperlessLink
 from .ocr.base import OcrAdapter, SafeChunkStore
 from .pages import PDF_RENDER_DPI, count_pages, extract_pages
+from .paperless_link import link_configured
 from .pdfbuilder import build_sandwich_pdf
 from .preprocessing import preprocess_page
 from .repository import Repository
@@ -29,12 +30,29 @@ def _output_pdf_name(original_filename: str) -> str:
     return f"{Path(original_filename).stem}.pdf"
 
 
+def _mark_link_pending(doc, repo: Repository, settings: Settings) -> None:
+    """Setzt den Verknüpfungszustand `pending`, sobald die Ablage vollständig ist (Ausgabe
+    in `consume`, Original verschoben) und eine Paperless-Anbindung besteht."""
+    if link_configured(settings):
+        repo.update_document(doc.id, paperless_link=PaperlessLink.PENDING)
+
+
 def _handle_erechnung(doc, repo: Repository, settings: Settings) -> None:
     source = Path(doc.source_path)
     target = copy_into(source, settings.consume_dir, uid=settings.puid, gid=settings.pgid)
-    repo.update_document(doc.id, output_path=str(target))
+    # Bytes identisch zum Original: die Prüfsumme der abgelegten Datei ist `file_hash`.
+    # Fehlt sie (Vorgang ohne Hash), wird sie aus der abgelegten Datei gebildet.
+    output_hash = doc.file_hash or compute_file_hash(target)
+    # Der Verknüpfungszustand wird erst nach dem Verschieben des Originals auf `pending`
+    # gesetzt (siehe `_mark_link_pending`): Scheitert der Rest, endet der Vorgang nicht mit
+    # einer Verknüpfung, die nie zustande kommt.
+    repo.mark_consumed(
+        doc.id, output_path=str(target), output_hash=output_hash, link_pending=False
+    )
     repo.add_event(doc.id, EventType.MOVED_TO_CONSUME, f"unverändert nach {target.name}")
-    move_into(source, settings.processed_dir)
+    original = move_into(source, settings.processed_dir)
+    repo.update_document(doc.id, original_path=str(original))
+    _mark_link_pending(doc, repo, settings)
     repo.set_status(doc.id, DocStatus.SKIPPED_ERECHNUNG)
     repo.add_event(doc.id, EventType.SKIPPED_ERECHNUNG, "E-Rechnung unverändert durchgereicht")
 
@@ -169,11 +187,22 @@ def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) 
         renamed = tmp_pdf.with_name(_output_pdf_name(doc.original_filename))
         if renamed != tmp_pdf:
             tmp_pdf.rename(renamed)
+        # Prüfsumme vor dem Move: Move und chown ändern die Bytes nicht, und das
+        # Temp-Verzeichnis verschwindet mit dem Block.
+        output_hash = compute_file_hash(renamed)
         target = move_into(renamed, settings.consume_dir, uid=settings.puid, gid=settings.pgid)
 
-    repo.update_document(doc.id, output_path=str(target))
+    # Hinweis zum Wiederholversuch: Ist die Ausgabe bereits in `consume` abgelegt und
+    # scheitert danach etwas, legt ein neuer Versuch eine weitere Datei dort ab. Paperless
+    # nimmt sie als Dublette nur an, wenn die Bytes gleich sind (das Sandwich-PDF ist nicht
+    # zwingend bitgleich); `output_hash` gilt immer für die zuletzt abgelegte Datei.
+    repo.mark_consumed(
+        doc.id, output_path=str(target), output_hash=output_hash, link_pending=False
+    )
     repo.add_event(doc.id, EventType.MOVED_TO_CONSUME, f"nach {target.name}")
-    move_into(source, settings.processed_dir)
+    original = move_into(source, settings.processed_dir)
+    repo.update_document(doc.id, original_path=str(original))
+    _mark_link_pending(doc, repo, settings)
     repo.set_status(doc.id, DocStatus.DONE)
     repo.add_event(doc.id, EventType.DONE, "fertig")
 
@@ -196,7 +225,10 @@ def _handle_failure(doc, repo: Repository, settings: Settings, error: Exception)
     else:
         source = Path(doc.source_path)
         if source.exists():
-            move_into(source, settings.error_dir)
+            moved = move_into(source, settings.error_dir)
+            repo.update_document(doc.id, original_path=str(moved))
+        # Ein fehlgeschlagener Vorgang hat kein Ergebnis, das in Paperless ankommen soll.
+        repo.update_document(doc.id, paperless_link=None)
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
         repo.add_event(
             doc.id,

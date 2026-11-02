@@ -44,10 +44,16 @@
   </p>
   <div class="notice-actions">
     <form method="post" data-panel-form action="/invoices/{{ inv.id }}/export">
+      {% include "partials/back_field.html" %}
       <input type="hidden" name="confirm" value="1" />
       <button type="submit">Trotzdem exportieren</button>
     </form>
+    {# Aus der Vorgangsansicht (back_doc) zurück zum Vorgang, nicht auf die Paperless-ID. #}
+    {% if back_doc %}
+    <a class="link" href="/documents/{{ back_doc }}" data-panel-url="/fragment/documents/{{ back_doc }}">Abbrechen</a>
+    {% else %}
     <a class="link" href="/paperless/{{ inv.paperless_id }}" data-panel-url="/fragment/paperless/{{ inv.paperless_id }}">Abbrechen</a>
+    {% endif %}
   </div>
 </div>
 {% endif %}
@@ -78,9 +84,11 @@
   {% endif %}
   <div class="notice-actions">
     <form method="post" data-panel-form action="/invoices/{{ inv.id }}/export">
+      {% include "partials/back_field.html" %}
       <button type="submit" {% if not feature_sevdesk or not row.exportable %}disabled{% endif %}>Trotzdem exportieren</button>
     </form>
     <form method="post" data-panel-form action="/invoices/{{ inv.id }}/dismiss">
+      {% include "partials/back_field.html" %}
       <button type="submit" class="button--quiet">Verwerfen</button>
     </form>
   </div>

@@ -42,7 +42,7 @@ sichtbare Text ist übersetzt.
   Fragment-Endpunkt, sonst kippt der Text beim Live-Abgleich). `recipient_rows.html` liest
   `filters` direkt.
 - **Fehlgeschlagenes Dokument:** `failed` hat mehrere Ursachen, die Box unterscheidet sie
-  (`detail_body.html`, Kontext `retry_max` aus beiden Detail-Routen):
+  (`partials/document_panel.html`, Kontext `retry_max` aus beiden Detail-Routen):
   - **Versuche ausgeschöpft** (`attempt_count >= RETRY_MAX`, Pipeline oder Recovery): Anzahl
     der Versuche, Original im Fehlerordner, Wiederholungsweg (erneut einwerfen/hochladen).
   - **Verworfen** (Ereignis `discarded` im Verlauf): nur die Verwerfen-Meldung, kein

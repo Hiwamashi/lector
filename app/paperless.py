@@ -91,6 +91,29 @@ class PaperlessError(RuntimeError):
     pass
 
 
+class TooManyHitsError(PaperlessError):
+    """Eine Filtersuche lieferte mehr als ``FIND_MAX_HITS`` Treffer.
+
+    Bei einer Prüfsummensuche heißt das: Der Filter wird nicht unterstützt (Abbruch). Bei
+    einer Namenssuche kann es schlicht ein häufiger Name sein (mehrdeutig).
+    """
+
+
+# Mehr Treffer als das gelten bei `find_documents` als Zeichen, dass Paperless einen
+# Filter nicht kennt: Unbekannte Filter werden stillschweigend ignoriert, die Antwort ist
+# dann der gesamte Bestand.
+FIND_MAX_HITS = 5
+
+
+@dataclass
+class DocumentHit:
+    """Treffer einer gefilterten Dokumentsuche (nur die abgefragten Felder)."""
+
+    id: int
+    original_file_name: str | None = None
+    added: str | None = None
+
+
 class LoginResult(Enum):
     """Ergebnis einer Anmeldeprüfung gegen Paperless (siehe ``obtain_token``)."""
 
@@ -284,6 +307,39 @@ class PaperlessClient:
         return DocumentPage(
             documents=docs, count=int(data.get("count", 0)), page=page, page_size=page_size
         )
+
+    async def find_documents(
+        self, *, fields: str = "id,original_file_name,added", **filters: str
+    ) -> list[DocumentHit]:
+        """Sucht Dokumente über Filterparameter (z. B. ``checksum__iexact``).
+
+        Fragt nur die Felder aus ``fields`` ab und liest eine einzelne, kleine Seite.
+        Paperless ignoriert unbekannte Filter lautlos und liefert dann den ganzen Bestand;
+        meldet die Antwort mehr als ``FIND_MAX_HITS`` Treffer, wirft die Methode deshalb
+        ``PaperlessError`` statt das Ergebnis weiterzugeben.
+        """
+        params: dict[str, object] = {
+            "page_size": FIND_MAX_HITS + 1,
+            "fields": fields,
+            **filters,
+        }
+        resp = await self._client.get("/api/documents/", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        count = int(data.get("count", len(results)))
+        if count > FIND_MAX_HITS or len(results) > FIND_MAX_HITS:
+            raise TooManyHitsError(
+                f"Filter nicht unterstützt: {count} Treffer für {sorted(filters)}"
+            )
+        return [
+            DocumentHit(
+                id=int(item["id"]),
+                original_file_name=item.get("original_file_name"),
+                added=item.get("added"),
+            )
+            for item in results
+        ]
 
     async def get_document(self, doc_id: int) -> PaperlessDocument:
         resp = await self._client.get(f"/api/documents/{doc_id}/")

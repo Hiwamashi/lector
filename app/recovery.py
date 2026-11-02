@@ -139,6 +139,7 @@ def _resolve_one(doc: Document, repo: Repository, settings: Settings) -> None:
             f"weder im Eingang noch im Verarbeitet-Ordner auffindbar (zuletzt bekannt "
             f"unter {doc.source_path})."
         )
+        repo.update_document(doc.id, paperless_link=None)
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
         repo.add_event(doc.id, EventType.FAILED, message)
         return
@@ -189,7 +190,9 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
         # Muster wie im endgültigen Fehlerfall (`_handle_failure`, `app/pipeline.py`).
         source = Path(doc.source_path)
         if source.exists():
-            move_into(source, settings.error_dir)
+            moved = move_into(source, settings.error_dir)
+            repo.update_document(doc.id, original_path=str(moved))
+        repo.update_document(doc.id, paperless_link=None)
         repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
         repo.add_event(doc.id, EventType.FAILED, message)
         return
@@ -217,7 +220,9 @@ def _resolve_ambiguous(doc: Document, repo: Repository, settings: Settings) -> N
     )
     source = Path(doc.source_path)
     if source.exists():
-        move_into(source, settings.error_dir)
+        moved = move_into(source, settings.error_dir)
+        repo.update_document(doc.id, original_path=str(moved))
+    repo.update_document(doc.id, paperless_link=None)
     repo.set_status(doc.id, DocStatus.FAILED, error_message=message)
     repo.add_event(doc.id, EventType.FAILED, message)
 
@@ -284,7 +289,8 @@ def _finish(doc: Document, repo: Repository, settings: Settings) -> None:
     """
     source = Path(doc.source_path)
     if source.exists():
-        move_into(source, settings.processed_dir)
+        moved = move_into(source, settings.processed_dir)
+        repo.update_document(doc.id, original_path=str(moved))
     if doc.doc_type in (DocType.ERECHNUNG_XML, DocType.ERECHNUNG_PDF):
         status, event_type, detail = (
             DocStatus.SKIPPED_ERECHNUNG,

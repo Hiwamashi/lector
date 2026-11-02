@@ -2,7 +2,7 @@
 {% block title %}{{ doc.original_filename }} — Lector{% endblock %}
 {% block content %}
 <a class="link back" href="/">← Alle Dokumente</a>
-<div id="detail" data-fragment="/fragment/documents/{{ doc.id }}">
-  {% include "partials/detail_body.html" %}
+<div id="detail" data-fragment="/fragment/documents/{{ doc.id }}{% if ask %}?ask=1{% endif %}">
+  {% include "partials/document_panel.html" %}
 </div>
 {% endblock %}

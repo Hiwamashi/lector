@@ -30,6 +30,18 @@ Entwicklung wird optional eine `.env` gelesen (`.env.example` als Vorlage).
 | `SESSION_COOKIE_SECURE` | false | true = Cookie nur über HTTPS (Betrieb hinter TLS-Proxy). Nur bei `AUTH_MODE=paperless` und HTTPS sinnvoll. Siehe [web-zugang.md](web-zugang.md) |
 | `FORWARDED_ALLOW_IPS` | — | uvicorn vertraut `X-Forwarded-*`-Headern nur von dieser Adresse (Proxy-Konfiguration). Siehe [web-zugang.md](web-zugang.md#proxy-einrichtung-öffentlicher-betrieb) |
 
+## Paperless-Verknüpfung
+
+Gilt für den Verknüpfungsjob (`app/paperless_link.py`), der ohne `FEATURE_PAPERLESS_SYNC` läuft,
+sobald `PAPERLESS_URL` und `PAPERLESS_TOKEN` gesetzt sind. Beschreibung in
+[paperless-integration/scan-verknuepfung.md](paperless-integration/scan-verknuepfung.md).
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `PAPERLESS_URL` | leer | Adresse der Paperless-Instanz. Ohne Adresse und Token läuft der Verknüpfungsjob nicht |
+| `PAPERLESS_TOKEN` | leer | Zugangsschlüssel für Paperless. Ohne Adresse und Token läuft der Verknüpfungsjob nicht |
+| `PAPERLESS_LINK_INTERVAL_SECONDS` | `300.0` | Takt des Verknüpfungsjobs in Sekunden. Muss größer als 0 sein, sonst Startfehler. Der erste Lauf beginnt beim Start, ein voller Nachhol-Stapel verkürzt die Pause auf 5 Sekunden |
+
 ## SevDesk-Export und Export-Übersicht
 
 Gilt nur, wenn `FEATURE_PAPERLESS_SYNC` und `FEATURE_SEVDESK_EXPORT` aktiv sind. Die Defaults
@@ -90,6 +102,7 @@ Tabelle, welche Angabe unter welcher Bedingung Pflicht ist.
 | `SEVDESK_MATCH_WINDOW_DAYS` und `SEVDESK_VOUCHER_SYNC_MINUTES` sind größer als 0 | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
 | `SEVDESK_CONTEXT_LABEL` ist nicht leer (nach Entfernen von Leerzeichen) | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
 | `SEVDESK_ACCOUNT_DATEV_ID` besteht nur aus Ziffern (leer = nicht gesetzt) | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
+| `PAPERLESS_LINK_INTERVAL_SECONDS` größer als 0 | immer |
 | Arbeitsordner (`WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`) und Verzeichnis von `DB_PATH` beschreibbar | immer (eigene Schreibprobe, siehe unten) |
 
 Der Provider-Vergleich ist **case-insensitiv**, konsistent zu `get_adapter()`
@@ -110,9 +123,12 @@ Der Provider-Vergleich ist **case-insensitiv**, konsistent zu `get_adapter()`
 - **Keine Gültigkeitsprüfung.** Kein Netzwerkzugriff, kein Parsen der Credentials-Datei.
   Geprüft wird Vorhandensein, Typ, Wertebereich, Lesbarkeit — nicht, ob ein Token gilt.
 
-`RETRY_DELAY_MINUTES` ist der einzige geprüfte Zähler — und auch nur, solange `RETRY_MAX`
-> 0 ist: Bei ≤ 0 liegt `retry_at` (`app/repository.py`) im Jetzt oder in der Vergangenheit,
+`RETRY_DELAY_MINUTES` ist der wichtigste geprüfte Zähler — und auch nur, solange `RETRY_MAX`
+> 0 ist. Bei ≤ 0 liegt `retry_at` (`app/repository.py`) im Jetzt oder in der Vergangenheit,
 die Pause zwischen den Versuchen entfällt vollständig, und ein dauerhaft scheiterndes
 Dokument verbraucht alle Versuche in Sekunden — jeden mit einem vollen, bezahlten
 OCR-Aufruf. Findet mangels `RETRY_MAX` > 0 ohnehin kein Wiederholversuch statt, kostet ein
 zu kurzes `RETRY_DELAY_MINUTES` nichts, und die Prüfung entfällt.
+
+Der zweite geprüfte Zähler ist `PAPERLESS_LINK_INTERVAL_SECONDS` (immer, muss größer als 0 sein).
+Er steuert nur den Takt des Verknüpfungsjobs, siehe [Paperless-Verknüpfung](#paperless-verknüpfung).
