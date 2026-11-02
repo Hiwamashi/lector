@@ -96,6 +96,7 @@ def discard_document(document_id: int, repo: Repository, settings: Settings) -> 
     if source.exists():
         try:
             target = move_into(source, settings.error_dir)
+            repo.update_document(document_id, original_path=str(target))
         except OSError as error:
             # Der Vorgang DARF nicht auf `failed` stehen bleiben, während das Original
             # im Eingangsordner liegt: `find_by_hash_active` schließt genau `failed`

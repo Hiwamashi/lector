@@ -55,10 +55,12 @@
         <td>
           <div class="candidate-actions">
             <form method="post" data-panel-form action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
+              {% include "partials/back_field.html" %}
               <input type="hidden" name="decision" value="confirm" />
               <button type="submit" aria-label="Beleg {{ c.match.voucher_id }}: derselbe Beleg">Derselbe Beleg</button>
             </form>
             <form method="post" data-panel-form action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
+              {% include "partials/back_field.html" %}
               <input type="hidden" name="decision" value="reject" />
               <button type="submit" class="button--quiet" aria-label="Beleg {{ c.match.voucher_id }}: anderer Beleg">Anderer Beleg</button>
             </form>
@@ -85,6 +87,7 @@
   <section class="giro-form">
     <h2>Zahldaten</h2>
     <form method="post" data-panel-form action="/invoices/{{ inv.id }}/giro">
+      {% include "partials/back_field.html" %}
       <label>Empfänger
         <input type="text" name="creditor_name" value="{{ inv.creditor_name or '' }}" />
       </label>
@@ -109,6 +112,7 @@
   {% set already_exported = inv.sevdesk_status == "exported" and inv.sevdesk_voucher_id %}
   {% set uncertain = inv.sevdesk_status == "uncertain" %}
   <form method="post" data-panel-form action="/invoices/{{ inv.id }}/export">
+    {% include "partials/back_field.html" %}
     <button type="submit"
       {% if not feature_sevdesk %}disabled title="FEATURE_SEVDESK_EXPORT=false"
       {% elif blockers.hard %}disabled{% endif %}>
@@ -127,6 +131,7 @@
   <span class="muted">Beleg-ID: {{ inv.sevdesk_voucher_id }}</span>
   {% endif %}
   <form method="post" data-panel-form action="/invoices/{{ inv.id }}/paid">
+    {% include "partials/back_field.html" %}
     <input type="hidden" name="paid" value="{{ 'false' if inv.paid else 'true' }}" />
     <button type="submit">{{ "Überweisung zurücksetzen" if inv.paid else "Als überwiesen markieren" }}</button>
   </form>

@@ -170,6 +170,7 @@ def test_resolve_watch_dir_with_output_path_finishes_and_moves_original(tmp_path
     assert doc.status == DocStatus.DONE
     assert not src.exists()
     assert (s.processed_dir / "scan.pdf").exists()
+    assert doc.original_path == str(s.processed_dir / "scan.pdf")
 
 
 def test_resolve_not_found_row_fails_with_explanatory_message(tmp_path):

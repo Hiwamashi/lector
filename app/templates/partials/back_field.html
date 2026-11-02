@@ -1,0 +1,4 @@
+{# Rückweg aus der kombinierten Vorgangsansicht (Design D6): `back_doc` ist die Lector-ID des
+   Vorgangs. Die Route leitet damit zurück auf /fragment/documents/<id> (Leiste) bzw.
+   /documents/<id> (ohne JavaScript). Außerhalb der Vorgangsansicht ist `back_doc` leer. #}
+{% if back_doc %}<input type="hidden" name="back" value="doc:{{ back_doc }}" />{% endif %}

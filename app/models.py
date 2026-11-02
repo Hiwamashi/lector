@@ -27,6 +27,21 @@ class DocType(StrEnum):
     ERECHNUNG_PDF = "erechnung_pdf"
 
 
+class PaperlessLink(StrEnum):
+    """Zustand der Verknüpfung eines Vorgangs mit seinem Paperless-Dokument.
+
+    `None` am Vorgang heißt: noch nicht betrachtet bzw. kein Ergebnis (laufend,
+    fehlgeschlagen, verworfen oder keine Paperless-Anbindung). Bei einem abgeschlossenen
+    Vorgang holt das Nachholen (`app/paperless_link.py`) diese Fälle ein.
+    """
+
+    PENDING = "pending"
+    LINKED = "linked"
+    LINKED_BY_NAME = "linked_by_name"
+    NOT_FOUND = "not_found"
+    MISSING = "missing"
+
+
 class EventType(StrEnum):
     DETECTED = "detected"
     PREPROCESSING = "preprocessing"
@@ -40,6 +55,7 @@ class EventType(StrEnum):
     DISCARDED = "discarded"
     FAILED = "failed"
     DONE = "done"
+    PAPERLESS_LINKED = "paperless_linked"
 
 
 @dataclass
@@ -64,6 +80,15 @@ class Document:
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # Verknüpfung mit Paperless: SHA-256 der in `consume` abgelegten Datei, aktueller Pfad
+    # des Originals in `processed`/`error`, Zeitpunkt der Ablage, ID des Paperless-Dokuments,
+    # Verknüpfungszustand und Zeitpunkt der letzten Suche.
+    output_hash: str | None = None
+    original_path: str | None = None
+    consumed_at: datetime | None = None
+    paperless_id: int | None = None
+    paperless_link: PaperlessLink | None = None
+    paperless_checked_at: datetime | None = None
 
 
 @dataclass

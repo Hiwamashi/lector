@@ -341,6 +341,15 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 .badge--skipped_erechnung { background: var(--accent-soft); color: var(--accent); }
 .badge--failed { background: var(--red-bg); color: var(--red); }
 
+/* Verknüpfung Vorgang -> Paperless-Dokument: dieselben Signalpaare wie die Status-Badges.
+   Wartet ist neutral (nichts ist falsch), „über Namen“ trägt den Petrol-Ton der weniger
+   sicheren Verknüpfung, „nicht gefunden“ ist Amber, „nicht mehr vorhanden“ Rot. */
+.badge--link-pending { background: var(--bg); color: var(--ink-soft); }
+.badge--link-linked { background: var(--green-bg); color: var(--green); }
+.badge--link-linked_by_name { background: var(--accent-soft); color: var(--accent); }
+.badge--link-not_found { background: var(--amber-bg); color: var(--amber); }
+.badge--link-missing { background: var(--red-bg); color: var(--red); }
+
 /* GiroCode-/SevDesk-Status-Badges */
 .badge--giro-none, .badge--sevdesk-none { background: var(--bg); color: var(--ink-soft); }
 .badge--giro-ready, .badge--giro-edited { background: var(--green-bg); color: var(--green); }
@@ -422,8 +431,22 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 @media (max-width: 720px) { .invoice-grid { grid-template-columns: 1fr; } }
 
 /* Detailansicht */
-.detail-head { display: flex; align-items: center; gap: 0.8rem; }
+.detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; }
 .detail-head h1 { font-size: 1.3rem; margin: 0; }
+.paperless-ref { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem;
+  font-size: 0.9rem; }
+
+/* Verlauf und Stammdaten des Vorgangs: eingeklappt, solange nichts zu klären ist. */
+.doc-log { margin: 1rem 0; }
+.doc-log > summary { cursor: pointer; padding: 0.4rem 0; font-size: 0.9rem; font-weight: 600; }
+.doc-log > summary:hover { color: var(--accent); }
+.doc-log > .meta { margin-top: 0.4rem; }
+.doc-log h2 { margin-top: 1rem; }
+
+/* Paperless-Dokument unter dem Vorgang: eine Haarlinie trennt die beiden Bereiche, der Titel
+   des Dokuments ist eine h2 (die h1 gehört dem Vorgang). */
+.paperless-embedded { margin-top: 1.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+.paperless-embedded .detail-head .doc-title { margin: 0; overflow-wrap: anywhere; }
 .progress { position: relative; height: 1.4rem; background: var(--border); border-radius: 999px; overflow: hidden; margin: 1rem 0; }
 .progress-bar { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 0.3s ease; }
 .progress-label { position: relative; display: block; text-align: center; font-size: 0.8rem; color: var(--on-accent); line-height: 1.4rem; }
@@ -502,6 +525,8 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
   .events li { grid-template-columns: 1fr; gap: 0.1rem; }
   .history th:nth-child(3), .history td:nth-child(3),
   .history th:nth-child(5), .history td:nth-child(5) { display: none; }
+  /* Der Paperless-Bezug steht hier in der Ansicht des Vorgangs, nicht in der Zeile. */
+  .history .col-paperless { display: none; }
   /* In der Rechnungsliste ist Spalte 3 der Titel — der darf nicht wegfallen. */
   .history--invoices th:nth-child(3), .history--invoices td:nth-child(3),
   .history--invoices th:nth-child(5), .history--invoices td:nth-child(5) { display: table-cell; }

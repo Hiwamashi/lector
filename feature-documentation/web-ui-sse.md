@@ -13,16 +13,30 @@ gestoppt. Anmeldung ist optional per `AUTH_MODE` (siehe [web-zugang.md](web-zuga
 
 | Pfad | Zweck |
 |---|---|
-| `GET /` | Dashboard: Status-Kacheln + filterbare Historientabelle |
-| `GET /fragment/history` | Tabellen-Fragment (Filter `status`,`q`,`period`) — auch für SSE-Refresh |
-| `GET /` | Dashboard: Status-Kacheln + filterbare Historientabelle; `?doc=<lector_dokument_id>` öffnet die Vorgangsansicht in der Seitenleiste |
-| `GET /fragment/history` | Tabellen-Fragment (Filter `status`,`q`,`period`) — auch für SSE-Refresh |
-| `GET /documents/{id}` | Detailseite (Metadaten, Fortschritt, Verlauf, Fehler) |
-| `GET /fragment/documents/{id}` | Detail-Fragment für SSE-Refresh und Seitenleiste |
+| `GET /` | Dashboard: Status-Kacheln + filterbare Historientabelle. Filter `status`, `q`, `period`, `paperless=missing` (Chip „Nicht in Paperless“, nur mit Paperless-Anbindung). `?doc=<lector_dokument_id>` öffnet die Vorgangsleiste in der Seitenleiste |
+| `GET /fragment/history` | Tabellen-Fragment (Filter `status`, `q`, `period`, `paperless`) — auch für SSE-Refresh |
+| `GET /documents/{id}` | Vorgangsseite: kombinierte Leiste mit Kopf (Dateiname, Status, Paperless-Bezug) und Verlauf, darunter die eingebettete Paperless-Ansicht oder das lokale Original. Siehe [Vorgangsleiste](#vorgangsleiste-kombinierte-ansicht) |
+| `GET /fragment/documents/{id}` | Fragment der Vorgangsleiste für SSE-Refresh und Seitenleiste |
+| `GET /documents/{id}/original` | Lokales Original des Vorgangs: PDF und Bilder als Vorschau, andere Formate (z. B. XML) als Download. Nur aus `processed` oder `error`; 404, wenn die Datei nicht vorhanden ist. Siehe [paperless-integration/scan-verknuepfung.md](paperless-integration/scan-verknuepfung.md#original-auslieferung) |
 | `GET /paperless/{id}` | Dokumentansicht eines Paperless-Dokuments (Seite), siehe [paperless-integration/dokumentansicht.md](paperless-integration/dokumentansicht.md) |
 | `GET /fragment/paperless/{id}` | Fragment der Dokumentansicht für Seitenleiste und SSE-Refresh |
 | `GET /events` | SSE-Stream: pro Ereignis eine Zeile `data: <token>` |
 | `GET /healthz` | Health-Check |
+
+## Vorgangsleiste (kombinierte Ansicht)
+
+`partials/document_panel.html` ist der gemeinsame Baustein für `/documents/{id}`, das Fragment
+`/fragment/documents/{id}` und die Seitenleiste der Dokumente-Liste. Er enthält genau eine
+`panel_bar` und genau ein `h1#panel-title`, auf die `app.js` sich verlässt.
+
+- Oben: Kopf mit Dateiname, Status und Paperless-Bezug (`#ID`, „wartet“, „nicht gefunden“ usw.).
+- Darunter: Verlauf als `<details>`, offen bei `failed`, `processing`, `pending` und `blocked`.
+- Darunter: die eingebettete Paperless-Ansicht (`paperless_doc_body.html` mit `embedded`) bei einem
+  verknüpften Vorgang, sonst das lokale Original (`document_original.html`) bzw. ein Hinweis.
+
+Formulare der eingebetteten Ansicht senden `back=doc:<id>`. `POST`-Routen für Empfänger und
+Rechnungsaktionen führen damit zurück zur Vorgangsleiste. Details in
+[paperless-integration/scan-verknuepfung.md](paperless-integration/scan-verknuepfung.md#leiste-vorgang-und-dokument-zusammen).
 
 ## Live-Updates
 

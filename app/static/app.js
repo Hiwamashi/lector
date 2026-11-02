@@ -274,7 +274,12 @@
     if (detail && detail.getAttribute("data-fragment")) {
       jobs.push(loadFragment(
         detail.getAttribute("data-fragment"), undefined,
-        function (html) { detail.innerHTML = html; },
+        function (html) {
+          // Unveraenderter Inhalt wird nicht neu gesetzt; sonst bleibt Vorschau und Verlauf.
+          if (html === detailHtml) return;
+          detailHtml = html;
+          ersetzeInhalt(detail, html, true);
+        },
         mine
       ));
     }
@@ -326,6 +331,11 @@
       // vouchers, batch) kann sie betreffen und laesst sich nicht der Paperless-ID zuordnen.
       return type !== "doc";
     }
+    if (detail.type === "doc") {
+      // Die Vorgangsseite bettet bei Verknuepfung die Rechnungsansicht ein: Rechnungs- und
+      // Belegereignisse koennen sie betreffen und lassen sich nicht der Vorgangs-ID zuordnen.
+      if (type === "inv" || type === "vouchers") return true;
+    }
     return type === detail.type && id === detail.id;
   }
 
@@ -342,6 +352,7 @@
   var panelHtml = "";        // zuletzt gesetzter Inhalt (verhindert sinnloses Neuzeichnen)
   var panelDirty = false;    // Nutzer hat in der Leiste etwas eingegeben
   var panelSendet = 0;       // laufende Formular-Requests der Leiste
+  var detailHtml = null;     // zuletzt gesetzter Inhalt von #detail (Seite /documents/<id>)
 
   function panelEl() { return document.getElementById("panel"); }
 
@@ -434,25 +445,72 @@
     return o ? (o.getAttribute("data") || null) : null;
   }
 
-  // Ersetzt den Inhalt der Leiste. Bleibt die Vorschau dieselbe, wird ihr Element nicht
-  // angefasst: ein Verschieben oder Neuerzeugen laedt das PDF neu und setzt es zurueck.
-  // Nur die Geschwister davor und danach werden getauscht.
-  function ersetzeInhalt(p, html) {
-    var alt = p.querySelector(".doc-preview");
-    if (alt && alt.parentNode === p && vorschauDaten(alt)) {
+  // Tiefe von el unter wurzel (0 = wurzel selbst), -1 wenn nicht darunter.
+  function tiefeUnter(el, wurzel) {
+    var n = 0;
+    while (el && el !== wurzel) { el = el.parentNode; n++; }
+    return el === wurzel ? n : -1;
+  }
+
+  // Gleicher Aufbau von der Vorschau bis zur Wurzel? (gleiche Tiefe, gleiche Elementtypen)
+  function gleicherAufbau(alt, aWurzel, neu, nWurzel) {
+    if (tiefeUnter(alt, aWurzel) !== tiefeUnter(neu, nWurzel)) return false;
+    while (alt !== aWurzel) {
+      if (alt.tagName !== neu.tagName) return false;
+      alt = alt.parentNode; neu = neu.parentNode;
+    }
+    return true;
+  }
+
+  // Der Verlauf-Block (details.doc-log) merkt sich den Zustand, den der Server gerendert hat
+  // (data-server-open). Weicht der aktuelle Zustand davon ab, hat der Nutzer ihn geaendert.
+  function markiereDetails(wurzel) {
+    var d = wurzel ? wurzel.querySelector("details.doc-log") : null;
+    if (d && !d.hasAttribute("data-server-open")) {
+      d.setAttribute("data-server-open", d.hasAttribute("open") ? "1" : "0");
+    }
+  }
+
+  // Ersetzt den Inhalt von wurzel (#panel oder #detail). Bleibt die Vorschau dieselbe — auch
+  // verschachtelt, z.B. in section.paperless-embedded —, wird ihr Element nicht angefasst: ein
+  // Verschieben oder Neuerzeugen laedt das PDF neu und setzt es zurueck. Auf jeder Ebene
+  // zwischen Vorschau und Wurzel werden nur die Geschwister davor und danach getauscht.
+  // behalte: den vom Nutzer geaenderten Zustand des Verlaufs (details) uebernehmen; bei einem
+  // Dokumentwechsel gilt der Zustand des Servers.
+  function ersetzeInhalt(wurzel, html, behalte) {
+    var alteDetails = wurzel.querySelector("details.doc-log");
+    var nutzerOffen = null;
+    if (behalte && alteDetails && alteDetails.hasAttribute("data-server-open")) {
+      var jetzt = alteDetails.hasAttribute("open");
+      if (jetzt !== (alteDetails.getAttribute("data-server-open") === "1")) nutzerOffen = jetzt;
+    }
+    var getauscht = false;
+    var alt = wurzel.querySelector(".doc-preview");
+    if (alt && vorschauDaten(alt)) {
       var tmp = document.createElement("div");
       tmp.innerHTML = html;
       var neu = tmp.querySelector(".doc-preview");
-      if (neu && neu.parentNode === tmp && vorschauDaten(neu) === vorschauDaten(alt)) {
-        while (p.firstChild && p.firstChild !== alt) p.removeChild(p.firstChild);
-        while (alt.nextSibling) p.removeChild(alt.nextSibling);
-        while (tmp.firstChild && tmp.firstChild !== neu) p.insertBefore(tmp.firstChild, alt);
-        tmp.removeChild(neu);
-        while (tmp.firstChild) p.appendChild(tmp.firstChild);
-        return;
+      if (neu && vorschauDaten(neu) === vorschauDaten(alt) && gleicherAufbau(alt, wurzel, neu, tmp)) {
+        var a = alt, n = neu;
+        while (a !== wurzel) {
+          var ap = a.parentNode, np = n.parentNode;
+          while (ap.firstChild !== a) ap.removeChild(ap.firstChild);
+          while (a.nextSibling) ap.removeChild(a.nextSibling);
+          while (np.firstChild !== n) ap.insertBefore(np.firstChild, a);
+          np.removeChild(n);
+          while (np.firstChild) ap.appendChild(np.firstChild);
+          a = ap; n = np;
+        }
+        getauscht = true;
       }
     }
-    p.innerHTML = html;
+    if (!getauscht) wurzel.innerHTML = html;
+    var d = wurzel.querySelector("details.doc-log");
+    if (d) {
+      d.setAttribute("data-server-open", d.hasAttribute("open") ? "1" : "0");
+      if (nutzerOffen === true) d.setAttribute("open", "");
+      else if (nutzerOffen === false) d.removeAttribute("open");
+    }
   }
 
   // modus: "wechsel" (anderes Dokument: nach oben, Fokus auf den Titel), "aktion" (Antwort
@@ -468,7 +526,7 @@
     var imPanel = !!ae && p.contains(ae);
     var ids = (fokusIds || []).slice();
     if (imPanel && ae.id) ids.push(ae.id);
-    ersetzeInhalt(p, html);
+    ersetzeInhalt(p, html, modus !== "wechsel");
     panelHtml = html;
     panelDirty = false;
     if (key) panelInhaltKey = key;
@@ -735,6 +793,9 @@
       if (erfolg || unklar) refreshFragment(true);
     });
   });
+
+  markiereDetails(document.getElementById("panel"));
+  markiereDetails(document.getElementById("detail"));
 
   // Server hat die Leiste schon gerendert (?doc= beim Seitenaufruf): Zustand uebernehmen.
   (function () {

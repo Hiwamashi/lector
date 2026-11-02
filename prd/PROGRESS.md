@@ -943,5 +943,51 @@ Offen und bewusst nicht umgesetzt:
 
 - Die Leiste blättert am Listenende nicht auf die nächste Seite weiter.
 - Die Vorschau in der Leiste misst `clamp(18rem, 60dvh, 48rem)`; der Design-Entwurf sah `flex: 1` vor.
-- Folge-Change `scan-paperless-verknuepfung` (geplant): Verknüpfung von Scans mit Paperless über die
-  Prüfsumme und Vorschau des lokalen Originals in der Dokumente-Leiste.
+- Folge-Change `scan-paperless-verknuepfung`: umgesetzt, siehe Abschnitt „Zusatz-Feature: Scan-Verknüpfung
+  mit Paperless“ unten.
+
+## Zusatz-Feature: Scan-Verknüpfung mit Paperless (scan-paperless-verknuepfung) — umgesetzt, Abnahme offen
+
+Jeder abgelegte Vorgang hält die SHA-256 der Datei fest, die in `consume` liegt. Ein Job sucht das
+Paperless-Dokument über diese Prüfsumme und verknüpft beides. Der Altbestand wird nachgeholt. Für
+OCR-Vorgänge ohne gespeicherte Prüfsumme gibt es eine gekennzeichnete Ausnahme über den Dateinamen
+und ein enges Zeitfenster, nur bei genau einem Treffer. Die Vorgangsansicht zeigt Lector-Status,
+Verlauf, die Paperless-Ansicht oder bei fehlender Verknüpfung das lokale Original. Die Dokumente-Liste
+bekommt eine Spalte „Paperless“ und den Schnellfilter „Nicht in Paperless“.
+
+Change: `openspec/changes/scan-paperless-verknuepfung/` (noch nicht archiviert). Doku:
+`feature-documentation/paperless-integration/scan-verknuepfung.md` (neu),
+`feature-documentation/paperless-integration/dokumentansicht.md`, `feature-documentation/web-ui-sse.md`,
+`feature-documentation/konfiguration.md`, `feature-documentation/datenhaltung.md` und die Index-READMEs.
+
+| Feature | Status |
+|---|---|
+| Spalten an `documents` mit Migration und Index (`app/db.py`, `app/models.py`), Ereignis `paperless_linked` | ✅ |
+| Ablage schreibt Prüfsumme der abgelegten Datei und `original_path`: E-Rechnung über `file_hash`, OCR über das Sandwich-PDF (`app/pipeline.py`, `app/recovery.py`, `app/decisions.py`) | ✅ |
+| Suche über die Prüfsumme (`find_documents` in `app/paperless.py`), Stapel 50, Frist 24 Stunden (`app/paperless_link.py`) | ✅ |
+| Altbestand: E-Rechnungen über die Prüfsumme, OCR über Dateiname und Zeitfenster, nur eindeutiger Treffer | ✅ |
+| Täglicher Nachlauf 14 Tage für `not_found` mit Prüfsumme, einmaliger Nachlauf nach dem Start | ✅ |
+| Task `paperless-link` im Worker, Takt `PAPERLESS_LINK_INTERVAL_SECONDS` (Standard 300), Eintrag in `/healthz` | ✅ |
+| Original-Auslieferung `GET /documents/{id}/original` mit Ordnerprüfung, PDF und Bild als Vorschau, andere Formate als Download | ✅ |
+| Vorgangsleiste `partials/document_panel.html` für Seite, Fragment und Seitenleiste, eingebettete Paperless-Ansicht, Rückweg `back=doc:<id>` | ✅ |
+| Dokumente-Liste: Spalte „Paperless“, Schnellfilter „Nicht in Paperless“; ohne Anbindung entfallen beide | ✅ |
+| Befund 1.1: Filter gegen die echte Paperless-Instanz geprüft, Ergebnis in `design.md` (D5) | ✅ (2026-11-02) |
+| CSS und Badges der Verknüpfung; Impeccable-Detector ohne neue Befunde (Aufgabe 5.4, ohne Browser-Prüfung) | ✅ |
+| Tests für Job, Ablage, Repository, Route, Leiste und Liste vorhanden (`tests/test_paperless_link.py`, `tests/test_scan_verknuepfung_web.py`, Erweiterungen in weiteren Testdateien) | ✅ (Gesamtlauf offen, siehe 6.2) |
+| Browser-Prüfung der Leiste bei 1800 und 390 px (Aufgabe 5.4) | ⬜ offen |
+| Gesamtprüfung `uv run pytest`, `uv run ruff check .`, `graphify update .`, `openspec validate` (Aufgabe 6.2) | ⬜ offen |
+| Abnahme auf dem NAS nach Rollout (Aufgabe 6.3): frischer Scan über die Prüfsumme, Altbestand nachgeholt, Leiste für verknüpft, fehlgeschlagen und nicht gefunden, Filter | ⬜ offen |
+
+Keine Datenmigration außer den neuen Spalten (`design.md`, Migration Plan). Ein Rollback auf das
+vorherige Image ist ohne Eingriff möglich; die zusätzlichen Spalten werden dann ignoriert.
+
+Bewusst nicht umgesetzt: Gegenrichtung (Paperless-Dokumente ohne Lector-Vorgang), manuelle Zuordnung
+nicht gefundener Dokumente, Abfrage über die Paperless-Tasks-API.
+
+Offene Punkte aus der Umsetzung (Details und `TODO` in `feature-documentation/paperless-integration/scan-verknuepfung.md`):
+
+- Ein Namenstreffer mit einer ID, die ein anderer Vorgang trägt, wird verworfen. Das Design beschreibt ihn
+  als mehrdeutig. Welches Verhalten gilt, ist offen.
+- Bei 2 bis 5 Prüfsummentreffern bleibt ein Vorgang `pending` und wird ohne Ende erneut gesucht.
+- Nach einem Neustart werden alle `not_found`-Vorgänge einmal erneut gesucht, auch ältere als 14 Tage.
+- Ein Wiederholversuch nach der Ablage kann eine zweite Datei in `consume` erzeugen.

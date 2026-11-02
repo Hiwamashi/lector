@@ -23,7 +23,13 @@ CREATE TABLE IF NOT EXISTS documents (
     page_limit_approved INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
     started_at        TEXT,
-    finished_at       TEXT
+    finished_at       TEXT,
+    output_hash       TEXT,
+    original_path     TEXT,
+    consumed_at       TEXT,
+    paperless_id      INTEGER,
+    paperless_link    TEXT,
+    paperless_checked_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
@@ -198,6 +204,13 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("paperless_invoices", "paperless_voucher_ref", "TEXT"),
     ("paperless_invoices", "review_reason", "TEXT"),
     ("document_recipients", "it_probability", "REAL"),
+    # Verknüpfung Vorgang -> Paperless-Dokument (Change scan-paperless-verknuepfung).
+    ("documents", "output_hash", "TEXT"),
+    ("documents", "original_path", "TEXT"),
+    ("documents", "consumed_at", "TEXT"),
+    ("documents", "paperless_id", "INTEGER"),
+    ("documents", "paperless_link", "TEXT"),
+    ("documents", "paperless_checked_at", "TEXT"),
 )
 
 
@@ -212,6 +225,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 # sonst scheitert das Schema in einer bestehenden DB an der noch fehlenden Spalte.
 _POST_MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_invoices_recipient ON paperless_invoices(recipient_label)",
+    "CREATE INDEX IF NOT EXISTS idx_documents_paperless_link ON documents(paperless_link)",
 )
 
 

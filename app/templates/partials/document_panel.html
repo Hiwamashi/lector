@@ -1,7 +1,23 @@
+{# Kombinierte Vorgangsansicht (Seite /documents/{id}, Fragment und Seitenleiste der
+   Dokumente-Liste). Genau eine panel_bar und genau ein h1#panel-title — app.js verlässt
+   sich darauf. Aufbau: Kopf mit Status und Paperless-Bezug, Hinweise, Verlauf und
+   Stammdaten in <details> (offen bei failed, processing, pending, blocked), darunter je
+   nach `link_state` die eingebettete Paperless-Ansicht oder das lokale Original. #}
 {% with page_url="/documents/" ~ doc.id %}{% include "partials/panel_bar.html" %}{% endwith %}
 <header class="detail-head">
   <h1 id="panel-title" tabindex="-1">{{ doc.original_filename }}</h1>
   <span class="badge badge--{{ doc.status }}">{{ status_labels[doc.status] }}</span>
+  {% if view_enabled and doc.paperless_link %}
+  <span class="paperless-ref">
+    <span class="badge badge--link-{{ doc.paperless_link }}">{{ paperless_link_labels[doc.paperless_link] }}</span>
+    {% if doc.paperless_link in ("linked", "linked_by_name") and doc.paperless_id %}
+    <a class="link" href="/paperless/{{ doc.paperless_id }}">in Paperless #{{ doc.paperless_id }}</a>
+    {% if doc.paperless_link == "linked_by_name" %}<span class="muted">über Dateinamen</span>{% endif %}
+    {% elif doc.paperless_id %}
+    <span class="muted">#{{ doc.paperless_id }}</span>
+    {% endif %}
+  </span>
+  {% endif %}
 </header>
 
 {% if doc.status == "processing" and doc.total_pages %}
@@ -16,7 +32,7 @@
    eines angehaltenen Vorgangs, fehlendes Original bei der Freigabe. Nur im ersten Fall ist
    sicher, dass das Original im Fehlerordner liegt und ein neuer Versuch sinnvoll ist. #}
 {% if doc.status == "failed" %}
-{% set discarded = events | selectattr("event_type", "equalto", "discarded") | list %}
+{% set discarded = doc_events | selectattr("event_type", "equalto", "discarded") | list %}
 <div class="alert">
   {% if discarded %}
   <p class="notice-text">{{ doc.error_message or "Verworfen." }}</p>
@@ -55,6 +71,9 @@
 </div>
 {% endif %}
 
+{% set offen = doc.status in ("failed", "processing", "pending", "blocked") %}
+<details class="doc-log"{% if offen %} open{% endif %}>
+  <summary>Verlauf und Angaben zum Vorgang</summary>
 <dl class="meta">
   <dt>Typ</dt><dd>{{ doc.doc_type | doc_type_label }}</dd>
   <dt>OCR-Engine</dt><dd>{{ doc.ocr_engine or "—" }}</dd>
@@ -69,7 +88,7 @@
 
 <h2>Verlauf</h2>
 <ol class="events">
-  {% for ev in events %}
+  {% for ev in doc_events %}
   <li>
     <span class="event-time">{{ ev.timestamp | fmt_dt }}</span>
     <span class="event-type event-type--{{ ev.event_type }}">{{ ev.event_type | event_label }}</span>
@@ -79,3 +98,17 @@
   <li class="empty">Noch keine Ereignisse.</li>
   {% endfor %}
 </ol>
+</details>
+
+{% if link_state == "embedded" %}
+<section class="paperless-embedded" aria-label="Paperless-Dokument">
+  {% include "partials/paperless_doc_body.html" %}
+</section>
+{% else %}
+{% if link_state == "missing" %}
+<p class="notice notice--info" role="status">In Paperless nicht mehr vorhanden (#{{ doc.paperless_id }}).</p>
+{% elif link_state == "unreachable" %}
+<p class="alert">Paperless nicht erreichbar. Der Vorgang oben bleibt vollständig; das Paperless-Dokument lädt beim nächsten Aufruf erneut.</p>
+{% endif %}
+{% include "partials/document_original.html" %}
+{% endif %}

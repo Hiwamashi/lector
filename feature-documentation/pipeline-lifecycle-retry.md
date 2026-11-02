@@ -16,6 +16,10 @@ Läuft synchron im seriellen Thread-Pool des Workers. Ablauf:
 
 Events entlang des Wegs: `preprocessing`, `ocr_chunk`, `built_pdf`, `moved_to_consume`, `done`.
 
+Seit dem Change `scan-paperless-verknuepfung` hält die Ablage zusätzlich `output_hash`, `consumed_at`
+und `original_path` am Vorgang fest (`Repository.mark_consumed`). Die Verknüpfung mit Paperless ist
+in [paperless-integration/scan-verknuepfung.md](paperless-integration/scan-verknuepfung.md) beschrieben.
+
 ## Fehler & Auto-Retry (`_handle_failure`)
 
 - `attempt_count` wird inkrementiert.

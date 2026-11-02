@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     paperless_sync_interval_seconds: float = Field(
         default=300.0, alias="PAPERLESS_SYNC_INTERVAL_SECONDS"
     )
+    # Takt des Verknüpfungsjobs (Vorgang -> Paperless-Dokument), läuft bei URL + Token.
+    paperless_link_interval_seconds: float = Field(
+        default=300.0, alias="PAPERLESS_LINK_INTERVAL_SECONDS"
+    )
     # Wenn Custom Fields / Tags in Paperless fehlen, legt Lector sie automatisch an.
     paperless_auto_create_fields: bool = Field(
         default=True, alias="PAPERLESS_AUTO_CREATE_FIELDS"
@@ -400,6 +404,12 @@ def validate_settings(
         problems.append(
             f"{_env_name('retry_delay_minutes')} muss mindestens 1 sein, "
             f"ist {settings.retry_delay_minutes}"
+        )
+
+    if settings.paperless_link_interval_seconds <= 0:
+        problems.append(
+            f"{_env_name('paperless_link_interval_seconds')} muss größer als 0 sein, "
+            f"ist {settings.paperless_link_interval_seconds}"
         )
 
     if settings.feature_paperless_sync:

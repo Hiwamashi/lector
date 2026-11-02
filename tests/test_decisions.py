@@ -78,6 +78,7 @@ def test_discard_moves_original_to_error_dir(tmp_path):
     assert "Verworfen" in doc.error_message
     assert not src.exists()
     assert (s.error_dir / "stapel.pdf").exists()
+    assert doc.original_path == str(s.error_dir / "stapel.pdf")
     assert EventType.DISCARDED in _event_kinds(repo, doc_id)
 
 

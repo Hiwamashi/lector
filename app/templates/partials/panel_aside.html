@@ -9,7 +9,7 @@
   {% with page_url=panel_page_url %}{% include "partials/panel_bar.html" %}{% endwith %}
   <p class="alert">{{ panel_error }}</p>
   {% elif panel_open and panel_kind == "document" %}
-  {% include "partials/detail_body.html" %}
+  {% include "partials/document_panel.html" %}
   {% elif panel_open %}
   {% include "partials/paperless_doc_body.html" %}
   {% endif %}

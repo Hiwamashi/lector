@@ -7,9 +7,14 @@
 - `documents` — eine Zeile pro Eingangsdatei (PRD §4.3). Status-Enum `DocStatus`:
   `pending | processing | done | skipped_erechnung | failed`. Typ-Enum `DocType`:
   `pdf | tiff | image | erechnung_xml | erechnung_pdf`.
+  Verknüpfung mit Paperless (Change `scan-paperless-verknuepfung`): `output_hash` (SHA-256 der
+  abgelegten Datei), `original_path` (aktueller Pfad des Originals in `processed`/`error`),
+  `consumed_at`, `paperless_id`, `paperless_link` (Enum `PaperlessLink`: `pending | linked |
+  linked_by_name | not_found | missing`, `NULL` ohne Ergebnis) und `paperless_checked_at`.
+  Details in [paperless-integration/scan-verknuepfung.md](paperless-integration/scan-verknuepfung.md).
 - `document_events` — 1:n Verlaufs-Log. Event-Enum `EventType`:
   `detected | preprocessing | ocr_chunk | built_pdf | moved_to_consume | retry_scheduled |
-  skipped_erechnung | failed | done`.
+  skipped_erechnung | failed | done | paperless_linked` (dazu `discarded`, siehe `app/models.py`).
 - `web_sessions` — Serverseitige Sitzungsliste (nur bei `AUTH_MODE=paperless`). Eine Zeile pro aktive Sitzung:
   - `id`: Eindeutige Sitzungs-ID (`secrets.token_urlsafe(32)`), signiert im Cookie.
   - `username`: Paperless-Nutzername (nicht eindeutig — ein Nutzer kann mehrere Sitzungen haben).
@@ -35,8 +40,12 @@ WAL-Modus, Foreign-Keys und `busy_timeout` sind aktiviert (`db.connect`).
   gleichen Inhalts (Doppelverarbeitungs-Schutz).
 - **Retry-Auswahl:** `claim_due_retries()` liefert alle `pending`-Dokumente mit fälligem oder
   fehlendem `next_retry_at`.
-- **Filter:** `list_documents(status, search, since, limit, offset)` für die Historientabelle;
+- **Filter:** `list_documents(status, search, since, paperless_missing, limit, offset)` für die
+  Historientabelle (`paperless_missing` ist der Schnellfilter „Nicht in Paperless“);
   `status_counts()` für die Dashboard-Kacheln.
+- **Verknüpfung:** `mark_consumed`, `set_paperless_link`, `touch_paperless_checked`,
+  `list_paperless_pending`, `list_paperless_catchup`, `paperless_id_taken`, `event_timestamp`
+  (`app/repository.py`).
 - **Web-Sitzungen:**
   - `create_web_session(username)`: Legt eine neue Zeile an, liefert die `sid` (ausschließlich serverseitig erzeugt).
   - `get_web_session(sid)`: Liefert `(username, created_at, last_seen_at)` oder `None`.

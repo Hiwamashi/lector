@@ -1,0 +1,33 @@
+{# Lokales Original eines Vorgangs (ohne Verknüpfung oder wenn Paperless es nicht liefert).
+   Erwartet `doc` und `original` (siehe main._original_info): state = preview | download |
+   gone | none. Ausgeliefert wird über /documents/{id}/original, nie aus `consume`. #}
+{% if original.state == "preview" %}
+<section class="doc-preview">
+  <div class="doc-preview-head">
+    <h2>Original</h2>
+  </div>
+  <object class="doc-frame" data="{{ original.url }}">
+    <p class="empty">
+      Keine Vorschau verfügbar.
+      <a class="link" href="{{ original.url }}" target="_blank" rel="noopener">In neuem Tab öffnen</a>
+    </p>
+  </object>
+</section>
+{% elif original.state == "download" %}
+<section class="doc-preview">
+  <div class="doc-preview-head">
+    <h2>Original</h2>
+  </div>
+  <p class="empty">
+    Für dieses Format gibt es keine Vorschau.
+    <a class="link" href="{{ original.url }}">{% if doc.doc_type == "erechnung_xml" %}XML-E-Rechnung herunterladen{% else %}Original herunterladen{% endif %}</a>
+  </p>
+</section>
+{% elif original.state == "gone" %}
+<section class="doc-preview">
+  <div class="doc-preview-head">
+    <h2>Original</h2>
+  </div>
+  <p class="empty">Original nicht mehr vorhanden.</p>
+</section>
+{% endif %}

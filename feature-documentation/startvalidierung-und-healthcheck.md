@@ -147,9 +147,11 @@ tatsächlich — `docker run` kehrte mit `EXITCODE:3` zurück, `docker inspect` 
 `_health_status()` (`app/main.py`) baut die Prüfungen rein lesend aus den fertigen
 Zustandsauskünften von `Worker` und `Repository` zusammen — keine der aufgerufenen
 Methoden verändert einen Zustand, startet beendete Arbeit neu oder stößt einen Vorgang an.
-Geprüft werden sieben Einträge: die vier immer gestarteten Hintergrundarbeiten (`scan`,
-`process`, `retry`, `retention`), die Paperless-Sync-Schleife, der Watchdog-Observer des
-Eingangsordners und die Datenbank.
+Geprüft werden acht Einträge: die vier immer gestarteten Hintergrundarbeiten (`scan`,
+`process`, `retry`, `retention`), die Paperless-Sync-Schleife, die Paperless-Verknüpfungsschleife
+`paperless-link` (siehe [paperless-integration/scan-verknuepfung.md](paperless-integration/scan-verknuepfung.md#health)),
+der Watchdog-Observer des Eingangsordners und die Datenbank. Beide Paperless-Schleifen gelten ohne
+Anbindung als `not_started` und damit als gesund.
 
 ### Antwortform
 

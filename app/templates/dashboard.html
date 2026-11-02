@@ -66,24 +66,32 @@
     {% endfor %}
   </select>
   <fieldset class="filter-chips">
-    <legend class="visually-hidden">Zeitraum</legend>
+    <legend class="visually-hidden">Schnellfilter</legend>
     {% for value, label in [("", "Gesamt"), ("24h", "24 h"), ("7d", "7 Tage"), ("30d", "30 Tage")] %}
     <label class="chip">
       <input type="radio" name="period" value="{{ value }}" {% if (filters.period or "") == value %}checked{% endif %} />
       {{ label }}
     </label>
     {% endfor %}
+    {% if view_enabled %}
+    <label class="chip">
+      <input type="checkbox" name="paperless" value="missing" {% if filters.paperless %}checked{% endif %} />
+      Nicht in Paperless
+    </label>
+    {% endif %}
   </fieldset>
   <button type="submit">Filtern</button>
 </form>
 
 <div class="table-scroll">
 <table class="history"
-       data-fragment="/fragment/history?status={{ filters.status }}&q={{ filters.q }}&period={{ filters.period }}">
+       data-fragment="/fragment/history?status={{ filters.status }}&q={{ filters.q }}&period={{ filters.period }}{% if filters.paperless %}&paperless=missing{% endif %}">
   <thead>
     <tr>
       <th>Datei</th><th>Status</th><th class="col-secondary">Typ</th><th>Fortschritt</th>
-      <th class="col-secondary">Versuche</th><th class="col-secondary">Erstellt</th><th></th>
+      <th class="col-secondary">Versuche</th>
+      {% if view_enabled %}<th class="col-secondary col-paperless">Paperless</th>{% endif %}
+      <th class="col-secondary">Erstellt</th><th></th>
     </tr>
   </thead>
   <tbody id="history-body">

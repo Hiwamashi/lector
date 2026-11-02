@@ -120,7 +120,7 @@ Ansichten liegt deshalb höher, siehe [rechnungs-ui.md](rechnungs-ui.md).
   eingeschätzt“ oder „Nicht einstufbar“),
 - Konfidenz in Prozent und die Quelle („Empfänger“, „Korrespondent n/n“, „KI“).
 
-`partials/invoice_detail_body.html` zeigt zusätzlich eine Begründung je Quelle:
+`partials/invoice_sections.html` zeigt zusätzlich eine Begründung je Quelle:
 
 - Empfänger: „Am Dokument ist der Empfänger „…“ gesetzt.“
 - Korrespondent: „Frühere Rechnungen dieses Korrespondenten — …“

@@ -104,6 +104,85 @@ def test_erechnung_bypass(tmp_path):
     assert not list(s.consume_dir.glob("*.pdf"))  # keine OCR
 
 
+def _sha256(path):
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_ocr_path_records_output_hash_original_path_and_pending_link(tmp_path):
+    from app.models import PaperlessLink
+
+    s = _settings(tmp_path, PAPERLESS_URL="http://paperless.invalid", PAPERLESS_TOKEN="t")
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "scan.pdf"
+    _make_pdf(src, pages=1)
+    doc_id = repo.create_document(
+        original_filename="scan.pdf", source_path=str(src), file_hash=_sha256(src)
+    )
+
+    run_pipeline(doc_id, repo, s, FakeAdapter())
+
+    doc = repo.get_document(doc_id)
+    out = s.consume_dir / "scan.pdf"
+    assert doc.output_hash == _sha256(out)
+    assert doc.output_hash != doc.file_hash  # Hash des Sandwich-PDFs, nicht des Scans
+    assert doc.consumed_at is not None
+    assert doc.paperless_link == PaperlessLink.PENDING
+    assert doc.original_path == str(s.processed_dir / "scan.pdf")
+    assert (s.processed_dir / "scan.pdf").exists()
+
+
+def test_erechnung_records_output_hash_equal_to_original_hash(tmp_path):
+    from app.models import PaperlessLink
+
+    s = _settings(tmp_path, PAPERLESS_URL="http://paperless.invalid", PAPERLESS_TOKEN="t")
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "rechnung.xml"
+    src.write_text(CII_INVOICE, encoding="utf-8")
+    original_hash = _sha256(src)
+    doc_id = repo.create_document(
+        original_filename="rechnung.xml", source_path=str(src), file_hash=original_hash
+    )
+
+    run_pipeline(doc_id, repo, s, FakeAdapter())
+
+    doc = repo.get_document(doc_id)
+    assert doc.output_hash == original_hash == _sha256(s.consume_dir / "rechnung.xml")
+    assert doc.paperless_link == PaperlessLink.PENDING
+    assert doc.original_path == str(s.processed_dir / "rechnung.xml")
+
+
+def test_without_paperless_connection_link_stays_null(tmp_path):
+    s = _settings(tmp_path, PAPERLESS_URL="", PAPERLESS_TOKEN="")
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "scan.pdf"
+    _make_pdf(src, pages=1)
+    doc_id = repo.create_document(original_filename="scan.pdf", source_path=str(src))
+
+    run_pipeline(doc_id, repo, s, FakeAdapter())
+
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.DONE
+    assert doc.paperless_link is None
+    assert doc.output_hash is not None  # die Prüfsumme wird trotzdem festgehalten
+
+
+def test_final_failure_records_original_path_in_error_dir(tmp_path):
+    s = _settings(tmp_path, RETRY_MAX="1")
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "scan.pdf"
+    _make_pdf(src, pages=1)
+    doc_id = repo.create_document(original_filename="scan.pdf", source_path=str(src))
+
+    run_pipeline(doc_id, repo, s, FakeAdapter(fail=True))
+
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.original_path == str(s.error_dir / "scan.pdf")
+    assert doc.paperless_link is None
+
+
 def test_failure_schedules_retry_then_fails(tmp_path):
     s = _settings(tmp_path, RETRY_MAX="3")
     repo = Repository(s.db_path)
@@ -534,3 +613,31 @@ def test_a_replaced_file_on_disk_invalidates_the_cached_chunks(tmp_path, caplog)
     assert repo.get_document(doc_id).status == DocStatus.DONE
     assert zweiter.engine_chunks == 3  # keine Wiederverwendung über die alte Datei hinweg
     assert any("Prüfsumme" in r.message for r in caplog.records)
+
+
+def test_failure_after_consume_leaves_no_pending_link(tmp_path, monkeypatch):
+    """Scheitert nach dem Ablegen das Verschieben des Originals, darf der fehlgeschlagene
+    Vorgang nicht auf `pending` stehen bleiben."""
+    import app.pipeline as pipeline_module
+
+    s = _settings(
+        tmp_path, RETRY_MAX="1", PAPERLESS_URL="http://paperless.invalid", PAPERLESS_TOKEN="t"
+    )
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "scan.pdf"
+    _make_pdf(src, pages=1)
+    doc_id = repo.create_document(original_filename="scan.pdf", source_path=str(src))
+    real_move = pipeline_module.move_into
+
+    def move(path, directory, **kwargs):
+        if directory == s.processed_dir:
+            raise OSError("voll")
+        return real_move(path, directory, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "move_into", move)
+
+    run_pipeline(doc_id, repo, s, FakeAdapter())
+
+    doc = repo.get_document(doc_id)
+    assert doc.status == DocStatus.FAILED
+    assert doc.paperless_link is None

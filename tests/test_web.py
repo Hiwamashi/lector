@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import logging
 import os
+import re
 import threading
 
 import pytest
@@ -89,6 +90,8 @@ def test_healthz(client):
     assert body["watch-folder-observer"] == laufend
     # FEATURE_PAPERLESS_SYNC steht in der Test-Umgebung auf dem Standardwert (aus).
     assert body["paperless-sync"] == {"state": TaskState.NOT_STARTED.value, "error": None}
+    # Ohne PAPERLESS_URL/-TOKEN läuft der Verknüpfungsjob nicht — das gilt als gesund.
+    assert body["paperless-link"] == {"state": TaskState.NOT_STARTED.value, "error": None}
     assert body["database"] == {"state": DatabaseHealthState.USABLE.value, "error": None}
 
 
@@ -2480,3 +2483,94 @@ def test_rueckschrieb_fehler_ereignis_hat_label_im_verlauf(client, monkeypatch):
     html = c.get(f"/invoices/{inv_id}").text
 
     assert "Rückschrieb fehlgeschlagen" in html and "ConnectError: weg" in html
+
+
+# ---- Dokumente-Liste: Spalte „Paperless“ und Schnellfilter (scan-paperless-verknuepfung 5.3) ----
+
+
+def _link_doc(application, name, *, status, link=None, paperless_id=None):
+    from app.models import DocStatus
+
+    repo = application.state.repo
+    doc_id = repo.create_document(original_filename=name, source_path=f"/scan-in/{name}")
+    repo.set_status(doc_id, DocStatus(status))
+    repo.update_document(doc_id, paperless_link=link, paperless_id=paperless_id)
+    return doc_id
+
+
+def _link_docs(application):
+    from app.models import PaperlessLink as L
+
+    return {
+        "linked": _link_doc(
+            application, "a-linked.pdf", status="done", link=L.LINKED, paperless_id=5
+        ),
+        "by_name": _link_doc(
+            application, "b-name.pdf", status="done", link=L.LINKED_BY_NAME, paperless_id=6
+        ),
+        "pending": _link_doc(application, "c-wait.pdf", status="done", link=L.PENDING),
+        "not_found": _link_doc(
+            application, "d-nf.pdf", status="skipped_erechnung", link=L.NOT_FOUND
+        ),
+        "missing": _link_doc(
+            application, "e-gone.pdf", status="done", link=L.MISSING, paperless_id=9
+        ),
+        "failed": _link_doc(application, "f-failed.pdf", status="failed"),
+    }
+
+
+def test_list_without_paperless_connection_has_no_column_and_no_chip(client, monkeypatch):
+    from app.paperless_sync import PaperlessSync
+
+    monkeypatch.setattr(PaperlessSync, "view_enabled", property(lambda self: False))
+    c, application = client
+    _link_docs(application)
+    html = c.get("/").text
+    assert "col-paperless" not in html
+    assert "Nicht in Paperless" not in html and 'name="paperless"' not in html
+    # Der Parameter ist ohne Anbindung wirkungslos: alle sechs Vorgänge bleiben sichtbar.
+    assert c.get("/", params={"paperless": "missing"}).text.count("data-row-id=") == 6
+    empty = c.get("/", params={"q": "gibt-es-nicht"}).text
+    assert '<td colspan="7">' in empty
+
+
+def test_list_with_paperless_connection_shows_column_badges_and_rev(client):
+    c, application = client
+    ids = _link_docs(application)
+    html = c.get("/").text
+    assert '<th class="col-secondary col-paperless">Paperless</th>' in html
+    assert 'name="paperless" value="missing"' in html and "Nicht in Paperless" in html
+    assert 'badge--link-linked">#5</span>' in html
+    assert "#6 · über Namen" in html
+    for text in ("wartet", "nicht gefunden", "nicht mehr vorhanden"):
+        assert f">{text}</span>" in html
+    row_failed = re.search(rf'<tr data-row-id="{ids["failed"]}".*?</tr>', html, re.S).group(0)
+    assert 'col-paperless">—</td>' in row_failed
+    # Der Zeilen-Diff erkennt eine geänderte Verknüpfung über data-rev.
+    rev = re.search(rf'<tr data-row-id="{ids["linked"]}"[^>]*data-rev="([^"]*)"', html).group(1)
+    assert rev.endswith(":linked:5")
+    empty = c.get("/", params={"q": "gibt-es-nicht"}).text
+    assert '<td colspan="8">' in empty
+
+
+def test_list_filter_not_in_paperless_keeps_only_unlinked_finished(client):
+    c, application = client
+    ids = _link_docs(application)
+    html = c.get("/", params={"paperless": "missing"}).text
+    shown = {int(i) for i in re.findall(r'data-row-id="(\d+)"', html)}
+    assert shown == {ids["pending"], ids["not_found"], ids["missing"]}
+    assert re.search(r'name="paperless" value="missing"\s+checked', html)
+    # Der Tabellen-Refresh behält den Filter.
+    table_url = re.search(r'data-fragment="(/fragment/history[^"]*)"', html).group(1)
+    assert "&paperless=missing" in table_url
+    frag = c.get("/fragment/history", params={"paperless": "missing"}).text
+    assert {int(i) for i in re.findall(r'data-row-id="(\d+)"', frag)} == shown
+    # Ohne den Filter sind alle da, und das Häkchen fehlt.
+    plain = c.get("/").text
+    assert plain.count("data-row-id=") == 6
+    assert not re.search(r'name="paperless" value="missing"\s+checked', plain)
+    # Zusammen mit dem Statusfilter schneidet er sich.
+    both = c.get("/", params={"paperless": "missing", "status": "skipped_erechnung"}).text
+    assert {int(i) for i in re.findall(r'data-row-id="(\d+)"', both)} == {ids["not_found"]}
+    empty = c.get("/", params={"paperless": "missing", "q": "gibt-es-nicht"}).text
+    assert "Keine Dokumente für diese Filter." in empty
