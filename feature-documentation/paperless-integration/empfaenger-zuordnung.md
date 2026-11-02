@@ -27,7 +27,7 @@ KI vorzuschlagen.
 ## Übersicht & Routen (`/empfaenger`)
 
 - `GET /empfaenger` — paginierte Live-Liste (`search_documents`, `RECIPIENT_PAGE_SIZE=50`).
-  Volltextsuche (`query`) und Filter „nur ohne Empfänger" (Paperless `custom_field_query`
+  Volltextsuche (`query`) und Schnellfilter-Chip „Nur ohne Empfänger" (Paperless `custom_field_query`
   mit `[ "AND", [[<field_id>, "exists", false]] ]`). Korrespondentennamen aus
   `correspondent_map()` (einmal pro Prozess gecacht).
 - `GET /fragment/empfaenger` — Zeilen-Fragment (SSE-Refresh über `data-fragment`).

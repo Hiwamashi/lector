@@ -12,6 +12,17 @@
 (function () {
   "use strict";
 
+  // Schnellfilter (Chips) wirken sofort: ein Klick schickt das Filterformular ab. Ohne JS
+  // bleibt der "Filtern"-Knopf der Weg — das Formular ist ein gewöhnliches GET-Formular.
+  document.addEventListener("change", function (event) {
+    var input = event.target;
+    if (!input || !input.closest || !input.closest(".chip")) return;
+    var form = input.form;
+    if (!form) return;
+    if (typeof form.requestSubmit === "function") form.requestSubmit();
+    else form.submit();
+  });
+
   // Ein gescheiterter Refresh darf nicht stumm bleiben: der bisherige Inhalt steht dann
   // weiter da und sieht aktuell aus. Sichtbarer Hinweis statt stiller Veraltung.
   //

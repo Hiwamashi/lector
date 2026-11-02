@@ -873,3 +873,14 @@ Ungültige KI-Werte führen je Batch-Lauf weiterhin zu einer erneuten Anfrage (K
 - Nachholen: Zahl der betroffenen Bestandsrechnungen beim ersten Lauf ist nicht bekannt.
 - Abnahme auf dem NAS (Task 9.1) steht aus.
 - Gewichte des Scores (0,6/0,4) und Schwelle 0,75 sind am echten Bestand nicht geprüft.
+
+## UI-Nachbesserung: Rechnungstitel und Schnellfilter-Chips (2026-11-02)
+
+- **Behoben:** In der Rechnungsliste wurde die Titelspalte zur Buchstabensäule
+  (`overflow-wrap: anywhere` erlaubte der Tabelle, den Titel auf ein Zeichen zu schrumpfen).
+  Titel brechen jetzt nur zwischen Wörtern, mit Mindestbreite; die Seite nutzt ein weiteres
+  Band (1440px). Mobil bleibt der Titel sichtbar (vorher blendete die allgemeine
+  Spaltenregel ihn aus).
+- **Neu:** Schnellfilter als Chips in allen Listen (Rechnungen, Empfänger, Dokumente:
+  Zeitraum), Klick filtert sofort. Details: `feature-documentation/ui-erscheinungsbild.md`,
+  Komponente in `DESIGN.md`.

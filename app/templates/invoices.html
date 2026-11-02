@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Rechnungen — Lector{% endblock %}
+{# Elf Spalten passen nicht in das 1100px-Band, ohne dass der Titel zur Buchstabensäule wird. #}
+{% block container_class %} container--wide{% endblock %}
 {% block content %}
 <h1>Rechnungen</h1>
 
@@ -20,22 +22,25 @@
     <option value="{{ key }}" {% if filters.sevdesk == key|string %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select>
-  <label class="filter-check">
-    <input type="checkbox" name="ctx" value="it" {% if filters.ctx %}checked{% endif %} />
-    {{ context_label }} ab {{ context_threshold | fmt_percent }}
-  </label>
-  <label class="filter-check">
-    <input type="checkbox" name="open" value="1" {% if filters.open %}checked{% endif %} />
-    Nicht exportiert
-  </label>
-  <label class="filter-check">
-    <input type="checkbox" name="dup" value="1" {% if filters.dup %}checked{% endif %} />
-    Mögliche Dublette
-  </label>
-  <label class="filter-check">
-    <input type="checkbox" name="review" value="1" {% if filters.review %}checked{% endif %} />
-    Zu prüfen
-  </label>
+  <fieldset class="filter-chips">
+    <legend class="visually-hidden">Schnellfilter</legend>
+    <label class="chip">
+      <input type="checkbox" name="ctx" value="it" {% if filters.ctx %}checked{% endif %} />
+      {{ context_label }} ab {{ context_threshold | fmt_percent }}
+    </label>
+    <label class="chip">
+      <input type="checkbox" name="open" value="1" {% if filters.open %}checked{% endif %} />
+      Nicht exportiert
+    </label>
+    <label class="chip">
+      <input type="checkbox" name="dup" value="1" {% if filters.dup %}checked{% endif %} />
+      Mögliche Dublette
+    </label>
+    <label class="chip">
+      <input type="checkbox" name="review" value="1" {% if filters.review %}checked{% endif %} />
+      Zu prüfen
+    </label>
+  </fieldset>
   <input type="hidden" name="sort" value="{{ sort.key }}" />
   <input type="hidden" name="dir" value="{{ sort.dir }}" />
   <button type="submit">Filtern</button>
@@ -71,7 +76,7 @@
 {%- endmacro %}
 
 <div class="table-scroll">
-<table class="history"
+<table class="history history--invoices"
        data-fragment="/fragment/invoices?sort={{ sort.key }}&dir={{ sort.dir }}{% if filter_query %}&{{ filter_query }}{% endif %}">
   <thead>
     <tr>

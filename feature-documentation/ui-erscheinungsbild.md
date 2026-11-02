@@ -61,6 +61,41 @@ Zeile 126–131: Ein Klick auf eine Statuskachel filtert die Historientabelle. O
 - Der Label wird fett und akzent-farbig
 - Auch für Screenreader erkennbar (semantisch, nicht nur optisch)
 
+### Schnellfilter als Chips (2026-11-02)
+
+Boolesche und kurze Auswahl-Filter sind in allen Listen Umschalter statt Kontrollkästchen
+oder Auswahlfeld:
+
+| Seite | Chips | Formularfeld |
+|---|---|---|
+| Rechnungen (`invoices.html`) | Kontext ab Schwelle, Nicht exportiert, Mögliche Dublette, Zu prüfen | Checkboxen `ctx`, `open`, `dup`, `review` |
+| Empfänger (`recipients.html`) | Nur ohne Empfänger | Checkbox `missing` |
+| Dokumente (`dashboard.html`) | Gesamt, 24 h, 7 Tage, 30 Tage | Radio `period` (vorher Auswahlfeld) |
+
+- Markup: `<fieldset class="filter-chips">` mit verstecktem `<legend>`, darin je ein
+  `<label class="chip">` um die echte Eingabe. Die Eingabe liegt unsichtbar über dem ganzen
+  Chip, bleibt also im Formular, in der Tab-Reihenfolge und per Leertaste schaltbar.
+- Zustand per `.chip:has(input:checked)`; Fokusring per `.chip:has(input:focus-visible)`.
+- Die Chips stehen in einer eigenen Zeile unter Suche und Auswahlfeldern
+  (`flex-basis: 100%; order: 1`).
+- `app.js` schickt das Formular bei jeder Änderung eines Chips sofort ab
+  (`form.requestSubmit()`). Ohne JS bleibt der „Filtern"-Knopf. Die Query-Parameter sind
+  unverändert, Links und Lesezeichen gelten weiter.
+- Die Klassen `.filter-check` und `.filters .checkbox` sind entfallen.
+
+### Rechnungsliste: Titel und Breite (2026-11-02)
+
+- Die Rechnungsseite nutzt das weite Band `.container--wide` (1440px), gesetzt über den
+  Block `container_class` in `base.html`.
+- `.history--invoices .filename` bricht nur zwischen Wörtern (`overflow-wrap: break-word`);
+  der Link ist ein Block mit `min-width: 14rem` und `max-width: 34rem`. Vorher erlaubte
+  `overflow-wrap: anywhere` der Tabelle, den Titel auf ein Zeichen Breite zu quetschen —
+  jede Zeile wurde zur Buchstabensäule.
+- Zellen der Rechnungstabelle haben 0.6rem statt 0.8rem seitlichen Abstand, damit die
+  elf Spalten bei 1440px ohne Seitwärtsscrollen passen.
+- Mobil (≤ 720px) blendet die allgemeine Regel Spalte 3 und 5 aus. In der Rechnungsliste
+  wäre Spalte 3 der Titel; `.history--invoices` hebt das auf, die Tabelle scrollt dort in sich.
+
 ## Fortschritt in Listenzeilen
 
 Der Fortschrittsbalken (`.progress-inline`, Zeilen 166–176) erscheint **nur** bei `status == "processing"` (siehe Bedingung in `partials/history_rows.html` Zeile 22).
