@@ -87,7 +87,7 @@ Die Startvalidierung verlangt für `SEVDESK_ACCOUNT_DATEV_ID` nur Ziffern (siehe
 ## Befund: SevDesk-Systemversion 2.0 (2026-11-01)
 
 Die folgenden Aussagen stammen aus dem Design-Dokument des OpenSpec-Changes
-(`openspec/changes/sevdesk-export-uebersicht/design.md`, Entscheidung 9, Befund 1.1(b)). Sie
+(`openspec/changes/archive/2026-11-02-sevdesk-export-uebersicht/design.md`, Entscheidung 9, Befund 1.1(b)). Sie
 wurden gegen die echte API geprüft. Der Code kann sie nicht selbst belegen.
 
 - Die Belegposition braucht ein **Buchungskonto** (`accountDatev`). Eine Angabe über

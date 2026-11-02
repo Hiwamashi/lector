@@ -799,12 +799,12 @@ Cron täglich 04:00 (`0 0 4 * * ?`; kurzzeitig alle 5 Minuten, wegen des Docker-
 zurückgenommen, Komodo-Issue #1652). Sofort ausrollen: Prozedur in Komodo von Hand starten. Der Alarm `StackAutoUpdated` kam zunächst nicht an, weil der Typ am
 Alerter abgewählt war; inzwischen aktiviert. Details in `nas-stacks/komodo/README.md`.
 
-## Zusatz-Feature: SevDesk-Export-Übersicht (sevdesk-export-uebersicht) — umgesetzt, Abnahme auf dem NAS ausstehend
+## Zusatz-Feature: SevDesk-Export-Übersicht (sevdesk-export-uebersicht) — umgesetzt und auf dem NAS abgenommen
 
 Die Rechnungsliste (`/invoices`) ist die Export-Übersicht: Jede Paperless-Rechnung zeigt Kontext
 (IT-Consulting mit Konfidenz und Quelle), Lector-Exportstatus und SevDesk-Abgleich. Der
 Belegabzug aus `GET /Voucher` ist lokal gecacht. Ein Export prüft vorab Sperren und Rückfragen,
-der Tag-Weg nutzt dieselben Prüfungen. Change: `openspec/changes/sevdesk-export-uebersicht/`.
+der Tag-Weg nutzt dieselben Prüfungen. Change: `openspec/changes/archive/2026-11-02-sevdesk-export-uebersicht/`.
 Doku: `feature-documentation/paperless-integration/` (neu: `sevdesk-abgleich.md`,
 `kontext-einstufung.md`; aktualisiert: `sevdesk-export.md`, `sync-und-aktionen.md`,
 `empfaenger-zuordnung.md`, `rechnungs-ui.md`, `README.md`) und `feature-documentation/konfiguration.md`.
@@ -821,7 +821,7 @@ Doku: `feature-documentation/paperless-integration/` (neu: `sevdesk-abgleich.md`
 | Belegposition mit Betrag (nur mit `SEVDESK_ACCOUNT_DATEV_ID`) | ✅ |
 | Rückschrieb setzt Empfänger auf IT-Consulting (Erstexport); Nachholen fehlender Rückschriebe, ohne fremden Empfänger zu überschreiben | ✅ |
 | Export-Übersicht: Filter, Mehrfachauswahl, Erhalt der Auswahl über den SSE-Refresh | ✅ |
-| Abnahme auf dem NAS (Task 9.1: Deployment, erster Belegabruf, Batch, Stichprobe, Testexport) | offen (manuell) |
+| Abnahme auf dem NAS (Task 9.1: Deployment, erster Belegabruf, Batch, Stichprobe, Testexport) | ✅ (2026-11-02, Befund unten) |
 | Beidseitiger Abgleich (SevDesk-Belege ohne Paperless-Dokument) | nicht Teil dieses Changes; Abfrage `vouchers_without_invoice()` vorbereitet, ohne Ansicht |
 
 **Befunde gegen die echte SevDesk-API (2026-11-01, siehe `design.md`, Befund 1.1):**
@@ -868,11 +868,38 @@ Neue Spalten und Tabellen stören die alte Version nicht (Design, Migration Plan
 **Bewusst unverändert:** Ein verworfener Prüffall (`dismissed`) lässt sich manuell exportieren.
 Ungültige KI-Werte führen je Batch-Lauf weiterhin zu einer erneuten Anfrage (Kostenhinweis bleibt).
 
-**Offen (siehe Feature-Doku, Abschnitt „Offene Punkte“):**
+**Abnahme auf dem NAS (Task 9.1, 2026-11-02, per Browser):**
+
+- **Deployment und Belegabruf:** laufen; das Buchungskonto (`SEVDESK_ACCOUNT_DATEV_ID`) ist im
+  Stack gesetzt.
+- **Stichprobe (rund 200 Rechnungen):** Kontext etwa je zur Hälfte IT-Consulting und nicht
+  IT-Consulting, 13 ohne Einschätzung. Quelle ganz überwiegend Empfänger, in sechs Fällen die
+  Korrespondenten-Historie (eindeutige Mehrheiten wie 11/11). Alle exportierten Rechnungen
+  erscheinen als sichere Treffer mit der richtigen Beleg-ID. Rund 30 mögliche Dubletten,
+  überwiegend vor Lector von Hand gebuchte Belege. Echte Lücken (IT-Consulting ohne Beleg)
+  werden sichtbar.
+- **Score:** Fehlt im SevDesk-Beleg der Lieferant, bleibt der Score bei gleichem Betrag und
+  gleichem Datum bei 0,60. Solche Treffer sind fast sicher derselbe Beleg; der Anteil der
+  Namensähnlichkeit sollte bei fehlendem Lieferanten neutral statt 0 zählen. Gewichte vorerst
+  unverändert, Kandidat für eine Nachbesserung.
+- **Widersprüche:** Einzelne Rechnungen mit privatem Empfänger liegen gebucht in SevDesk
+  (Marktplatz-Händler mit abweichendem Lieferantennamen). Die Übersicht zeigt sie als mögliche
+  Dublette; die Entscheidung liegt beim Nutzer.
+- **KI-Einschätzung:** Für die 13 Rechnungen ohne Einschätzung einzeln ausgelöst, nicht per
+  Batch (der Batch erfasst alle Dokumente ohne Empfänger, hier über 1.000). Wegen
+  `RECIPIENT_LLM_AUTO_APPLY` (Standard an, ab 0,75) setzte das in 10 Fällen den Empfänger direkt
+  in Paperless; 3 blieben Vorschlag unter der Schwelle. Die Zuordnungen waren plausibel.
+- **Testexport:** Eine IT-Consulting-Rechnung ohne Empfänger und ohne Treffer exportiert; danach
+  in Paperless Empfänger IT-Consulting, Felder SevDesk-Beleg und Exportdatum, Tag
+  `sevdesk-exportiert` und Notiz mit Link. Ohne GiroCode-Status „Bereit“ (keine IBAN) ging der
+  Betrag erwartungsgemäß nicht als Summe mit.
+- **Nicht im Browser geprüft:** Mehrfachexport (hätte weitere echte Belege angelegt; durch
+  Tests abgedeckt).
+
+**Offen:**
 
 - Nachholen: Zahl der betroffenen Bestandsrechnungen beim ersten Lauf ist nicht bekannt.
-- Abnahme auf dem NAS (Task 9.1) steht aus.
-- Gewichte des Scores (0,6/0,4) und Schwelle 0,75 sind am echten Bestand nicht geprüft.
+- Score bei fehlendem Lieferanten (siehe Befund).
 
 ## UI-Nachbesserung: Rechnungstitel und Schnellfilter-Chips (2026-11-02)
 

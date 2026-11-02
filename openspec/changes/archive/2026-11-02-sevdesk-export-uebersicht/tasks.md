@@ -53,6 +53,6 @@ SevDesk-Token erscheint nie im Repository oder im Chat.
 
 ## 9. Abnahme und Dokumentation
 
-- [ ] 9.1 **(manuell, mit Agent)** Auf dem NAS: Deployment, erster Belegabruf, Batch-Lauf für Einschätzungen; Stichprobe von zehn Rechnungen (Kontext plausibel? bekannte SevDesk-Belege als Treffer erkannt?); ein Testexport setzt in Paperless den Empfänger IT-Consulting. Prüfen: Befund in `prd/PROGRESS.md` festgehalten, ggf. Score-Gewichte in `design.md` nachgezogen.
+- [x] 9.1 **(manuell, mit Agent)** Auf dem NAS: Deployment, erster Belegabruf, Batch-Lauf für Einschätzungen; Stichprobe von zehn Rechnungen (Kontext plausibel? bekannte SevDesk-Belege als Treffer erkannt?); ein Testexport setzt in Paperless den Empfänger IT-Consulting. Prüfen: Befund in `prd/PROGRESS.md` festgehalten, ggf. Score-Gewichte in `design.md` nachgezogen.
 - [x] 9.2 Doku: `feature-documentation/paperless-integration/sevdesk-export.md` und `sync-und-aktionen.md` aktualisieren, neu `sevdesk-abgleich.md` und `kontext-einstufung.md`, `empfaenger-zuordnung.md` (neues Tool-Feld, Batch-Auswahl), `README.md` der Integration, `konfiguration.md`, `prd/PROGRESS.md` inklusive Rollback-Hinweis; danach `graphify update .`. Prüfen: Dateien vorhanden und verlinkt, graphify ohne Fehler.
 - [x] 9.3 Gesamtprüfung: `uv run pytest` und `uv run ruff check .` grün; `openspec validate sevdesk-export-uebersicht --strict` ohne Befund.
