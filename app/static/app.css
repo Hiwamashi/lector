@@ -124,6 +124,8 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 .topnav a:hover { color: var(--accent); }
 
 .container { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
+/* Breite Arbeitslisten (Rechnungen: elf Spalten) bekommen ein weiteres Band. */
+.container--wide { max-width: 1440px; }
 
 /* Status-Kacheln */
 /* auto-fit statt einer festen Spaltenzahl: Die Zahl der Zustaende ist gewachsen und kann
@@ -163,9 +165,33 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 .filters input { flex: 1; min-width: 180px; }
 .filters button { background: var(--accent); color: var(--on-accent); border-color: var(--accent); cursor: pointer; }
 
-.filters .filter-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.9rem;
-  padding: 0.5rem 0.2rem; }
-.filters .filter-check input { flex: none; min-width: 0; padding: 0; }
+/* Schnellfilter als Umschalter. Gleiche Zustandssprache wie die Status-Kachel:
+   aus = Tafelweiß mit Haarlinie, an = Petrol-Hauch mit Petrol-Rahmen. Der Wechsel ändert
+   keine Schriftstärke (kein Springen der Reihe); zusätzlich zur Farbe zeigt die
+   Kontrollmarke vorn den Zustand, damit er nicht allein an der Farbe hängt.
+   Die echte Checkbox/Radio bleibt im Formular und in der Tab-Reihenfolge. */
+/* Eigene Zeile unter Suche und Auswahlfeldern: Die Schnellfilter sind die häufigste
+   Bedienung und sollen als Gruppe lesbar sein, nicht zwischen Feldern verschwinden. */
+.filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+  flex-basis: 100%; order: 1; margin: 0; padding: 0; border: 0; min-width: 0; }
+.chip { position: relative; display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--ink); font-size: 0.9rem; line-height: 1.2;
+  cursor: pointer; user-select: none; white-space: nowrap;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+.filters .chip input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+  padding: 0; border: 0; min-width: 0; flex: none; opacity: 0; cursor: pointer; }
+.chip::before { content: ""; flex: none; width: 0.7rem; height: 0.7rem; border-radius: 3px;
+  border: 1.5px solid var(--ink-soft); box-sizing: border-box;
+  transition: background-color 0.15s ease, border-color 0.15s ease; }
+.chip:has(input[type="radio"])::before { border-radius: 999px; }
+.chip:hover { border-color: var(--accent); }
+.chip:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.chip:has(input:checked)::before { background: var(--accent); border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent-soft); }
+.chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip:active { transform: translateY(1px); }
+@media (prefers-reduced-motion: reduce) { .chip:active { transform: none; } }
 
 /* Leiste über der Rechnungstabelle: Abrufstand links, Aktionen rechts */
 .overview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
@@ -245,6 +271,15 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 /* Dateinamen aus Scannern haben keine Leerzeichen. Ohne Umbruchfreigabe sprengt ein
    einziger langer Name die Tabelle und mit ihr die ganze Seite. */
 .history .filename, .detail-head h1 { overflow-wrap: anywhere; }
+/* Rechnungstitel sind Sätze, keine Scanner-Dateinamen: Umbruch nur zwischen Wörtern
+   (break-word zählt nicht zur Mindestbreite), dazu eine feste Mindestbreite. Sonst
+   schrumpft die Tabelle den Titel auf einen Buchstaben und jede Zeile wird zur Säule. */
+.history--invoices .filename { overflow-wrap: break-word; }
+.history--invoices .filename a { display: block; min-width: 14rem; max-width: 34rem; }
+/* Elf Spalten: etwas engere Zellen, damit die Liste ab ~1440px ohne Seitwärtsscrollen passt. */
+.history--invoices th, .history--invoices td,
+.history.history--invoices th.sortable a { padding-left: 0.6rem; padding-right: 0.6rem; }
+.history--invoices th.sortable { padding: 0; }
 .history .empty td { color: var(--ink-soft); text-align: center; padding: 2.2rem 1.5rem; }
 .empty-title { display: block; color: var(--ink); font-weight: 600; margin-bottom: 0.25rem; }
 .empty-hint { display: block; font-size: 0.85rem; max-width: 46ch; margin: 0 auto; }
@@ -429,8 +464,6 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
   border-radius: var(--radius); background: var(--surface); margin-top: 0.6rem; }
 
 /* Empfänger-Übersicht */
-.filters .checkbox { display: flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; }
-.filters .checkbox input { flex: none; min-width: 0; }
 .recipient-toolbar { display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 0.8rem; margin-bottom: 0.8rem; }
 .recipient-toolbar form { margin: 0; }
@@ -458,6 +491,10 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
   .events li { grid-template-columns: 1fr; gap: 0.1rem; }
   .history th:nth-child(3), .history td:nth-child(3),
   .history th:nth-child(5), .history td:nth-child(5) { display: none; }
+  /* In der Rechnungsliste ist Spalte 3 der Titel — der darf nicht wegfallen. */
+  .history--invoices th:nth-child(3), .history--invoices td:nth-child(3),
+  .history--invoices th:nth-child(5), .history--invoices td:nth-child(5) { display: table-cell; }
+  .history--invoices .filename a { min-width: 12rem; }
 }
 
 /* Batch-Statusleiste eines laufenden KI-Laufs.

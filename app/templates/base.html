@@ -29,7 +29,7 @@
     </form>
     {% endif %}
   </header>
-  <main class="container">
+  <main class="container{% block container_class %}{% endblock %}">
     {# Wird von app.js eingeblendet, wenn ein Fragment-Refresh scheitert. Ohne diesen
        Hinweis bliebe die Seite stumm auf veralteten Daten stehen. #}
     <p id="live-status" class="live-status" role="status" hidden>

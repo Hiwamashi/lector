@@ -103,6 +103,15 @@ components:
     rounded: "{rounded.md}"
     padding: "0.5rem 0.7rem"
     typography: "{typography.body}"
+  filter-chip:
+    backgroundColor: "{colors.neutral-surface}"
+    textColor: "{colors.neutral-ink}"
+    rounded: "{rounded.md}"
+    padding: "0.5rem 0.75rem"
+    typography: "{typography.body}"
+  filter-chip-active:
+    backgroundColor: "{colors.primary-soft}"
+    textColor: "{colors.primary}"
   card:
     backgroundColor: "{colors.neutral-surface}"
     rounded: "{rounded.lg}"
@@ -260,13 +269,16 @@ zappelt.
 ## Layout
 
 Ein zentriertes Inhaltsband (max. 1100px, seitlich 1.5rem) unter einer vollbreiten
-Kopfleiste. Die Kopfleiste trägt links Marke und Navigation, rechts den Untertitel
+Kopfleiste. Breite Arbeitslisten (derzeit nur die Rechnungsliste mit elf Spalten) nutzen
+das weite Band `container--wide` (max. 1440px) und etwas engere Zellen (0.6rem seitlich). Die Kopfleiste trägt links Marke und Navigation, rechts den Untertitel
 „OCR-Veredelung für Paperless".
 
 - **Status-Kacheln:** Raster mit `repeat(auto-fit, minmax(150px, 1fr))` und 0.75rem Abstand —
   bewusst ohne feste Spaltenzahl, damit neue Zustände nicht gequetscht werden.
 - **Werkzeugzeilen** (Filter, Upload, Empfänger-Toolbar): umbrechende Flex-Reihen mit
   0.5rem Abstand; das Suchfeld wächst, mindestens 180px.
+  Schnellfilter-Chips stehen als Gruppe in einer eigenen Zeile unter Suche und
+  Auswahlfeldern.
 - **Metadaten:** zweispaltiges Raster `max-content 1fr`.
 - **Verlaufs-Log:** dreispaltig (11rem Zeit · 9rem Ereignis · Rest Nachricht).
 - **Rechnungsdetail:** GiroCode-Spalte (220–280px) neben dem Zahldaten-Formular.
@@ -278,7 +290,9 @@ einspaltig, in der Historientabelle fallen Spalte 3 und 5 weg. Desktop ist der M
 das Handy wird bedient, nicht optimiert. Zusätzlich
 entfällt der Untertitel der Kopfleiste, die Navigation bricht unter die Marke, und jede
 Tabelle scrollt in sich statt die Seite zu verbreitern (Dateinamen-Spalte min. 13rem).
-Lange Dateinamen dürfen überall an beliebiger Stelle umbrechen (`overflow-wrap: anywhere`).
+Lange Dateinamen dürfen überall an beliebiger Stelle umbrechen (`overflow-wrap: anywhere`). Ausnahme
+Rechnungstitel: Sie sind Sätze und brechen nur zwischen Wörtern (`overflow-wrap: break-word`,
+Mindestbreite 14rem, mobil 12rem), sonst schrumpft die Tabelle sie zur Buchstabensäule.
 
 ## Elevation & Depth
 
@@ -327,6 +341,19 @@ Die Signallampe des Stellwerks.
 - Zähler in Display-Stufe, Beschriftung in Label-Stufe.
 - **Hover:** Rahmen Petrol. **Aktiv (Filter gesetzt):** `aria-current`, Fläche
   Petrol-Hauch, Rahmen Petrol, Beschriftung Petrol/600, Schatten entfällt.
+
+### Schnellfilter-Chip
+Ein Umschalter für häufige Filter (Rechnungen: Kontext, nicht exportiert, Dublette, zu
+prüfen; Empfänger: nur ohne Empfänger; Dokumente: Zeitraum). Bewusst kein Pillen-Look —
+die Pille gehört den Status-Badges, ein Chip ist ein Bedienelement.
+- Tafelweiß, Haarlinie, 8px, 0.5rem × 0.75rem, Body-Schrift; davor eine 0.7rem-Kontrollmarke
+  (Checkbox: 3px Ecke, Radio: rund), damit der Zustand nicht nur an der Farbe hängt.
+- **Hover:** Rahmen Petrol. **An:** Petrol-Hauch, Rahmen und Schrift Petrol, Marke gefüllt —
+  dieselbe Sprache wie die aktive Status-Kachel. Die Schriftstärke bleibt gleich (kein Springen).
+- **Fokus:** globaler Fokusring am Chip (`:has(input:focus-visible)`).
+- Technisch ein `<label>` um eine echte, unsichtbare Checkbox bzw. Radio in einem
+  `<fieldset class="filter-chips">`; ein Klick schickt das GET-Formular sofort ab (app.js),
+  ohne JS bleibt der „Filtern"-Knopf.
 
 ### Status-Badges
 - Vollrunde Pille, 0.15rem × 0.6rem, Badge-Typo.
