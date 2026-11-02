@@ -885,14 +885,14 @@ Ungültige KI-Werte führen je Batch-Lauf weiterhin zu einer erneuten Anfrage (K
   Zeitraum), Klick filtert sofort. Details: `feature-documentation/ui-erscheinungsbild.md`,
   Komponente in `DESIGN.md`.
 
-## Zusatz-Feature: Paperless-Dokumentansicht (paperless-dokumentansicht) — umgesetzt, Abnahme auf dem NAS offen
+## Zusatz-Feature: Paperless-Dokumentansicht (paperless-dokumentansicht) — umgesetzt, abgenommen und archiviert
 
 Lector zeigt Paperless-Dokumente lesend (Vorschau, Metadaten, Notizen) als eigene Seite
 `/paperless/{id}` und als Seitenleiste in Rechnungen, Empfänger und Dokumenten. Die bisherige
 Rechnungsdetailseite ist darin aufgegangen; alte Adressen leiten weiter. Bearbeitet wird nur, was zu
 Lector-Abläufen gehört (Empfänger, Rechnungsdaten, „überwiesen“, SevDesk-Export). Grenze und
 Sichtbarkeit (jedes Dokument, das Lectors Token lesen darf) stehen in `PRODUCT.md`. Change:
-`openspec/changes/paperless-dokumentansicht/`. Doku: `feature-documentation/paperless-integration/dokumentansicht.md`
+`openspec/changes/archive/2026-11-02-paperless-dokumentansicht/` (Spec: `openspec/specs/paperless-dokumentansicht/`). Doku: `feature-documentation/paperless-integration/dokumentansicht.md`
 (neu), `feature-documentation/ui-erscheinungsbild.md` (Abschnitt „Seitenleiste“), `DESIGN.md`
 (Abschnitt „Seitenleiste“).
 
@@ -906,9 +906,9 @@ Sichtbarkeit (jedes Dokument, das Lectors Token lesen darf) stehen in `PRODUCT.m
 | Seitenleiste in Rechnungen, Empfänger und Dokumenten, Zustand in `?doc=` | ✅ |
 | Tastatur (↑/↓, j/k, Esc, Enter) | ✅ |
 | Aktionen aus der Seitenleiste per fetch ohne Neuladen, SSE-Refresh der Leiste | ✅ |
-| Gesamtprüfung `uv run pytest`, `uv run ruff check .`, `graphify update .` (Task 6.3) | offen |
-| Manuelle Browser-Prüfung: Öffnen, Wechseln, Tastatur, Formulare, SSE (Tasks 4.1 bis 4.4, 5.1) | offen (manuell) |
-| Abnahme auf dem NAS nach Rollout (Task 6.4) | offen (manuell) |
+| Gesamtprüfung `uv run pytest`, `uv run ruff check .`, `graphify update .` (Task 6.3) | ✅ (966 Tests) |
+| Manuelle Browser-Prüfung: Öffnen, Wechseln, Tastatur, Formulare, SSE (Tasks 4.1 bis 4.4, 5.1) | ✅ (2026-11-02) |
+| Abnahme auf dem NAS nach Rollout (Task 6.4): drei Listen, Tastatur, PDF-Fokus, Aktion aus der Leiste, alter Link, 1800/1024/390 px, Dunkelmodus | ✅ (2026-11-02) |
 
 Keine Datenmigration (`design.md`, Migration Plan). Rollback über das vorherige Image.
 
