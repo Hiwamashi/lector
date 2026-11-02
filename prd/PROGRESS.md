@@ -981,10 +981,11 @@ Change: `openspec/changes/scan-paperless-verknuepfung/` (noch nicht archiviert).
 Keine Datenmigration außer den neuen Spalten (`design.md`, Migration Plan). Ein Rollback auf das
 vorherige Image ist ohne Eingriff möglich; die zusätzlichen Spalten werden dann ignoriert.
 
-Die Abnahme auf dem NAS (Aufgabe 6.3) ruht, bis der Fix aus dem Change `paperless-sync-ohne-stillstand`
-ausgerollt und abgenommen ist. Ohne den Fix blockiert der Rechnungs-Sync den Dienst rund 40 Sekunden je
-Lauf, und die Verknüpfung bricht in dieser Zeit mit Zeitüberschreitung ab. Eine Abnahme wäre dann nicht
-aussagekräftig (siehe unten).
+Die Abnahme auf dem NAS (Aufgabe 6.3) ruhte, bis der Fix aus dem Change `paperless-sync-ohne-stillstand`
+ausgerollt war (vorher brach die Verknüpfung während des 40-Sekunden-Stillstands des Rechnungs-Syncs ab,
+siehe unten). Stand nach dem Fix: Altbestand nachgeholt, ganz überwiegend über den Dateinamen, wenige über
+die Prüfsumme (E-Rechnungen), einzelne „nicht gefunden“. Offen bleiben der frische Scan (Beleg der
+Prüfsummengleichheit) und die Sichtprüfung der Leiste.
 
 Bewusst nicht umgesetzt: Gegenrichtung (Paperless-Dokumente ohne Lector-Vorgang), manuelle Zuordnung
 nicht gefundener Dokumente, Abfrage über die Paperless-Tasks-API.
@@ -997,7 +998,7 @@ Offene Punkte aus der Umsetzung (Details und `TODO` in `feature-documentation/pa
 - Nach einem Neustart werden alle `not_found`-Vorgänge einmal erneut gesucht, auch ältere als 14 Tage.
 - Ein Wiederholversuch nach der Ablage kann eine zweite Datei in `consume` erzeugen.
 
-## Rechnungs-Sync ohne Stillstand (Change paperless-sync-ohne-stillstand) – umgesetzt, Abnahme offen
+## Rechnungs-Sync ohne Stillstand (Change paperless-sync-ohne-stillstand) – umgesetzt und abgenommen
 
 **Ursache:** Der Rechnungs-Sync lief synchron im einzigen Prozess. Bei jedem Lauf wurde jede der rund 800
 Rechnungen mit eigenem Commit neu geschrieben, weil `last_synced_at` bei jedem Aufruf einen neuen Wert
@@ -1026,10 +1027,12 @@ Doku: `feature-documentation/paperless-integration/sync-und-aktionen.md`,
 `feature-documentation/paperless-integration/scan-verknuepfung.md`. Rollback: Revert des Commits, die Daten
 bleiben kompatibel.
 
-**Offen (Aufgabe 4.3, manuell auf dem NAS):** `/healthz`-Antwortzeit über zwei Sync-Takte messen (keine
-Antwort über 2 s). Die Logzeile muss bei einem Lauf ohne Änderung `geändert=0` zeigen und die Schrittdauern
-ausweisen. Die Scan-Verknüpfung muss ohne Abbruch laufen. Der anonymisierte Befund wird hier eingetragen;
-bis dahin gilt der Fix als nicht abgenommen. Die Abnahme der Scan-Verknüpfung (Aufgabe 6.3) ruht bis dahin.
+**Abnahme (02.11., Aufgabe 4.3):** Nach dem Rollout `/healthz` 12 Minuten lang alle 15 s abgefragt (zwei
+Sync-Takte, 48 Messungen): höchste Antwortzeit rund 0,3 s einschließlich Messaufwand, vorher rund 40 s je
+Takt. Logzeile eines Laufs ohne Änderung: rund 700 Rechnungen geprüft, 0 geändert, Rechnungsschritt rund 1 s
+einschließlich Abruf aus Paperless, Belegabgleich unter 0,2 s. Der erste Lauf nach dem Update meldete einige
+geänderte Rechnungen (einmaliger Abgleich). Die Scan-Verknüpfung lief ohne Abbruch mit vollen Stapeln und
+hat den Altbestand abgearbeitet. Die Abnahme der Scan-Verknüpfung (Aufgabe 6.3) kann fortgesetzt werden.
 
 **Bekannt, nicht Teil des Changes:** Scheitert die Auflösung eines Korrespondentennamens (ID fehlt in der
 je Lauf geladenen Liste und der Einzelabruf schlägt fehl), wird der Korrespondent der Rechnung bis zum

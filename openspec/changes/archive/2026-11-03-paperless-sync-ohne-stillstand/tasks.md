@@ -24,4 +24,4 @@ Aufgaben mit **(manuell)** laufen gegen die echte Instanz; Befunde nur anonymisi
 
 - [x] 4.1 Doku: `feature-documentation/paperless-integration/sync-und-aktionen.md` (Änderungserkennung, gesammeltes Schreiben, Logzeile, „Zuletzt geändert“), `rechnungs-ui.md` (Beschriftung), `scan-verknuepfung.md` (Fehlertyp), `prd/PROGRESS.md`. Prüfen: Dateien enthalten die neuen Punkte.
 - [x] 4.2 Gesamtprüfung: `uv run pytest`, `uv run ruff check .`, `graphify update .`, `openspec validate paperless-sync-ohne-stillstand`. Prüfen: alle ohne Fehler.
-- [ ] 4.3 **(manuell)** Nach Rollout auf dem NAS: `/healthz`-Antwortzeit über zwei Sync-Takte alle 15 s messen (keine Antwort über 2 s), neue Logzeile zeigt 0 geänderte Rechnungen bei Lauf ohne Änderung und die Schrittdauern, Scan-Verknüpfung läuft ohne Abbruch. Befund anonymisiert in `PROGRESS.md`.
+- [x] 4.3 **(manuell)** Nach Rollout auf dem NAS: `/healthz`-Antwortzeit über zwei Sync-Takte alle 15 s messen (keine Antwort über 2 s), neue Logzeile zeigt 0 geänderte Rechnungen bei Lauf ohne Änderung und die Schrittdauern, Scan-Verknüpfung läuft ohne Abbruch. Befund anonymisiert in `PROGRESS.md`.
