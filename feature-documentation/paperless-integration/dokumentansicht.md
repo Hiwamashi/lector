@@ -283,8 +283,9 @@ in `app/main.py`. Dort erscheint in einem Fragment der Hinweis, dass Paperless n
 - `tests/test_app_js.py`, `tests/test_web.py`, `tests/test_web_auth.py`: an die neuen Adressen
   angepasst und ergänzt.
 
-Was nur ein Browser zeigt (Layout, Fokusring, PDF-Darstellung, Kontrast) ist in
-`openspec/changes/paperless-dokumentansicht/tasks.md` als manuelle Prüfung vermerkt.
+Was nur ein Browser zeigt (Layout, Fokusring, PDF-Darstellung, Kontrast), wurde am 02.11.2026 auf
+dem NAS manuell abgenommen (Task 6.4 in
+`openspec/changes/archive/2026-11-02-paperless-dokumentansicht/tasks.md`).
 
 ## Offen
 
