@@ -770,6 +770,19 @@ def test_invoice_detail_shows_document_date(client, monkeypatch):
     assert "06.06.2026" in detail.text
 
 
+def test_invoice_detail_labels_last_change_not_last_sync(client, monkeypatch):
+    _rechnungsbereich_an(monkeypatch)
+    c, application = client
+    inv_id = application.state.repo.upsert_invoice(
+        paperless_id=8, title="Miete", correspondent=None
+    )
+
+    detail = c.get(f"/invoices/{inv_id}")
+    assert detail.status_code == 200
+    assert "Zuletzt geändert" in detail.text
+    assert "Zuletzt synchronisiert" not in detail.text
+
+
 def test_recipients_page_without_paperless_shows_hint(client):
     # Ohne PAPERLESS_URL/TOKEN ist das Feature deaktiviert → Hinweis statt Fehler.
     c, _ = client

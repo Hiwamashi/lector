@@ -144,7 +144,7 @@
   <dt>Überwiesen</dt><dd>{{ "Ja" if inv.paid else "Nein" }}</dd>
   <dt>SevDesk-Export</dt><dd>{{ inv.exported_at | fmt_dt }}</dd>
   <dt>Nach Paperless zurückgeschrieben</dt><dd>{{ inv.written_back_at | fmt_dt }}</dd>
-  <dt>Zuletzt synchronisiert</dt><dd>{{ inv.last_synced_at | fmt_dt }}</dd>
+  <dt>Zuletzt geändert</dt><dd>{{ inv.last_synced_at | fmt_dt }}</dd>
 </dl>
 
 <h2>Verlauf</h2>

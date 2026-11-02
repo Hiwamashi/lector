@@ -135,7 +135,9 @@ class PaperlessLinker:
         except (httpx.HTTPError, PaperlessError) as error:
             # Der Zustand des gerade geprüften Vorgangs bleibt unverändert; der nächste
             # Lauf versucht es erneut.
-            log.warning("Paperless-Verknüpfung abgebrochen: %s", error)
+            log.warning(
+                "Paperless-Verknüpfung abgebrochen: %s: %s", type(error).__name__, error
+            )
             result.aborted = True
             result.more_work = False
         if result.linked or result.linked_by_name or result.not_found:

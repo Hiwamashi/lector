@@ -19,9 +19,9 @@ Detailansicht angezeigt.
 - **Speicherung:** neue Spalte `document_date` in `paperless_invoices` (`app/db.py`). Bestehende
   Datenbanken werden über die Mini-Migration `_migrate()` in `init_db()` per `ALTER TABLE`
   nachgezogen (`CREATE TABLE IF NOT EXISTS` greift dort nicht).
-- **Durchreichung:** `Repository.upsert_invoice(..., document_date=...)` wird aus beiden
-  Sync-Pfaden (`_sync_invoices`, `_sync_sevdesk_tag`) mit `doc.created` befüllt und bei jedem
-  Sync aktualisiert.
+- **Durchreichung:** Beide Sync-Pfade (`_sync_invoices`, `_sync_sevdesk_tag`) übergeben `doc.created`
+  als `document_date` an `Repository.upsert_invoices` (Einzelfall: `upsert_invoice`). Das Datum wird nur
+  bei Neuanlage oder Änderung geschrieben, siehe [sync-und-aktionen.md](sync-und-aktionen.md#änderungserkennung-und-gesammeltes-schreiben).
 - **Anzeige:** Jinja-Filter `fmt_date` (Datum ohne Uhrzeit, `app/main.py`).
 
 ## 2. Sortierbare Spalten
@@ -182,6 +182,13 @@ oben in `partials/invoice_notices.html`. Der Rechnungsbereich zeigt zusätzlich 
   kein `confirm`. Bestehen Rückfragegründe, leitet die Route auf `?ask=1` um.
 - **Rückschrieb offen:** Hinweis „Rückschrieb an Paperless offen — wird beim nächsten Sync
   nachgeholt.“, solange der Status `exported` ist und kein Rückschrieb erledigt wurde.
+- **Zuletzt geändert:** Eintrag in den Rechnungsangaben (`partials/invoice_sections.html`) mit dem Wert
+  der Spalte `last_synced_at`. Die Spalte heißt historisch so, bedeutet aber „zuletzt geändert“. Sie
+  wird nur gesetzt, wenn der Sync die Rechnung neu anlegt oder eine ihrer gespiegelten Angaben (Titel,
+  Korrespondent, Rechnungsdatum, Empfänger, Beleg-Vermerk) ändert. Ein Lauf ohne Änderung verschiebt
+  den Zeitpunkt nicht. Werte aus der Zeit vor dem Change `paperless-sync-ohne-stillstand` bleiben
+  erhalten und zeigen den letzten Lauf, bis sich die Rechnung ändert. Der Eintrag hieß vorher
+  „Zuletzt synchronisiert“.
 - **Rückfrage** (`?ask=1`): Box „Vor dem Export klären“ mit den Gründen und dem Knopf
   „Trotzdem exportieren“. Die Gründe werden bei jedem Aufruf neu berechnet. Der Block bleibt beim
   Live-Refresh stehen und verschwindet, sobald nichts mehr zu klären ist.

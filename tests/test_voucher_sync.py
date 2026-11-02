@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -474,3 +475,122 @@ async def test_sync_once_loest_empfaengerfeld_einmal_je_lauf_auf(tmp_path, monke
     assert aufrufe["n"] == 1
     assert repo.get_invoice_by_paperless(3).recipient_label == "IT-Consulting"
 
+
+
+# ---- Sync schreibt nur Änderungen (Change paperless-sync-ohne-stillstand) ---------------
+
+
+async def test_sync_zweiter_lauf_ohne_aenderung_schreibt_nichts(tmp_path, monkeypatch):
+    sync, repo, tokens = _sync(tmp_path)
+    monkeypatch.setattr(sync, "_extract_and_store", _noop)
+    client = _MirrorClient([_doc(1, []), _doc(2, [])])
+    await sync._sync_invoices(client, IDS, {}, FIELD)
+    ids = [repo.get_invoice_by_paperless(i).id for i in (1, 2)]
+    assert all(
+        [e["event_type"] for e in repo.list_invoice_events(i)] == ["synced"] for i in ids
+    )
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    await sync._sync_invoices(client, IDS, {}, FIELD)
+
+    assert repo._conn.total_changes == before
+    assert tokens == []
+    assert all(len(repo.list_invoice_events(i)) == 1 for i in ids)
+
+
+async def test_sync_geaenderter_titel_erzeugt_genau_ein_ereignis(tmp_path, monkeypatch):
+    sync, repo, tokens = _sync(tmp_path)
+    monkeypatch.setattr(sync, "_extract_and_store", _noop)
+    client = _MirrorClient([_doc(1, []), _doc(2, [])])
+    await sync._sync_invoices(client, IDS, {}, FIELD)
+    tokens.clear()
+
+    client.docs = [replace(client.docs[0], title="Neuer Titel"), client.docs[1]]
+    await sync._sync_invoices(client, IDS, {}, FIELD)
+
+    geaendert = repo.get_invoice_by_paperless(1)
+    assert geaendert.title == "Neuer Titel"
+    assert len(repo.list_invoice_events(geaendert.id)) == 2
+    assert len(repo.list_invoice_events(repo.get_invoice_by_paperless(2).id)) == 1
+    # Upsert und SYNCED-Ereignis melden dieselbe Rechnung; die andere bleibt still.
+    assert set(tokens) == {f"inv:{geaendert.id}"}
+
+
+async def test_sync_doppeltes_dokument_wird_einmal_angelegt_und_ausgelesen(tmp_path, monkeypatch):
+    """Verschobene Seiten beim Paginieren liefern ein Dokument doppelt: einmal anlegen,
+    ein Ereignis, eine Zahldaten-Auslese."""
+    sync, repo, tokens = _sync(tmp_path)
+    ausgelesen: list[int] = []
+
+    async def _merken(client, ids, invoice_id, doc, corr_map):
+        ausgelesen.append(doc.id)
+
+    monkeypatch.setattr(sync, "_extract_and_store", _merken)
+    client = _MirrorClient([_doc(1, []), _doc(2, []), _doc(1, [])])
+
+    await sync._sync_invoices(client, IDS, {}, FIELD)
+
+    inv = repo.get_invoice_by_paperless(1)
+    assert [e["event_type"] for e in repo.list_invoice_events(inv.id)] == ["synced"]
+    assert ausgelesen == [1, 2]
+    assert f"inv:{inv.id}" in tokens
+
+
+async def test_sync_tag_lauf_ohne_aenderung_schreibt_keine_rechnungszeile(tmp_path):
+    sync, repo, tokens = _sync(tmp_path)
+    client = _MirrorClient([_doc(1, []), _doc(2, [])])
+    await sync._sync_sevdesk_tag(client, IDS, {}, FIELD)
+    assert repo.get_invoice_by_paperless(1) is not None
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    stats = await sync._sync_sevdesk_tag(client, IDS, {}, FIELD)
+
+    assert repo._conn.total_changes == before
+    assert tokens == []
+    assert (stats.checked, stats.new, stats.changed) == (2, 0, 0)
+
+
+class _FullClient(_MirrorClient):
+    async def resolve_document_type_id(self, name):
+        return 1
+
+    async def list_tags(self):
+        return [{"name": "sevdesk", "id": 3}, {"name": "sevdesk-exportiert", "id": 4},
+                {"name": "überwiesen", "id": 6}]
+
+    async def ensure_custom_field(self, name, data_type):
+        return 7
+
+    async def correspondent_map(self):
+        return {}
+
+    async def resolve_select_field(self, name):
+        return FIELD
+
+
+async def test_sync_once_loggt_laufzeit_ohne_titel(tmp_path, monkeypatch, caplog):
+    sync, repo, _ = _sync(tmp_path, FEATURE_PAPERLESS_SYNC="true", PAPERLESS_URL="http://x",
+                          PAPERLESS_TOKEN="t")
+    monkeypatch.setattr(sync, "_extract_and_store", _noop)
+    geheim = "Vertraulicher-Titel-4711"
+    client = _FullClient([replace(_doc(1, []), title=geheim), _doc(2, [])])
+
+    @asynccontextmanager
+    async def fake_paperless():
+        yield client
+
+    monkeypatch.setattr(sync, "_paperless", fake_paperless)
+    with caplog.at_level("INFO", logger="lector.paperless_sync"):
+        await sync.sync_once()
+        caplog.clear()
+        await sync.sync_once()
+
+    zeilen = [r.getMessage() for r in caplog.records if "Paperless-Sync:" in r.getMessage()]
+    assert len(zeilen) == 1
+    zeile = zeilen[0]
+    assert "geprüft=2 neu=0 geändert=0" in zeile
+    assert "Rückschriebe" in zeile and "Belegabgleich" in zeile and " s" in zeile
+    assert geheim not in zeile
+    assert all(geheim not in r.getMessage() for r in caplog.records)

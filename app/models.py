@@ -156,6 +156,8 @@ class PaperlessInvoice:
     paid: bool = False
     exported_at: datetime | None = None
     written_back_at: datetime | None = None
+    # Name historisch: Bedeutung ist „zuletzt geändert“ — der Sync setzt den Wert nur bei
+    # Neuanlage oder geänderten Paperless-Angaben, nicht bei jedem Lauf.
     last_synced_at: datetime | None = None
     error_message: str | None = None
     document_date: datetime | None = None

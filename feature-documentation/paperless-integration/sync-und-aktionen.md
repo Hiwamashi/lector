@@ -19,10 +19,11 @@ löst (und cached) IDs für Dokumententyp, Tags und Custom Fields auf — legt f
 Läuft im Worker alle `PAPERLESS_SYNC_INTERVAL_SECONDS`, nur wenn `enabled` (Feature-Flag +
 URL + Token). Per `asyncio.Lock` gegen Überlappung gesichert.
 
-1. `_sync_invoices` — Dokumente mit dem Rechnungs-Dokumententyp listen, je Dokument
-   `upsert_invoice`. Ein `synced`-Event wird nur bei echter Änderung geschrieben (Neuanlage
-   bzw. geänderter Titel/Korrespondent — Vergleich mit `get_invoice_by_paperless` vor dem
-   Upsert), damit `invoice_events` bei Idle-Syncs nicht unbegrenzt wächst. Bei
+1. `_sync_invoices` — Dokumente mit dem Rechnungs-Dokumententyp listen und zweiphasig
+   gesammelt schreiben (`upsert_invoices`, siehe „Änderungserkennung“ unten). Ein `synced`-Event
+   wird nur bei echter Änderung geschrieben (Neuanlage bzw. geänderter Titel/Korrespondent —
+   Vergleich mit dem Stand vor dem Schreiben), damit `invoice_events` bei Idle-Syncs nicht
+   unbegrenzt wächst. Bei
    `giro_status == none`: Zahldaten extrahieren (E-Rechnung aus XML bzw. eingebetteter XML via
    `detection.extract_embedded_invoice_xml`, sonst OCR-Heuristik), speichern und — falls
    `ready` — IBAN/Betrag als Custom Fields zurückschreiben.
@@ -34,6 +35,9 @@ URL + Token). Per `asyncio.Lock` gegen Überlappung gesichert.
 3. `_retry_write_backs` — fehlende Rückschreibe nach Exporten nachholen (siehe unten).
 4. `recompute_matches()` — Treffer ohne SevDesk-Aufruf auf Basis des lokalen Abzugs neu
    berechnen ([sevdesk-abgleich.md](sevdesk-abgleich.md)).
+
+Nach diesen Schritten schreibt der Lauf eine INFO-Zeile mit Zählern und Dauern (siehe
+„Laufzeit-Logzeile“ unten).
 
 ### Korrespondenten-Auflösung: eine Karte je Lauf, nicht je Dokument
 
@@ -98,7 +102,94 @@ Prüfungen wie ein Export aus der Übersicht. Für jedes getaggte Dokument gilt:
 ### `_sync_invoices` — Rechnungen (Dokumentenliste)
 
 Der Ablauf entspricht der Beschreibung unter `sync_once()`. Die Korrespondentenkarte und die
-Feldauflösung kommen aus dem Lauf.
+Feldauflösung kommen aus dem Lauf. Der Schreibteil ist zweiphasig (Abschnitt unten).
+
+### Änderungserkennung und gesammeltes Schreiben
+
+**Hintergrund.** Vor dem Change `paperless-sync-ohne-stillstand` setzte `upsert_invoice` bei jedem
+Aufruf `last_synced_at` neu und committete einzeln. Bei rund 800 Rechnungen schrieb ein Lauf also
+jede Zeile neu, ohne dass sich etwas geändert hatte. Das dauerte im einzigen Prozess etwa 40 Sekunden
+ohne Logzeile und ohne Netzanfrage. Währenddessen antwortete Lector nicht (u. a. `/healthz`), und
+die Scan-Verknüpfung brach mit Zeitüberschreitung ab. Seit dem Fix schreibt ein Lauf nur geänderte
+Rechnungen, gesammelt in einer Transaktion. Der Sync läuft weiterhin im Event-Loop; ein eigener
+Thread ist nicht Teil des Changes.
+
+**Vergleich vor dem Schreiben** (`Repository._upsert_invoice_locked` in `app/repository.py`):
+
+- Verglichen werden die fünf gespiegelten Angaben: `title` (Titel), `correspondent` (Korrespondent),
+  `document_date` (Rechnungsdatum), `recipient_label` (Empfänger) und `paperless_voucher_ref`
+  (Beleg-Vermerk aus dem Feld „SevDesk-Beleg“).
+- Verglichen wird in der gespeicherten Form. Das Datum läuft durch `_normalize_doc_date` (Zeitzonen-
+  Offset entfernt, wie beim Schreiben). Bei `recipient_label` und `paperless_voucher_ref` sind leerer
+  Text und `None` dasselbe; gespeichert wird `None`. Titel und Korrespondent werden ohne diese
+  Umwandlung übernommen.
+- Nicht auflösbare Felder bleiben unberührt. Fehlt das Empfänger-Feld oder das Feld „SevDesk-Beleg“
+  in Paperless, wird der Parameter nicht übergeben (`_mirrored_fields` in `app/paperless_sync.py`).
+  Die lokale Spalte bleibt dann stehen und zählt nicht als Änderung. Ist das Feld vorhanden, am
+  Dokument aber leer, ergibt das `None` und damit eine Änderung auf NULL.
+- Ergebnis je Rechnung (`UpsertResult`):
+  - `new`: Zeile fehlt, sie wird angelegt. `last_synced_at` wird gesetzt.
+  - `changed`: mindestens eine übergebene Angabe weicht ab. `last_synced_at` wird auf den Zeitpunkt
+    des Laufs gesetzt.
+  - `unchanged`: kein Statement, kein Commit, kein Live-Signal. `last_synced_at` bleibt stehen.
+
+**`upsert_invoices(rows)`** (`app/repository.py`) schreibt die Angaben eines Schritts auf einmal:
+
+- Eingabe: Liste von `InvoiceUpsert`. Die Felder entsprechen `upsert_invoice`; `recipient_label` und
+  `paperless_voucher_ref` werden nur übergeben, wenn sie in Paperless auflösbar sind.
+- Alle Zeilen laufen unter `self._lock` in **einer** Transaktion. Commit nur, wenn mindestens eine
+  Zeile `new` oder `changed` ist. Bei einer Ausnahme folgt ein Rollback, danach wird die Ausnahme
+  weitergereicht.
+- Rückgabe: `dict[paperless_id, InvoiceUpsertOutcome]` mit `invoice_id`, `result` und `before`
+  (Stand vor dem Schreiben, `None` bei `new`).
+- Live-Signale `inv:<id>` nur für `new` und `changed`, und erst nach dem Commit.
+- Leere Liste: es wird nichts geschrieben, Rückgabe `{}`.
+- Der Lock wird nie über ein `await` gehalten. Die Sammelphase (mit `await`) läuft vorher, die
+  Schreibphase ist rein synchron.
+
+`upsert_invoice(...)` (Einzelfall) bleibt für bestehende Aufrufer und Tests erhalten. Er nutzt dieselbe
+Vergleichslogik und committet nur bei Änderung.
+
+**Zweiphasiger Ablauf** in `_sync_invoices` und `_sync_sevdesk_tag` (`app/paperless_sync.py`):
+
+1. **Sammeln.** `client.list_documents(...)` und je Dokument `_upsert_row` (Korrespondentenname aus der
+   Karte, gespiegelte Felder über `_mirrored_fields`). Hier wird mit `await` gearbeitet, aber nichts in
+   die Datenbank geschrieben.
+2. **Schreiben.** Einmal `repo.upsert_invoices(rows)`. Vorher entfernt `_unique_docs` doppelte
+   Dokumente (beim Paginieren nach `-created` können sich Seiten verschieben); im Stapel gilt ohnehin
+   das erste Vorkommen einer `paperless_id`.
+3. **Folgeschritte je Dokument** (Vergleich mit `before` aus Schritt 2):
+   - `SYNCED`-Ereignis nur bei Neuanlage oder geändertem Titel/Korrespondenten.
+   - `_extract_and_store` bei Neuanlage **oder** `giro_status == none`. Der wiederholte Zahldaten-Versuch
+     für `none` bleibt also auch bei unveränderten Rechnungen bestehen. Das ist bewusst nicht Teil des
+     Changes.
+   - Im Tag-Weg zusätzlich Vormerken bzw. Export wie unter „Tag-Weg“ beschrieben. Die Lesezugriffe je
+     Rechnung dort (`get_invoice`, `_blockers_for`) bleiben bestehen.
+
+### Laufzeit-Logzeile (`_log_run`)
+
+Je Lauf steht eine INFO-Zeile im Log (Logger `lector.paperless_sync`). Sie nennt nur Zahlen und Dauern,
+keine Titel, Namen oder Dokument-IDs. Format (Platzhalter in spitzen Klammern):
+
+```
+Paperless-Sync: Rechnungen geprüft=<n> neu=<n> geändert=<n> (<s> s); SevDesk-Tag geprüft=<n> neu=<n> geändert=<n> (<s> s); Rückschriebe <s> s; Belegabgleich <s> s
+```
+
+- `geprüft` zählt alle Dokumente des Schritts. `neu` und `geändert` stammen aus dem Ergebnis von
+  `upsert_invoices`.
+- Die Dauern messen mit `time.monotonic()`: Rechnungen, SevDesk-Tag, Rückschriebe und
+  `recompute_matches()` (Belegabgleich).
+- Die Zeile steht nach dem Belegabgleich und entsteht nur, wenn der Rechnungsschritt abgeschlossen ist.
+  - Ist `enabled` falsch (Feature-Flag, URL oder Token fehlt), läuft kein Lauf und es gibt keine Zeile.
+  - Ohne Verbindung zu Paperless (`httpx.ConnectError`) gibt es nur die Warnung „Paperless nicht
+    erreichbar, überspringe Sync“, keine Zeile.
+  - Scheitert der Rechnungsschritt, gibt es `log.exception` und ebenfalls keine Zeile.
+  - Scheitert der Tag-Schritt oder die Rückschriebe, erscheint die Zeile trotzdem. Der nicht
+    abgeschlossene Schritt zeigt dann 0 bzw. 0,00 s.
+- Ein Lauf ohne Änderungen zeigt `geändert=0` (in beiden Schritten).
+
+**Offen:** Die Dauern auf dem NAS sind noch nicht gemessen. Die Abnahme (Aufgabe 4.3 im Change) steht
+aus, siehe [prd/PROGRESS.md](../../prd/PROGRESS.md).
 
 ## Prüfungen vor dem Export
 
