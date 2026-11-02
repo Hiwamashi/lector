@@ -18,19 +18,25 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
+from .context_classification import same_label
 from .db import connect, init_db
 from .models import (
+    CorrespondentHistory,
     DocStatus,
     DocType,
     Document,
     EventType,
     GiroStatus,
     InvoiceEventType,
+    InvoiceVoucherMatch,
+    MatchKind,
     OcrPage,
     PaperlessInvoice,
     RecipientCache,
     RecipientStatus,
     SevdeskStatus,
+    SevdeskSyncState,
+    SevdeskVoucher,
     ocr_pages_from_payload,
     ocr_pages_to_payload,
 )
@@ -86,7 +92,8 @@ class DatabaseHealth:
 _INVOICE_COLUMNS = (
     "id, paperless_id, title, correspondent, creditor_name, iban, bic, amount, currency, "
     "purpose, source, giro_status, sevdesk_status, sevdesk_voucher_id, paid, exported_at, "
-    "written_back_at, last_synced_at, error_message, document_date, created_at"
+    "written_back_at, last_synced_at, error_message, document_date, created_at, "
+    "recipient_label, paperless_voucher_ref, review_reason"
 )
 
 _DOC_COLUMNS = (
@@ -168,6 +175,56 @@ def _parse_invoice(row: sqlite3.Row) -> PaperlessInvoice:
         error_message=row["error_message"],
         document_date=_parse_dt(row["document_date"]),
         created_at=_parse_dt(row["created_at"]),
+        recipient_label=row["recipient_label"],
+        paperless_voucher_ref=row["paperless_voucher_ref"],
+        review_reason=row["review_reason"],
+    )
+
+
+class _Unset:
+    """Marker für „Argument nicht übergeben“ — unterscheidet sich von ``None`` (= NULL setzen)."""
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+_UNSET = _Unset()
+
+# Sevdesk-Stati, die ein laufender oder abgeschlossener Export belegt; set_review/dismiss
+# dürfen sie nicht überschreiben (analog zur Ausschlussliste von claim_for_export).
+_EXPORT_LOCKED_STATUSES = (
+    SevdeskStatus.EXPORTED.value,
+    SevdeskStatus.EXPORTING.value,
+    SevdeskStatus.UNCERTAIN.value,
+)
+
+_VOUCHER_COLUMNS = (
+    "voucher_id, voucher_date, supplier_name, sum_gross, currency, description, status, "
+    "last_seen_at"
+)
+
+
+def _parse_voucher(row: sqlite3.Row) -> SevdeskVoucher:
+    return SevdeskVoucher(
+        voucher_id=row["voucher_id"],
+        voucher_date=row["voucher_date"],
+        supplier_name=row["supplier_name"],
+        sum_gross=row["sum_gross"],
+        currency=row["currency"],
+        description=row["description"],
+        status=row["status"],
+        last_seen_at=_parse_dt(row["last_seen_at"]),
+    )
+
+
+def _parse_match(row: sqlite3.Row) -> InvoiceVoucherMatch:
+    return InvoiceVoucherMatch(
+        invoice_id=row["invoice_id"],
+        voucher_id=row["voucher_id"],
+        kind=MatchKind(row["kind"]),
+        score=row["score"],
+        decided_at=_parse_dt(row["decided_at"]),
+        created_at=_parse_dt(row["created_at"]),
     )
 
 
@@ -201,6 +258,13 @@ class Repository:
     def notify_batch(self) -> None:
         """Signalisiert der UI den Fortschritt des KI-Batch-Laufs (SSE-Token)."""
         self._emit("batch:recipient")
+
+    def notify_vouchers(self) -> None:
+        """Signalisiert den Listenseiten einen neuen Belegabzug/Abrufstand (SSE-Token).
+
+        Listenseiten laden bei jedem Token neu (``app.js``); Detailseiten reagieren nur auf
+        ihr eigenes ``inv:<id>`` und werden über Rechnungs-Ereignisse benachrichtigt."""
+        self._emit("vouchers:sync")
 
     def close(self) -> None:
         with self._lock:
@@ -644,21 +708,45 @@ class Repository:
         title: str | None,
         correspondent: str | None,
         document_date: str | None = None,
+        recipient_label: str | None | _Unset = _UNSET,
+        paperless_voucher_ref: str | None | _Unset = _UNSET,
     ) -> int:
         """Legt eine Rechnung an bzw. aktualisiert Titel/Korrespondent/Datum + Sync-Zeitpunkt.
 
         Bereits ermittelte Zahldaten und der Export-/Bezahlt-Status bleiben unangetastet.
+
+        ``recipient_label`` und ``paperless_voucher_ref`` spiegeln Paperless-Felder: Wird ein
+        Wert übergeben, ersetzt er den lokalen — ``None`` heißt „in Paperless leer“ und setzt
+        die Spalte auf NULL. Wird das Argument weggelassen, bleibt die Spalte unangetastet
+        (bestehende Aufrufer, die die Felder nicht kennen, löschen so nichts).
         """
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         doc_date = _normalize_doc_date(document_date)
+        columns = ["paperless_id", "title", "correspondent", "document_date", "last_synced_at"]
+        values: list[object] = [paperless_id, title, correspondent, doc_date, now]
+        updates = [
+            "title=excluded.title",
+            "correspondent=excluded.correspondent",
+            "document_date=excluded.document_date",
+            "last_synced_at=excluded.last_synced_at",
+        ]
+        for name, value in (
+            ("recipient_label", recipient_label),
+            ("paperless_voucher_ref", paperless_voucher_ref),
+        ):
+            if isinstance(value, _Unset):
+                continue
+            columns.append(name)
+            # Leerer Text und None bedeuten beide „kein Wert“.
+            values.append(value or None)
+            updates.append(f"{name}=excluded.{name}")
+        placeholders = ", ".join("?" for _ in columns)
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO paperless_invoices (paperless_id, title, correspondent, "
-                "document_date, last_synced_at) VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(paperless_id) DO UPDATE SET title=excluded.title, "
-                "correspondent=excluded.correspondent, document_date=excluded.document_date, "
-                "last_synced_at=excluded.last_synced_at",
-                (paperless_id, title, correspondent, doc_date, now),
+                f"INSERT INTO paperless_invoices ({', '.join(columns)}) "
+                f"VALUES ({placeholders}) "
+                f"ON CONFLICT(paperless_id) DO UPDATE SET {', '.join(updates)}",
+                values,
             )
             self._conn.commit()
             row = self._conn.execute(
@@ -822,6 +910,9 @@ class Repository:
         error_message: str | None = None,
     ) -> None:
         fields: dict[str, object] = {"sevdesk_status": status, "error_message": error_message}
+        if status != SevdeskStatus.REVIEW:
+            # Der Prüfgrund gehört nur zum Status `review`.
+            fields["review_reason"] = None
         if voucher_id is not None:
             fields["sevdesk_voucher_id"] = voucher_id
         if status == SevdeskStatus.EXPORTED:
@@ -870,12 +961,14 @@ class Repository:
             reasoning=row["reasoning"],
             status=RecipientStatus(row["status"]),
             updated_at=_parse_dt(row["updated_at"]),
+            it_probability=row["it_probability"],
         )
 
     def get_recipient_cache(self, paperless_id: int) -> RecipientCache | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT paperless_id, suggested_label, confidence, reasoning, status, updated_at "
+                "SELECT paperless_id, suggested_label, confidence, reasoning, status, updated_at, "
+                "it_probability "
                 "FROM document_recipients WHERE paperless_id = ?",
                 (paperless_id,),
             ).fetchone()
@@ -888,7 +981,8 @@ class Repository:
         placeholders = ",".join("?" for _ in paperless_ids)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT paperless_id, suggested_label, confidence, reasoning, status, updated_at "
+                "SELECT paperless_id, suggested_label, confidence, reasoning, status, updated_at, "
+                "it_probability "
                 f"FROM document_recipients WHERE paperless_id IN ({placeholders})",
                 paperless_ids,
             ).fetchall()
@@ -902,6 +996,7 @@ class Repository:
         confidence: float | None,
         reasoning: str | None,
         status: RecipientStatus,
+        it_probability: float | None | _Unset = _UNSET,
         notify: bool = True,
     ) -> None:
         """``notify=False`` unterdrückt das einzelne ``rec:<id>``-SSE-Ereignis.
@@ -909,17 +1004,34 @@ class Repository:
         Genutzt vom KI-Batch-Lauf: Dort meldet das gedrosselte ``notify_batch()``
         ohnehin den Fortschritt — ein zusätzliches ungedrosseltes Ereignis pro Dokument
         würde die Drossel wirkungslos machen.
+
+        ``it_probability``: ``None`` setzt „nicht eingeschätzt“ (NULL); wird das Argument
+        weggelassen, bleibt ein vorhandener Wert erhalten (z. B. bei
+        ``mark_recipient_applied``, das nur den Review-Status ändert).
         """
         now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        columns = ["paperless_id", "suggested_label", "confidence", "reasoning", "status",
+                   "updated_at"]
+        values: list[object] = [paperless_id, suggested_label, confidence, reasoning,
+                                status.value, now]
+        updates = [
+            "suggested_label=excluded.suggested_label",
+            "confidence=excluded.confidence",
+            "reasoning=excluded.reasoning",
+            "status=excluded.status",
+            "updated_at=excluded.updated_at",
+        ]
+        if not isinstance(it_probability, _Unset):
+            columns.append("it_probability")
+            values.append(it_probability)
+            updates.append("it_probability=excluded.it_probability")
+        placeholders = ", ".join("?" for _ in columns)
         with self._lock:
             self._conn.execute(
-                "INSERT INTO document_recipients "
-                "(paperless_id, suggested_label, confidence, reasoning, status, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(paperless_id) DO UPDATE SET suggested_label=excluded.suggested_label, "
-                "confidence=excluded.confidence, reasoning=excluded.reasoning, "
-                "status=excluded.status, updated_at=excluded.updated_at",
-                (paperless_id, suggested_label, confidence, reasoning, status.value, now),
+                f"INSERT INTO document_recipients ({', '.join(columns)}) "
+                f"VALUES ({placeholders}) "
+                f"ON CONFLICT(paperless_id) DO UPDATE SET {', '.join(updates)}",
+                values,
             )
             self._conn.commit()
         if notify:
@@ -934,3 +1046,282 @@ class Repository:
             status=RecipientStatus.APPLIED,
             notify=notify,
         )
+
+    # ---- SevDesk-Belege (lokaler Abzug) ----------------------------------
+
+    _VOUCHER_UPSERT = (
+        "INSERT INTO sevdesk_vouchers (voucher_id, voucher_date, supplier_name, sum_gross, "
+        "currency, description, status, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(voucher_id) DO UPDATE SET voucher_date=excluded.voucher_date, "
+        "supplier_name=excluded.supplier_name, sum_gross=excluded.sum_gross, "
+        "currency=excluded.currency, description=excluded.description, "
+        "status=excluded.status, last_seen_at=excluded.last_seen_at"
+    )
+
+    @staticmethod
+    def _voucher_params(voucher: SevdeskVoucher, now: str) -> tuple[object, ...]:
+        return (
+            voucher.voucher_id,
+            voucher.voucher_date,
+            voucher.supplier_name,
+            voucher.sum_gross,
+            voucher.currency,
+            voucher.description,
+            voucher.status,
+            now,
+        )
+
+    def replace_vouchers(self, vouchers: list[SevdeskVoucher], now: datetime | None = None) -> int:
+        """Ersetzt den Belegabzug in EINER Transaktion: Upsert aller gelieferten Belege und
+        Löschen aller nicht gelieferten IDs. Eine leere Liste leert den Abzug.
+
+        Nur mit einem vollständig durchgelaufenen Abruf aufrufen — bei einem Abbruch darf der
+        Abzug nicht angefasst werden (der Aufrufer ruft dann gar nicht auf). Scheitert hier
+        etwas, wird zurückgerollt und der alte Stand bleibt. Liefert die Zahl gelöschter Belege.
+        """
+        stamp = _ts(now)
+        delivered = {v.voucher_id for v in vouchers}
+        with self._lock:
+            try:
+                existing = {
+                    r["voucher_id"]
+                    for r in self._conn.execute("SELECT voucher_id FROM sevdesk_vouchers")
+                }
+                self._conn.executemany(
+                    self._VOUCHER_UPSERT, [self._voucher_params(v, stamp) for v in vouchers]
+                )
+                stale = sorted(existing - delivered)
+                self._conn.executemany(
+                    "DELETE FROM sevdesk_vouchers WHERE voucher_id = ?", [(i,) for i in stale]
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return len(stale)
+
+    def upsert_voucher(self, voucher: SevdeskVoucher, now: datetime | None = None) -> None:
+        """Übernimmt einen einzelnen Beleg (z. B. direkt nach einem Export) in den Abzug."""
+        with self._lock:
+            self._conn.execute(self._VOUCHER_UPSERT, self._voucher_params(voucher, _ts(now)))
+            self._conn.commit()
+
+    def list_vouchers(self) -> list[SevdeskVoucher]:
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_VOUCHER_COLUMNS} FROM sevdesk_vouchers "
+                "ORDER BY voucher_date DESC, voucher_id ASC"
+            ).fetchall()
+        return [_parse_voucher(r) for r in rows]
+
+    def get_voucher(self, voucher_id: str) -> SevdeskVoucher | None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {_VOUCHER_COLUMNS} FROM sevdesk_vouchers WHERE voucher_id = ?",
+                (voucher_id,),
+            ).fetchone()
+        return _parse_voucher(row) if row else None
+
+    # ---- Zustand des Belegabrufs ------------------------------------------
+
+    def get_sevdesk_sync_state(self) -> SevdeskSyncState:
+        """Stand des letzten Belegabrufs; ohne bisherigen Abruf alles ``None``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_success_at, last_error, last_error_at FROM sevdesk_sync_state "
+                "WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return SevdeskSyncState()
+        return SevdeskSyncState(
+            last_success_at=_parse_dt(row["last_success_at"]),
+            last_error=row["last_error"],
+            last_error_at=_parse_dt(row["last_error_at"]),
+        )
+
+    def set_sevdesk_sync_success(self, now: datetime | None = None) -> None:
+        """Vermerkt einen erfolgreichen Abruf: setzt ``last_success_at`` und LEERT den
+        Fehler (``last_error``/``last_error_at``) — ein älterer Fehler wäre nach einem
+        Erfolg nur irreführend; die Übersicht zeigt einen Fehlerhinweis nur, solange der
+        letzte Abruf scheiterte."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO sevdesk_sync_state (id, last_success_at, last_error, last_error_at) "
+                "VALUES (1, ?, NULL, NULL) ON CONFLICT(id) DO UPDATE SET "
+                "last_success_at=excluded.last_success_at, last_error=NULL, last_error_at=NULL",
+                (_ts(now),),
+            )
+            self._conn.commit()
+
+    def set_sevdesk_sync_error(self, message: str, now: datetime | None = None) -> None:
+        """Vermerkt einen gescheiterten Abruf; ``last_success_at`` bleibt stehen."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO sevdesk_sync_state (id, last_error, last_error_at) "
+                "VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "last_error=excluded.last_error, last_error_at=excluded.last_error_at",
+                (message, _ts(now)),
+            )
+            self._conn.commit()
+
+    # ---- Treffer Rechnung <-> Beleg ---------------------------------------
+
+    def list_matches(self, invoice_ids: list[int] | None = None) -> list[InvoiceVoucherMatch]:
+        """Alle Treffer (``None``) oder nur die der genannten Rechnungen."""
+        if invoice_ids is not None and not invoice_ids:
+            return []
+        sql = (
+            "SELECT invoice_id, voucher_id, kind, score, decided_at, created_at "
+            "FROM invoice_voucher_matches"
+        )
+        params: list[object] = []
+        if invoice_ids is not None:
+            sql += f" WHERE invoice_id IN ({','.join('?' for _ in invoice_ids)})"
+            params.extend(invoice_ids)
+        sql += " ORDER BY invoice_id ASC, score DESC, voucher_id ASC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_parse_match(r) for r in rows]
+
+    def replace_auto_matches(self, matches: list[InvoiceVoucherMatch]) -> None:
+        """Ersetzt alle automatischen Treffer (``id``, ``similar``) in einer Transaktion.
+
+        ``confirmed``/``rejected`` bleiben unangetastet; ein automatischer Treffer für ein
+        Paar, für das bereits eine Entscheidung vorliegt, wird übersprungen (die Entscheidung
+        gewinnt). Ausnahme: ein ``id``-Treffer verdrängt ein früheres ``rejected`` desselben
+        Paars — die Beleg-ID ist sicher, eine frühere „anderer Beleg“-Entscheidung über ein
+        bloß ähnliches Paar darf sie nicht unterdrücken. Bei doppelten Paaren in ``matches``
+        gilt der erste — ``id`` also vor ``similar`` übergeben.
+        """
+        for m in matches:
+            if m.kind not in (MatchKind.ID, MatchKind.SIMILAR):
+                raise ValueError(f"replace_auto_matches nimmt nur id/similar, nicht {m.kind!r}")
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "DELETE FROM invoice_voucher_matches WHERE kind IN (?, ?)",
+                    (MatchKind.ID.value, MatchKind.SIMILAR.value),
+                )
+                self._conn.executemany(
+                    "DELETE FROM invoice_voucher_matches "
+                    "WHERE invoice_id = ? AND voucher_id = ? AND kind = ?",
+                    [
+                        (m.invoice_id, m.voucher_id, MatchKind.REJECTED.value)
+                        for m in matches
+                        if m.kind == MatchKind.ID
+                    ],
+                )
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO invoice_voucher_matches "
+                    "(invoice_id, voucher_id, kind, score) VALUES (?, ?, ?, ?)",
+                    [(m.invoice_id, m.voucher_id, m.kind.value, m.score) for m in matches],
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def decide_match(self, invoice_id: int, voucher_id: str, confirmed: bool) -> bool:
+        """Hält die Entscheidung des Anwenders fest (``confirmed``/``rejected``).
+
+        Der Score eines vorhandenen Treffers bleibt erhalten. Ein sicherer ``id``-Treffer
+        ist nicht entscheidbar: dann geschieht nichts und die Rückgabe ist ``False``.
+        """
+        kind = MatchKind.CONFIRMED if confirmed else MatchKind.REJECTED
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT kind FROM invoice_voucher_matches WHERE invoice_id = ? AND voucher_id = ?",
+                (invoice_id, voucher_id),
+            ).fetchone()
+            if existing is not None and existing["kind"] == MatchKind.ID.value:
+                return False
+            self._conn.execute(
+                "INSERT INTO invoice_voucher_matches (invoice_id, voucher_id, kind, decided_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(invoice_id, voucher_id) DO UPDATE SET "
+                "kind=excluded.kind, decided_at=excluded.decided_at",
+                (invoice_id, voucher_id, kind.value, _ts()),
+            )
+            self._conn.commit()
+        self._notify_invoice(invoice_id)
+        return True
+
+    def vouchers_without_invoice(self) -> list[SevdeskVoucher]:
+        """Belege ohne ``id``-/``similar``-/``confirmed``-Treffer (Vorbereitung für den späteren
+        Abgleich „SevDesk-Belege ohne Paperless-Dokument“). ``rejected`` zählt nicht als Treffer."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_VOUCHER_COLUMNS} FROM sevdesk_vouchers v WHERE NOT EXISTS ("
+                "SELECT 1 FROM invoice_voucher_matches m WHERE m.voucher_id = v.voucher_id "
+                "AND m.kind IN (?, ?, ?)) ORDER BY voucher_date DESC, voucher_id ASC",
+                (MatchKind.ID.value, MatchKind.SIMILAR.value, MatchKind.CONFIRMED.value),
+            ).fetchall()
+        return [_parse_voucher(r) for r in rows]
+
+    # ---- Einstufung: Historie je Korrespondent ----------------------------
+
+    def correspondent_context_history(
+        self, context_label: str
+    ) -> dict[str, CorrespondentHistory]:
+        """Entschiedene Rechnungen je Korrespondent, mit einer Abfrage für alle.
+
+        Entschieden ist eine Rechnung, wenn ``recipient_label`` gesetzt ist (IT-Consulting,
+        wenn gleich ``context_label``, sonst anderer Empfänger) oder — ohne Empfänger — wenn
+        ihr Status ``exported`` ist bzw. ein ``confirmed``-Treffer besteht (zählt als
+        IT-Consulting). Rechnungen ohne Korrespondent bleiben außen vor. Der Aufrufer
+        schließt die gerade bewertete Rechnung über die ID-Mengen aus.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.id, p.correspondent, p.recipient_label, "
+                "(p.sevdesk_status = ? OR EXISTS (SELECT 1 FROM invoice_voucher_matches m "
+                "WHERE m.invoice_id = p.id AND m.kind = ?)) AS exported_or_confirmed "
+                "FROM paperless_invoices p "
+                "WHERE p.correspondent IS NOT NULL AND p.correspondent != ''",
+                (SevdeskStatus.EXPORTED.value, MatchKind.CONFIRMED.value),
+            ).fetchall()
+        it_ids: dict[str, set[int]] = {}
+        other_ids: dict[str, set[int]] = {}
+        for r in rows:
+            label = r["recipient_label"]
+            if label:
+                is_it = same_label(label, context_label)
+            elif r["exported_or_confirmed"]:
+                is_it = True
+            else:
+                continue
+            (it_ids if is_it else other_ids).setdefault(r["correspondent"], set()).add(r["id"])
+        return {
+            name: CorrespondentHistory(
+                it_ids=frozenset(it_ids.get(name, ())),
+                other_ids=frozenset(other_ids.get(name, ())),
+            )
+            for name in it_ids.keys() | other_ids.keys()
+        }
+
+    # ---- Prüffall ---------------------------------------------------------
+
+    def set_review(self, invoice_id: int, reason: str) -> bool:
+        """Setzt die Rechnung auf ``review`` mit Grund. Laufende oder abgeschlossene Exporte
+        (``exported``/``exporting``/``uncertain``) werden nicht überschrieben; Rückgabe
+        ``False``, wenn nichts geändert wurde."""
+        return self._set_status_guarded(invoice_id, SevdeskStatus.REVIEW, reason)
+
+    def dismiss(self, invoice_id: int) -> bool:
+        """Verwirft einen Prüffall (``dismissed``, Grund geleert). Gleiche Schutzliste wie
+        ``set_review``; ``dismissed`` wird vom Tag-Weg nicht erneut vorgemerkt."""
+        return self._set_status_guarded(invoice_id, SevdeskStatus.DISMISSED, None)
+
+    def _set_status_guarded(
+        self, invoice_id: int, status: SevdeskStatus, reason: str | None
+    ) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE paperless_invoices SET sevdesk_status = ?, review_reason = ? "
+                "WHERE id = ? AND sevdesk_status NOT IN (?, ?, ?)",
+                (status.value, reason, invoice_id, *_EXPORT_LOCKED_STATUSES),
+            )
+            self._conn.commit()
+            changed = cur.rowcount == 1
+        if changed:
+            self._notify_invoice(invoice_id)
+        return changed

@@ -349,7 +349,20 @@ class Worker:
 
     async def _paperless_loop(self) -> None:
         assert self.paperless_sync is not None
+        # Belegabruf aus SevDesk mit eigenem Intervall: erster Lauf beim Start, danach alle
+        # SEVDESK_VOUCHER_SYNC_MINUTES — unabhängig vom Takt des Paperless-Syncs. Der Abruf
+        # läuft VOR dem Paperless-Sync, damit der Auto-Export im ersten Durchlauf bereits
+        # einen Abzug zum Abgleichen vorfindet.
+        next_voucher_sync = 0.0
         while not self._stop.is_set():
+            if self.paperless_sync.sevdesk_enabled and time.monotonic() >= next_voucher_sync:
+                try:
+                    await self.paperless_sync.sync_vouchers()
+                except Exception:
+                    log.exception("Fehler beim Belegabruf aus SevDesk")
+                next_voucher_sync = (
+                    time.monotonic() + self.settings.sevdesk_voucher_sync_minutes * 60
+                )
             try:
                 await self.paperless_sync.sync_once()
             except Exception:

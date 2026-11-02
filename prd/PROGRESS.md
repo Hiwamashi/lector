@@ -3,7 +3,7 @@
 > Fortlaufend gepflegter Stand der MVP-Umsetzung (siehe `PRD_Lector.md`).
 > Legende: ✅ umgesetzt · 🚧 in Arbeit · ⬜ offen
 
-**Stand:** 2026-09-18
+**Stand:** 2026-11-02
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
 
@@ -798,3 +798,78 @@ sondern nur in der Prozedur „Global Auto Update“ (Standard täglich 03:00). 
 Cron täglich 04:00 (`0 0 4 * * ?`; kurzzeitig alle 5 Minuten, wegen des Docker-Hub-Kontingents
 zurückgenommen, Komodo-Issue #1652). Sofort ausrollen: Prozedur in Komodo von Hand starten. Der Alarm `StackAutoUpdated` kam zunächst nicht an, weil der Typ am
 Alerter abgewählt war; inzwischen aktiviert. Details in `nas-stacks/komodo/README.md`.
+
+## Zusatz-Feature: SevDesk-Export-Übersicht (sevdesk-export-uebersicht) — umgesetzt, Abnahme auf dem NAS ausstehend
+
+Die Rechnungsliste (`/invoices`) ist die Export-Übersicht: Jede Paperless-Rechnung zeigt Kontext
+(IT-Consulting mit Konfidenz und Quelle), Lector-Exportstatus und SevDesk-Abgleich. Der
+Belegabzug aus `GET /Voucher` ist lokal gecacht. Ein Export prüft vorab Sperren und Rückfragen,
+der Tag-Weg nutzt dieselben Prüfungen. Change: `openspec/changes/sevdesk-export-uebersicht/`.
+Doku: `feature-documentation/paperless-integration/` (neu: `sevdesk-abgleich.md`,
+`kontext-einstufung.md`; aktualisiert: `sevdesk-export.md`, `sync-und-aktionen.md`,
+`empfaenger-zuordnung.md`, `rechnungs-ui.md`, `README.md`) und `feature-documentation/konfiguration.md`.
+
+| Feature | Status |
+|---|---|
+| Belegabzug `GET /Voucher` (Vollabruf, Mapping, Tabelle `sevdesk_vouchers`, `sevdesk_sync_state`) | ✅ |
+| Abgleich sicher (Beleg-ID) und ähnlich (Betrag, Datum, Lieferant mit Score) | ✅ |
+| Entscheidungen „Derselbe Beleg“ / „Anderer Beleg“ (dauerhaft über Syncs) | ✅ |
+| Kontext-Einstufung „IT-Consulting“ (Empfänger → Korrespondenten-Historie → KI) | ✅ |
+| KI-Batch ergänzt fehlende IT-Einschätzungen (`it_consulting_probability`) | ✅ |
+| Prüfungen vor dem Export (harte Sperre, Rückfragen), Tag-Weg mit Status `review` und `dismissed` | ✅ |
+| Mehrfachexport mit Ergebnisseite | ✅ |
+| Belegposition mit Betrag (nur mit `SEVDESK_ACCOUNT_DATEV_ID`) | ✅ |
+| Rückschrieb setzt Empfänger auf IT-Consulting (Erstexport); Nachholen fehlender Rückschriebe, ohne fremden Empfänger zu überschreiben | ✅ |
+| Export-Übersicht: Filter, Mehrfachauswahl, Erhalt der Auswahl über den SSE-Refresh | ✅ |
+| Abnahme auf dem NAS (Task 9.1: Deployment, erster Belegabruf, Batch, Stichprobe, Testexport) | offen (manuell) |
+| Beidseitiger Abgleich (SevDesk-Belege ohne Paperless-Dokument) | nicht Teil dieses Changes; Abfrage `vouchers_without_invoice()` vorbereitet, ohne Ansicht |
+
+**Befunde gegen die echte SevDesk-API (2026-11-01, siehe `design.md`, Befund 1.1):**
+
+- `GET /Voucher` liefert Zahlen und Status als Strings (`sumGross: "0"`, `status: "50"`), Datum
+  als ISO-Zeitstempel mit Zeitzone. Das Mapping ist in `app/sevdesk.py` gekapselt.
+- `limit=1000` lieferte den gesamten Bestand (306 Belege) in einem Aufruf.
+- Eine Belegposition braucht in Systemversion 2.0 ein Buchungskonto (`accountDatev`), nicht
+  `accountingType`. Testentwurf mit Konto 4279, `taxRate` 0, `sumGross` 1,00 und `taxRule` 10:
+  HTTP 201, zurückgelesen als `sumGross` 1, danach gelöscht.
+- `GET /ReceiptGuidance/forTaxRule?taxRule=10` antwortet mit HTTP 422 („TaxRule 10 is not
+  supported“). Konten-IDs über `GET /ReceiptGuidance/forAllAccounts`.
+
+**Rollback-Hinweis:** Die Vorversion kann neue Statuswerte nicht lesen (Enum-Parse). Vor einem
+Image-Rollback diese Anweisung ausführen:
+
+```sql
+UPDATE paperless_invoices SET sevdesk_status='none' WHERE sevdesk_status IN ('review','dismissed');
+```
+
+Neue Spalten und Tabellen stören die alte Version nicht (Design, Migration Plan).
+
+**Nachbesserung nach Review (Stand 2026-11-02, Code und Feature-Doku abgeglichen):**
+
+- Belegabruf: Antwort ohne Objektliste (auch auf Folgeseiten, auch bei Nicht-Objekt-Body) ist ein
+  Fehler, der Abzug bleibt unverändert. `{"objects": []}` bleibt gültig und bedeutet 0 Belege.
+- Auto-Export im Tag-Weg erst nach dem ersten erfolgreichen Belegabruf. `queued`-Rechnungen werden
+  bei Auto-Export in jedem Sync neu bewertet. Der Worker ruft `sync_vouchers` vor dem ersten und vor
+  jedem fälligen `sync_once` auf.
+- Nachholen des Rückschriebs liest das Dokument live. Ein anderer Empfänger am Dokument wird nicht
+  überschrieben, die übrigen Felder, Tag und Notiz werden geschrieben (einmaliger Hinweis). Ein 404
+  gilt als erledigt. Der Seiteneffekt bei Altbeständen ist damit entschärft. Datum und ein leerer
+  Empfänger werden weiterhin ohne Rückfrage gesetzt.
+- Neues Ereignis `write_back_failed` („Rückschrieb fehlgeschlagen“) bei Fehlern des Rückschriebs.
+  Detailhinweis und Listenkennzeichen „Rückschrieb offen“, solange `written_back_at` leer ist.
+- Abgleich: Für Rechnungen im Status `uncertain` sind Belege ohne Summe Kandidaten. Bestätigen setzt
+  den Export. Die Route `POST /invoices/{id}/matches/{voucher_id}` antwortet mit 404, wenn kein
+  offener Treffer besteht.
+- Review-Kasten: „Trotzdem exportieren“ führt über `?ask=1` mit den aktuellen Gründen.
+- Filter „Nicht exportiert“ verlangt Exportierbarkeit.
+- Label-Vergleich einheitlich über `same_label` (Randleerraum und Groß-/Kleinschreibung).
+  `SEVDESK_CONTEXT_MIN_CONFIDENCE` muss größer 0 sein.
+
+**Bewusst unverändert:** Ein verworfener Prüffall (`dismissed`) lässt sich manuell exportieren.
+Ungültige KI-Werte führen je Batch-Lauf weiterhin zu einer erneuten Anfrage (Kostenhinweis bleibt).
+
+**Offen (siehe Feature-Doku, Abschnitt „Offene Punkte“):**
+
+- Nachholen: Zahl der betroffenen Bestandsrechnungen beim ersten Lauf ist nicht bekannt.
+- Abnahme auf dem NAS (Task 9.1) steht aus.
+- Gewichte des Scores (0,6/0,4) und Schwelle 0,75 sind am echten Bestand nicht geprüft.

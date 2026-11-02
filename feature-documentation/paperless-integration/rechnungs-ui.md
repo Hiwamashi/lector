@@ -1,7 +1,8 @@
-# Rechnungs-UI: Dokumentdatum, Sortierung & Dokumentvorschau
+# Rechnungs-UI: Export-Übersicht, Dokumentdatum, Sortierung & Dokumentvorschau
 
-Erweiterungen der Rechnungsoberfläche (`/invoices` und `/invoices/{id}`) um drei
-zusammenhängende Komfortfunktionen. Alle bauen auf dem bestehenden
+Erweiterungen der Rechnungsoberfläche (`/invoices` und `/invoices/{id}`). Abschnitt 1 bis 3 sind
+die Komfortfunktionen des Sync-Features, Abschnitt 4 ist die Export-Übersicht des Changes
+`sevdesk-export-uebersicht`. Alle bauen auf dem bestehenden
 [Sync-Feature](sync-und-aktionen.md) auf.
 
 ## 1. Dokumentdatum
@@ -54,6 +55,136 @@ In der Detailansicht (`partials/invoice_detail_body.html`):
   daher geblockt. Der Proxy liefert das PDF stattdessen von Lector selbst aus — same-origin,
   ohne Paperless-Session im Browser und ohne CORS-Probleme. Die Token-Auth läuft serverseitig.
 
+## 4. Export-Übersicht (`/invoices`)
+
+Die Rechnungsliste ist zugleich die Export-Übersicht. Es gibt keine zweite Seite: Zwei Listen
+derselben Rechnungen mit unterschiedlichen Spalten würden auseinanderlaufen (Design 1). Jede
+Zeile zeigt Einstufung, Abgleich und Exportsperren. Die Berechnung liegt in
+`app/invoice_overview.py` (`build_rows`) und benötigt keinen Paperless-, SevDesk- oder KI-Aufruf.
+
+### Spalten
+
+| Spalte | Inhalt | Bedingung |
+|---|---|---|
+| Auswahl | Checkbox für die Mehrfachauswahl | nur bei aktivem SevDesk-Export; Checkbox nur bei Zeilen **ohne harte Sperre** |
+| Datum | Dokumentdatum | immer |
+| Titel | Link zur Detailseite | immer |
+| Korrespondent | Name | immer |
+| Betrag | Betrag mit Währung | immer |
+| Kontext | Bereichslabel, Konfidenz, Quelle | siehe [kontext-einstufung.md](kontext-einstufung.md) |
+| Abgleich | Zustand mit Beleg-ID und ggf. Score | siehe [sevdesk-abgleich.md](sevdesk-abgleich.md) |
+| GiroCode | Zahldaten-Status | immer |
+| SevDesk | Export-Status | immer |
+| Überwiesen | „Ja“ oder „—“ | immer |
+| (Link) | „Details“ | immer |
+
+Die Abgleich-Spalte zeigt je nach Zustand die Labels „Abgleich nicht verfügbar“, „In SevDesk“,
+„Beleg in SevDesk nicht gefunden“, „Mögliche Dublette“, „Ohne Betrag nicht prüfbar“ oder
+„Kein Treffer“.
+
+Die Spalte SevDesk zeigt zusätzlich das Kennzeichen „Rückschrieb offen“, solange eine exportierte
+Rechnung noch keinen erledigten Rückschrieb nach Paperless hat (siehe
+[sync-und-aktionen.md](sync-und-aktionen.md)).
+
+### Filter
+
+Alle Filter sind kombinierbar (UND). Die Parameter stehen in der URL:
+
+| Filter | Parameter | Wirkung |
+|---|---|---|
+| Kontext ab Schwelle | `ctx=it` | Bereich `it`: Konfidenz ≥ `SEVDESK_CONTEXT_MIN_CONFIDENCE` |
+| Nicht exportiert | `open=1` | Status ist nicht `exported`, der Abgleich ist nicht „In SevDesk“ **und** die Zeile ist exportierbar (keine harte Sperre). Damit fallen auch `uncertain`, `exporting` und „Beleg in SevDesk nicht gefunden“ heraus |
+| Mögliche Dublette | `dup=1` | Abgleich ist „Mögliche Dublette“ |
+| Zu prüfen | `review=1` | SevDesk-Status `review` (Filter in SQL) |
+| SevDesk-Status | `sevdesk=<status>` | Auswahl aus den Statuswerten (SQL) |
+| Suche | `q=<text>` | Titel oder Korrespondent (SQL) |
+
+Sortierung (`sort`, `dir`) und die Filter bleiben beim Sortieren, beim Live-Refresh und bei der
+Rückkehr über das Feld `back` erhalten.
+
+### Ladegrenze
+
+- Ohne Python-seitige Filter lädt die Übersicht höchstens **200** Rechnungen
+  (`UNFILTERED_LIMIT`).
+- Sobald einer der Filter `ctx`, `open` oder `dup` aktiv ist, lädt sie bis zu **5000**
+  Rechnungen (`FILTERED_LIMIT`). Einstufung und Abgleich werden in Python gefiltert, daher muss
+  die Menge vorher vollständig sein.
+- `review`, `sevdesk` und `q` wirken in SQL **vor** der Obergrenze. Die Grenze von 200 gilt dann
+  für das Ergebnis nach dem Filter.
+- Liegen mehr als 5000 Rechnungen im gefilterten Bestand, fehlen die übrigen. Die gewählte
+  Sortierung wirkt vor der Grenze (Standard: Datum absteigend, also die neuesten zuerst).
+
+### Kopfbereich
+
+Die Statuszeile (`partials/invoice_overview_status.html`, Element `#overview-status`) zeigt:
+
+- den Hinweis „Rechnungen sind nicht einstufbar“, wenn die Kontext-Option im Feld „Empfänger“
+  fehlt (mit dem erwarteten Label),
+- „Abgleich: Stand <Zeitpunkt>“ bzw. „Abgleich: noch nicht abgerufen“,
+- bei einem fehlgeschlagenen letzten Abruf eine Fehlerbox mit Zeitpunkt, Grund und dem Hinweis,
+  ob ein früherer Stand weiter angezeigt wird.
+
+Knöpfe (nur bei aktivem SevDesk-Export):
+
+- **„Abgleich aktualisieren“** → `POST /invoices/sevdesk-refresh`. Ruft den Belegabruf sofort auf
+  und leitet zurück auf die Übersicht.
+- **„Ausgewählte exportieren (n)“** → `POST /invoices/export-batch`. Der Knopf ist deaktiviert,
+  solange nichts ausgewählt ist. Die Anzahl steht im Beschriftungstext.
+
+### Mehrfachauswahl und Erhalt über den Live-Refresh
+
+- Die Checkboxen tragen den Namen `ids` und hängen am Formular `batch-form`.
+- Ein SSE-Refresh ersetzt die Tabelle vollständig. `app/static/app.js` merkt sich deshalb die
+  gewählten IDs vor dem Tausch und stellt sie danach wieder her.
+- Zeilen, die verschwunden sind oder keine Checkbox mehr haben (harte Sperre), fallen aus der
+  Auswahl.
+
+### Ergebnis des Mehrfachexports
+
+`POST /invoices/export-batch` liefert **keine** Weiterleitung, sondern die Seite
+`invoice_batch_result.html`:
+
+- eine Zusammenfassung mit der Zahl der exportierten und der nicht exportierten Rechnungen,
+- je Rechnung eine Zeile mit Titel, Ergebnis (Labels aus `EXPORT_RESULT_LABELS`) und Grund,
+- ein Link „← Alle Rechnungen“, der über das Feld `back` mit den Filtern zurückführt.
+
+Eine Rechnung mit Rückfragegrund wird übersprungen und nennt den Grund. Bestätigen lässt sich
+dort nichts. Dafür gibt es die Detailseite.
+
+### Rückkehr-URL (Feld `back`)
+
+Die Formulare für Belegabruf und Mehrfachexport senden `back` mit. `_overview_back()` baut daraus
+eine Rückkehr-URL, und zwar nur mit diesen Parametern: `q`, `sevdesk`, `ctx`, `open`, `dup`,
+`review`, `sort`, `dir`. Nur Parameter mit Wert bleiben erhalten. Die URL ist immer relativ auf
+`/invoices`. Ein fremder Pfad aus dem Formularfeld wird nie übernommen.
+
+### Detailseite (`/invoices/{id}`)
+
+Die Detailseite zeigt zusätzlich zu den bisherigen Zahldaten und dem Verlauf:
+
+- **Kontext:** Bereichslabel, Konfidenz, Quelle und die Begründung je Quelle.
+- **SevDesk-Abgleich:** der Zustand mit Beleg-ID. Bei „In SevDesk“ ein Link „In SevDesk öffnen“.
+  Bei offenen ähnlichen Treffern eine Tabelle mit Beleg, Datum, Lieferant, Betrag und Score und
+  den Knöpfen „Derselbe Beleg“ und „Anderer Beleg“. Die Entscheidung ist nur für offene Treffer
+  möglich (Details in [sevdesk-abgleich.md](sevdesk-abgleich.md)).
+- **Prüffall** (Status `review`): Box „Zu prüfen“ mit den **aktuellen** Gründen (bei harter Sperre
+  mit „Aktuell gesperrt: …“). Darunter steht „Ursprünglicher Grund“ mit dem beim Vormerken
+  gespeicherten Grund. Dazu „Trotzdem exportieren“ und „Verwerfen“. „Trotzdem exportieren“ sendet
+  kein `confirm`. Bestehen Rückfragegründe, leitet die Route auf `?ask=1` um.
+- **Rückschrieb offen:** Hinweis „Rückschrieb an Paperless offen — wird beim nächsten Sync
+  nachgeholt.“, solange der Status `exported` ist und kein Rückschrieb erledigt wurde.
+- **Rückfrage** (`?ask=1`): Box „Vor dem Export klären“ mit den Gründen und dem Knopf
+  „Trotzdem exportieren“. Die Gründe werden bei jedem Aufruf neu berechnet. Der Block bleibt beim
+  Live-Refresh stehen und verschwindet, sobald nichts mehr zu klären ist.
+- **Export-Knopf:** deaktiviert ohne SevDesk-Export oder bei harter Sperre. Die Sperre steht als
+  Text daneben („Export gesperrt: …“).
+
+Ablauf des Export-Knopfs: Gibt es Rückfragegründe, leitet die Route auf `?ask=1` um. Ohne
+Gründe erfolgt der Export, und die Seite wird neu geladen.
+
+Das Feld „Empfänger“ (Zahldaten, Rückschrieb) und die Ereignisse der Rechnung sind in
+[sync-und-aktionen.md](sync-und-aktionen.md) beschrieben.
+
 ## Konfiguration
 
 | ENV | Default | Zweck |
@@ -62,3 +193,7 @@ In der Detailansicht (`partials/invoice_detail_body.html`):
 
 Die Vorschau ist aktiv, sobald `PAPERLESS_URL` und `PAPERLESS_TOKEN` gesetzt sind
 (`preview_enabled` im Detail-Kontext).
+
+Die SevDesk-Variablen für die Übersicht (`SEVDESK_CONTEXT_LABEL`, `SEVDESK_CONTEXT_MIN_CONFIDENCE`,
+`SEVDESK_MATCH_WINDOW_DAYS`, `SEVDESK_MATCH_MIN_SCORE`, `SEVDESK_VOUCHER_SYNC_MINUTES`) stehen in
+[konfiguration.md](../konfiguration.md).

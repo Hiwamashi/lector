@@ -20,14 +20,50 @@
     <option value="{{ key }}" {% if filters.sevdesk == key|string %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select>
+  <label class="filter-check">
+    <input type="checkbox" name="ctx" value="it" {% if filters.ctx %}checked{% endif %} />
+    {{ context_label }} ab {{ context_threshold | fmt_percent }}
+  </label>
+  <label class="filter-check">
+    <input type="checkbox" name="open" value="1" {% if filters.open %}checked{% endif %} />
+    Nicht exportiert
+  </label>
+  <label class="filter-check">
+    <input type="checkbox" name="dup" value="1" {% if filters.dup %}checked{% endif %} />
+    Mögliche Dublette
+  </label>
+  <label class="filter-check">
+    <input type="checkbox" name="review" value="1" {% if filters.review %}checked{% endif %} />
+    Zu prüfen
+  </label>
+  <input type="hidden" name="sort" value="{{ sort.key }}" />
+  <input type="hidden" name="dir" value="{{ sort.dir }}" />
   <button type="submit">Filtern</button>
 </form>
+
+<div class="overview-bar">
+  <div id="overview-status" data-fragment="/fragment/invoices/overview-status">
+    {% include "partials/invoice_overview_status.html" %}
+  </div>
+  {% if sevdesk_enabled %}
+  <div class="overview-actions">
+    <form method="post" action="/invoices/sevdesk-refresh">
+      <input type="hidden" name="back" value="{{ page_query }}" />
+      <button type="submit" class="button--quiet">Abgleich aktualisieren</button>
+    </form>
+    <form id="batch-form" method="post" action="/invoices/export-batch">
+      <input type="hidden" name="back" value="{{ page_query }}" />
+      <button type="submit" id="batch-export" data-label="Ausgewählte exportieren">Ausgewählte exportieren</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
 
 {% macro sort_th(key, label) -%}
   {%- set is_active = sort.key == key -%}
   {%- set next_dir = "desc" if (is_active and sort.dir == "asc") else "asc" -%}
   <th class="sortable {{ 'sorted' if is_active else '' }}">
-    <a href="/invoices?sort={{ key }}&dir={{ next_dir }}&q={{ filters.q|urlencode }}&sevdesk={{ filters.sevdesk|urlencode }}">
+    <a href="/invoices?sort={{ key }}&dir={{ next_dir }}{% if filter_query %}&{{ filter_query }}{% endif %}">
       {{ label }}
       <span class="sort-arrow">{% if is_active %}{{ "▲" if sort.dir == "asc" else "▼" }}{% else %}⇅{% endif %}</span>
     </a>
@@ -36,13 +72,16 @@
 
 <div class="table-scroll">
 <table class="history"
-       data-fragment="/fragment/invoices?sevdesk={{ filters.sevdesk|urlencode }}&q={{ filters.q|urlencode }}&sort={{ sort.key }}&dir={{ sort.dir }}">
+       data-fragment="/fragment/invoices?sort={{ sort.key }}&dir={{ sort.dir }}{% if filter_query %}&{{ filter_query }}{% endif %}">
   <thead>
     <tr>
+      {% if sevdesk_enabled %}<th class="select-col"><span class="visually-hidden">Auswahl</span></th>{% endif %}
       {{ sort_th("date", "Datum") }}
       {{ sort_th("title", "Titel") }}
       {{ sort_th("correspondent", "Korrespondent") }}
       {{ sort_th("amount", "Betrag") }}
+      <th>Kontext</th>
+      <th>Abgleich</th>
       {{ sort_th("giro", "GiroCode") }}
       {{ sort_th("sevdesk", "SevDesk") }}
       {{ sort_th("paid", "Überwiesen") }}

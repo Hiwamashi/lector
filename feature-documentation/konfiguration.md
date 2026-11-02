@@ -30,6 +30,37 @@ Entwicklung wird optional eine `.env` gelesen (`.env.example` als Vorlage).
 | `SESSION_COOKIE_SECURE` | false | true = Cookie nur über HTTPS (Betrieb hinter TLS-Proxy). Nur bei `AUTH_MODE=paperless` und HTTPS sinnvoll. Siehe [web-zugang.md](web-zugang.md) |
 | `FORWARDED_ALLOW_IPS` | — | uvicorn vertraut `X-Forwarded-*`-Headern nur von dieser Adresse (Proxy-Konfiguration). Siehe [web-zugang.md](web-zugang.md#proxy-einrichtung-öffentlicher-betrieb) |
 
+## SevDesk-Export und Export-Übersicht
+
+Gilt nur, wenn `FEATURE_PAPERLESS_SYNC` und `FEATURE_SEVDESK_EXPORT` aktiv sind. Die Defaults
+stammen aus `app/config.py` (`Settings`). Die Erläuterungen stehen in
+[paperless-integration/](paperless-integration/README.md).
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `FEATURE_SEVDESK_EXPORT` | `false` | Schalter für den Beleg-Export nach SevDesk. Startprüfungen siehe unten |
+| `SEVDESK_API_TOKEN` | leer | API-Token; Pflicht bei aktivem Schalter |
+| `SEVDESK_BASE_URL` | `https://my.sevdesk.de/api/v1` | Basis-URL der SevDesk-API |
+| `SEVDESK_TAG` | `sevdesk` | Paperless-Tag, der den Tag-Weg auslöst |
+| `SEVDESK_AUTO_EXPORT` | `false` | `true`: Tag-Weg exportiert ohne Bestätigung, sofern keine Prüfgründe bestehen. Rückfragen und harte Sperren gelten weiterhin. Der Auto-Export läuft erst nach mindestens einem erfolgreichen Belegabruf; vorher bleiben Rechnungen `queued` |
+| `SEVDESK_CONTEXT_LABEL` | `IT-Consulting` | Option im Paperless-Feld „Empfänger“, die den Geschäftskontext bezeichnet. Wird beim Export gesetzt; Einstufung und KI-Abfrage verwenden sie. Randleerraum wird entfernt, Vergleiche ignorieren Groß-/Kleinschreibung |
+| `SEVDESK_CONTEXT_MIN_CONFIDENCE` | `0.75` | Ab dieser Konfidenz (größer 0 bis 1) gilt eine Rechnung als „IT-Consulting“. Bei aktivem SevDesk-Export sind Werte außerhalb ein Startfehler (siehe unten) |
+| `SEVDESK_MATCH_WINDOW_DAYS` | `14` | Datumsfenster in Tagen (inklusive) um das Rechnungsdatum für ähnliche Belege |
+| `SEVDESK_MATCH_MIN_SCORE` | `0.4` | Mindest-Score (0 bis 1) für einen ähnlichen Treffer |
+| `SEVDESK_VOUCHER_SYNC_MINUTES` | `60` | Abstand zwischen zwei Abrufen der SevDesk-Belege in Minuten |
+| `SEVDESK_ACCOUNT_DATEV_ID` | leer | Buchungskonto (`accountDatev`-ID, nur Ziffern) für die Belegposition mit Betrag. Ohne Wert bleibt der Beleg ohne Summe |
+| `CF_RECIPIENT` | `Empfänger` | Name des select-Feldes in Paperless (siehe [empfaenger-zuordnung.md](paperless-integration/empfaenger-zuordnung.md)) |
+
+Die Konto-ID lässt sich über `GET /ReceiptGuidance/forAllAccounts` der SevDesk-API nachschlagen
+(siehe [sevdesk-export.md](paperless-integration/sevdesk-export.md#befund-sevdesk-systemversion-20-2026-11-01)).
+
+Die Werte für Fenster und Mindest-Score wirken auf die Rückfragegründe („mögliche Dublette“) und
+damit auf den Tag-Weg: Ein Treffer über der Schwelle hält den Auto-Export an. Ein Export wird durch
+sie nicht ausgelöst. Die Konfidenzschwelle wirkt nur auf die Anzeige und den Filter „IT-Consulting“.
+
+Für Rechnungen im Status `uncertain` gelten Belege ohne Summe als Kandidaten. Die Mindest-Score-
+Schwelle gilt dafür genauso (siehe [sevdesk-abgleich.md](paperless-integration/sevdesk-abgleich.md)).
+
 ## Hinweise
 
 - `get_settings()` ist `lru_cache`-gecached; in Tests `get_settings.cache_clear()` aufrufen,
@@ -55,6 +86,10 @@ Tabelle, welche Angabe unter welcher Bedingung Pflicht ist.
 | `PAPERLESS_URL`, `PAPERLESS_TOKEN` nicht leer | wenn `FEATURE_PAPERLESS_SYNC` gesetzt |
 | `SEVDESK_API_TOKEN` nicht leer, `FEATURE_PAPERLESS_SYNC` aktiv | wenn `FEATURE_SEVDESK_EXPORT` gesetzt (exportierbare Rechnungen entstehen ausschließlich im Paperless-Sync) |
 | `ANTHROPIC_API_KEY`, `PAPERLESS_URL`, `PAPERLESS_TOKEN` nicht leer | wenn `FEATURE_RECIPIENT_LLM` gesetzt (die Empfänger-Verwaltung braucht die Paperless-Anbindung unabhängig von `FEATURE_PAPERLESS_SYNC`) |
+| `SEVDESK_CONTEXT_MIN_CONFIDENCE` liegt über 0 und höchstens 1; `SEVDESK_MATCH_MIN_SCORE` liegt zwischen 0 und 1 | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
+| `SEVDESK_MATCH_WINDOW_DAYS` und `SEVDESK_VOUCHER_SYNC_MINUTES` sind größer als 0 | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
+| `SEVDESK_CONTEXT_LABEL` ist nicht leer (nach Entfernen von Leerzeichen) | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
+| `SEVDESK_ACCOUNT_DATEV_ID` besteht nur aus Ziffern (leer = nicht gesetzt) | wenn `FEATURE_SEVDESK_EXPORT` gesetzt |
 | Arbeitsordner (`WATCH_DIR`, `CONSUME_DIR`, `PROCESSED_DIR`, `ERROR_DIR`) und Verzeichnis von `DB_PATH` beschreibbar | immer (eigene Schreibprobe, siehe unten) |
 
 Der Provider-Vergleich ist **case-insensitiv**, konsistent zu `get_adapter()`

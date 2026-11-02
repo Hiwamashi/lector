@@ -91,6 +91,8 @@ class SevdeskStatus(StrEnum):
     EXPORTED = "exported"    # erfolgreich als Beleg nach SevDesk übertragen
     FAILED = "failed"        # eindeutig fehlgeschlagen (kein Beleg angelegt) → retrybar
     UNCERTAIN = "uncertain"  # mehrdeutig (Beleg evtl. angelegt) → kein Auto-Retry
+    REVIEW = "review"        # zu prüfen: kann nicht eindeutig exportieren (Rückfrage nötig)
+    DISMISSED = "dismissed"  # Prüffall vom Anwender verworfen, wird nicht erneut vorgemerkt
 
 
 class InvoiceEventType(StrEnum):
@@ -101,7 +103,13 @@ class InvoiceEventType(StrEnum):
     SEVDESK_EXPORTED = "sevdesk_exported"
     SEVDESK_FAILED = "sevdesk_failed"
     WRITTEN_BACK = "written_back"
+    WRITE_BACK_FAILED = "write_back_failed"
     MARKED_PAID = "marked_paid"
+    SEVDESK_REVIEW = "sevdesk_review"
+    SEVDESK_DISMISSED = "sevdesk_dismissed"
+    MATCH_CONFIRMED = "match_confirmed"
+    MATCH_REJECTED = "match_rejected"
+    VOUCHERS_SYNCED = "vouchers_synced"
 
 
 @dataclass
@@ -127,6 +135,81 @@ class PaperlessInvoice:
     error_message: str | None = None
     document_date: datetime | None = None
     created_at: datetime | None = None
+    # Aus Paperless gespiegelt (Sync): Label des Empfänger-Felds bzw. Wert von "SevDesk-Beleg".
+    recipient_label: str | None = None
+    paperless_voucher_ref: str | None = None
+    # Grund, warum die Rechnung den Status `review` hat.
+    review_reason: str | None = None
+
+
+class MatchKind(StrEnum):
+    """Art der Zuordnung Rechnung <-> SevDesk-Beleg."""
+
+    ID = "id"                # sicher: Beleg-ID bekannt (Export oder Paperless-Vermerk)
+    SIMILAR = "similar"      # ähnlich: Betrag/Datum/Lieferant, mit Score
+    CONFIRMED = "confirmed"  # vom Anwender bestätigt
+    REJECTED = "rejected"    # vom Anwender verworfen
+
+
+@dataclass
+class SevdeskVoucher:
+    """Beleg aus dem lokalen Abzug der SevDesk-Belege."""
+
+    voucher_id: str
+    voucher_date: str | None = None
+    supplier_name: str | None = None
+    sum_gross: float | None = None
+    currency: str | None = None
+    description: str | None = None
+    status: str | None = None
+    last_seen_at: datetime | None = None
+
+
+@dataclass
+class InvoiceVoucherMatch:
+    invoice_id: int
+    voucher_id: str
+    kind: MatchKind
+    score: float | None = None
+    decided_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+@dataclass
+class SevdeskSyncState:
+    """Stand des letzten Belegabrufs; ein Fehler lässt `last_success_at` stehen."""
+
+    last_success_at: datetime | None = None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
+
+
+@dataclass
+class CorrespondentHistory:
+    """Entschiedene Rechnungen eines Korrespondenten (Einstufung, Quelle Korrespondent).
+
+    Enthält Rechnungs-IDs statt Zähler, damit der Aufrufer die gerade bewertete Rechnung
+    ausschließen kann."""
+
+    it_ids: frozenset[int] = frozenset()     # entschieden: IT-Consulting
+    other_ids: frozenset[int] = frozenset()  # entschieden: anderer Empfänger
+
+
+class ContextSource(StrEnum):
+    """Herkunft einer Kontext-Einschätzung (IT-Consulting)."""
+
+    RECIPIENT = "recipient"
+    CORRESPONDENT = "correspondent"
+    LLM = "llm"
+    NONE = "none"                # keine Quelle liefert eine Einschätzung
+    UNAVAILABLE = "unavailable"  # Einstufung nicht möglich (z. B. Kontext-Option fehlt)
+
+
+@dataclass
+class ContextAssessment:
+    confidence: float | None
+    source: ContextSource
+    detail: str | None = None
 
 
 class RecipientStatus(StrEnum):
@@ -145,6 +228,8 @@ class RecipientSuggestion:
     label: str | None       # einer der erlaubten Optionen-Labels oder None ("unbekannt")
     confidence: float        # 0..1
     reasoning: str | None = None
+    # Wahrscheinlichkeit für den Kontext IT-Consulting (0..1); None = nicht eingeschätzt.
+    it_probability: float | None = None
 
 
 @dataclass
@@ -157,6 +242,7 @@ class RecipientCache:
     reasoning: str | None = None
     status: RecipientStatus = RecipientStatus.NONE
     updated_at: datetime | None = None
+    it_probability: float | None = None  # None = nicht eingeschätzt
 
 
 @dataclass

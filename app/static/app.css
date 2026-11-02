@@ -163,6 +163,44 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 .filters input { flex: 1; min-width: 180px; }
 .filters button { background: var(--accent); color: var(--on-accent); border-color: var(--accent); cursor: pointer; }
 
+.filters .filter-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.9rem;
+  padding: 0.5rem 0.2rem; }
+.filters .filter-check input { flex: none; min-width: 0; padding: 0; }
+
+/* Leiste über der Rechnungstabelle: Abrufstand links, Aktionen rechts */
+.overview-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.6rem 1rem; margin-bottom: 0.8rem; }
+.overview-bar form { margin: 0; }
+.overview-bar .muted { margin: 0; }
+.overview-bar button { padding: 0.45rem 0.8rem; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--on-accent); font-size: 0.9rem; cursor: pointer; }
+.overview-bar button:disabled { background: var(--ink-soft); border-color: var(--ink-soft); cursor: not-allowed; }
+.overview-bar button:not(:disabled):hover { background: var(--accent-strong); }
+.overview-bar button:active { transform: translateY(1px); }
+.overview-bar .button--quiet { background: transparent; color: var(--ink); border-color: var(--border); }
+.overview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.overview-alert { margin: 0 0 0.8rem; }
+
+/* Detailseite: Kontext und SevDesk-Abgleich */
+.sevdesk-section { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow); margin: 1rem 0; }
+.sevdesk-section h2 { margin: 0 0 0.6rem; font-size: 1rem; }
+.sevdesk-section p { margin: 0 0 0.5rem; }
+.sevdesk-section p:last-child { margin-bottom: 0; }
+.notice ul { margin: 0 0 0.7rem; padding-left: 1.2rem; }
+.candidates { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin: 0.6rem 0; }
+.candidates th { text-align: left; color: var(--ink-soft); font-weight: 500; padding: 0.3rem 0.6rem 0.3rem 0; }
+.candidates td { padding: 0.4rem 0.6rem 0.4rem 0; border-top: 1px solid var(--border); vertical-align: middle; }
+.candidates .amount, .candidates .score { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.candidate-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.candidate-actions form { margin: 0; }
+.candidate-actions button { padding: 0.35rem 0.7rem; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--on-accent); font-size: 0.85rem; cursor: pointer; }
+.candidate-actions button:hover { background: var(--accent-strong); }
+.candidate-actions .button--quiet { background: transparent; color: var(--ink); border-color: var(--border); }
+.candidate-actions .button--quiet:hover { background: transparent; border-color: var(--ink-soft); }
+.invoice-actions .button--quiet { background: transparent; color: var(--ink); border-color: var(--border); }
+
 /* Upload-Formular — gleicher Regelsatz wie .filters, eigene Klasse, da es keine
    Listenfilterung ist, sondern eine Aktion (Datei-Auswahl + Absenden). */
 .upload-form { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
@@ -266,6 +304,27 @@ h2 { font-size: 1rem; line-height: 1.4; margin: 1.5rem 0 0.6rem; }
 .badge--sevdesk-exported { background: var(--green-bg); color: var(--green); }
 .badge--sevdesk-failed { background: var(--red-bg); color: var(--red); }
 .badge--sevdesk-uncertain { background: var(--amber-bg); color: var(--amber); }
+.badge--sevdesk-review { background: var(--violet-bg); color: var(--violet); }
+.badge--sevdesk-dismissed { background: var(--bg); color: var(--ink-soft); }
+
+/* Export-Übersicht: Kontext-Einstufung und SevDesk-Abgleich */
+.badge--ctx-it { background: var(--green-bg); color: var(--green); }
+.badge--ctx-unsure { background: var(--amber-bg); color: var(--amber); }
+.badge--ctx-not_it, .badge--ctx-unknown { background: var(--bg); color: var(--ink-soft); }
+.badge--match-in_sevdesk { background: var(--green-bg); color: var(--green); }
+.badge--match-possible_duplicate, .badge--match-missing_in_sevdesk {
+  background: var(--amber-bg); color: var(--amber); }
+.badge--match-unavailable, .badge--match-no_amount, .badge--match-no_match {
+  background: var(--bg); color: var(--ink-soft); }
+.badge--export-exported { background: var(--green-bg); color: var(--green); }
+.badge--export-failed { background: var(--red-bg); color: var(--red); }
+.badge--export-uncertain { background: var(--amber-bg); color: var(--amber); }
+.badge--export-skipped, .badge--export-blocked, .badge--export-needs_confirmation {
+  background: var(--bg); color: var(--ink-soft); }
+.history .cell-sub { display: block; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
+  white-space: nowrap; }
+.history .select-col { width: 1%; padding-right: 0; }
 
 .link { color: var(--accent); text-decoration: none; }
 .link:hover { text-decoration: underline; }

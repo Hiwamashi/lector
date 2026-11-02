@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 import httpx
 
@@ -45,6 +46,19 @@ _SYSTEM = (
     "Nebenkosten, Versicherung der Wohnung), wähle 'Familie', sofern vorhanden."
 )
 
+_IT_FIELD = "it_consulting_probability"
+
+
+def _context_paragraph(label: str) -> str:
+    """Fester Zusatzabsatz je Instanz (Label ist beim Start fix, Prompt-Caching bleibt wirksam)."""
+    return (
+        f" Zusätzlich schätzt du im Feld '{_IT_FIELD}' (0 bis 1) ein, wie wahrscheinlich das "
+        f"Dokument eine Ausgabe des Geschäftskontexts '{label}' ist, unabhängig vom "
+        "vorgeschlagenen Empfänger. Typisch dafür sind Hosting, Software-Lizenzen, "
+        "IT-Hardware, Fachliteratur, Weiterbildung sowie geschäftlich genutzte Telefon- und "
+        "Internetverträge. Private Haushaltsausgaben erhalten einen niedrigen Wert."
+    )
+
 
 class RecipientSuggesterError(RuntimeError):
     pass
@@ -58,10 +72,15 @@ class RecipientSuggester:
         *,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        context_label: str | None = None,
     ) -> None:
         if not api_key:
             raise RecipientSuggesterError("ANTHROPIC_API_KEY ist nicht gesetzt")
         self._model = model
+        self._context_label = context_label or None
+        self._system = _SYSTEM + (
+            _context_paragraph(self._context_label) if self._context_label else ""
+        )
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
             headers={
@@ -116,13 +135,23 @@ class RecipientSuggester:
                 "required": ["recipient", "confidence"],
             },
         }
+        if self._context_label:
+            props = tool["input_schema"]["properties"]
+            props[_IT_FIELD] = {
+                "type": "number",
+                "description": (
+                    f"Wahrscheinlichkeit (0 bis 1), dass das Dokument eine Ausgabe des "
+                    f"Kontexts '{self._context_label}' ist."
+                ),
+            }
+            tool["input_schema"]["required"].append(_IT_FIELD)
         # Statischer System-Block wird zwischengespeichert (Prompt-Caching) — die
         # Optionenliste gehört zur dynamischen User-Nachricht.
         payload = {
             "model": self._model,
             "max_tokens": 256,
             "system": [
-                {"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}
+                {"type": "text", "text": self._system, "cache_control": {"type": "ephemeral"}}
             ],
             "tools": [tool],
             "tool_choice": {"type": "tool", "name": "set_recipient"},
@@ -206,4 +235,19 @@ class RecipientSuggester:
         reasoning = tool_input.get("reasoning") or None
         # Schutz: Nur exakt erlaubte Labels durchlassen, sonst als "unbekannt" behandeln.
         label = recipient if recipient in options else None
-        return RecipientSuggestion(label=label, confidence=confidence, reasoning=reasoning)
+        return RecipientSuggestion(
+            label=label,
+            confidence=confidence,
+            reasoning=reasoning,
+            it_probability=_parse_probability(tool_input.get(_IT_FIELD)),
+        )
+
+
+def _parse_probability(value: object) -> float | None:
+    """Nur echte Zahlen in 0..1 gelten; alles andere heißt „nicht eingeschätzt“."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if math.isnan(number) or not 0.0 <= number <= 1.0:
+        return None
+    return number

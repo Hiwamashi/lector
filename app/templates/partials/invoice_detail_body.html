@@ -21,6 +21,143 @@
 </div>
 {% endif %}
 
+{% set blockers = row.blockers %}
+{% set m = row.match %}
+
+{% if option_missing %}
+<div class="notice notice--info">
+  <p class="notice-text"><strong>Diese Rechnung ist nicht einstufbar.</strong> Im Paperless-Feld
+    „Empfänger“ fehlt die Option „{{ context_label }}“.</p>
+</div>
+{% endif %}
+
+{# Rückfrage nach einem Export-Versuch mit Rückfragegrund (`?ask=1`). Die Gründe werden live
+   berechnet, nicht aus dem Versuch übernommen — so bleibt der Block beim SSE-Refresh stehen
+   und verschwindet, sobald es nichts mehr zu klären gibt. #}
+{% if ask and row.exportable and blockers.reasons %}
+<div class="notice notice--blocked" id="export-ask">
+  <p class="notice-text"><strong>Vor dem Export klären</strong></p>
+  <ul>
+    {% for reason in blockers.reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+  <p class="notice-text">
+    Trotzdem nach SevDesk exportieren?
+    {% if inv.recipient_label and inv.recipient_label != context_label %}
+    Der Empfänger wird dabei auf {{ context_label }} umgestellt.
+    {% endif %}
+  </p>
+  <div class="notice-actions">
+    <form method="post" action="/invoices/{{ inv.id }}/export">
+      <input type="hidden" name="confirm" value="1" />
+      <button type="submit">Trotzdem exportieren</button>
+    </form>
+    <a class="link" href="/invoices/{{ inv.id }}">Abbrechen</a>
+  </div>
+</div>
+{% endif %}
+
+{% if inv.sevdesk_status == "exported" and not inv.written_back_at %}
+<div class="notice notice--blocked" id="writeback-open">
+  <p class="notice-text">Rückschrieb an Paperless offen — wird beim nächsten Sync nachgeholt.</p>
+</div>
+{% endif %}
+
+{% if inv.sevdesk_status == "review" %}
+<div class="notice notice--blocked" id="review-box">
+  {# Aktuelle Gründe live aus den Blockern; der beim Vormerken gespeicherte Grund steht nur
+     als Herkunft dabei. „Trotzdem exportieren“ schickt KEIN confirm: die Route leitet dann auf
+     die Rückfrage (?ask=1) mit den heutigen Gründen um. #}
+  <p class="notice-text"><strong>Zu prüfen.</strong></p>
+  {% if blockers.hard %}
+  <p class="notice-text">Aktuell gesperrt: {{ blockers.hard }}</p>
+  {% elif blockers.reasons %}
+  <ul>
+    {% for reason in blockers.reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+  {% else %}
+  <p class="notice-text">Aktuell liegt kein Rückfragegrund mehr vor.</p>
+  {% endif %}
+  {% if inv.review_reason %}
+  <p class="notice-text">Ursprünglicher Grund: {{ inv.review_reason }}</p>
+  {% endif %}
+  <div class="notice-actions">
+    <form method="post" action="/invoices/{{ inv.id }}/export">
+      <button type="submit" {% if not feature_sevdesk or not row.exportable %}disabled{% endif %}>Trotzdem exportieren</button>
+    </form>
+    <form method="post" action="/invoices/{{ inv.id }}/dismiss">
+      <button type="submit" class="button--quiet">Verwerfen</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+<section class="sevdesk-section" id="context-section">
+  <h2>Kontext</h2>
+  <p>
+    <span class="badge badge--ctx-{{ row.bucket }}">{{ row | ctx_label(context_label) }}</span>
+    {% if row.assessment.confidence is not none %}Konfidenz {{ row.assessment.confidence | fmt_percent }}{% endif %}
+    {% set source = row.assessment | ctx_source_label %}
+    {% if source %}· Quelle {{ source }}{% endif %}
+  </p>
+  {% set detail = row.assessment.detail %}
+  {% if row.assessment.source == "recipient" %}
+  <p class="muted">Begründung: Am Dokument ist der Empfänger „{{ detail }}“ gesetzt.</p>
+  {% elif row.assessment.source == "correspondent" %}
+  <p class="muted">Begründung: Frühere Rechnungen dieses Korrespondenten — {{ detail }}.</p>
+  {% elif row.assessment.source == "llm" %}
+  <p class="muted">Begründung: Einschätzung der KI{% if detail %} — {{ detail }}{% endif %}.</p>
+  {% elif row.assessment.source == "none" %}
+  <p class="muted">Keine Quelle liefert eine Einschätzung: kein Empfänger, keine eindeutige
+    Historie des Korrespondenten und keine KI-Einschätzung.</p>
+  {% endif %}
+</section>
+
+<section class="sevdesk-section" id="match-section">
+  <h2>SevDesk-Abgleich</h2>
+  <p>
+    <span class="badge badge--match-{{ m.state }}">{{ match_state_labels[m.state] }}</span>
+    {% if m.voucher_id and m.state in ("in_sevdesk", "missing_in_sevdesk") %}
+    Beleg {{ m.voucher_id }}
+    {% if m.state == "in_sevdesk" %}
+    <a class="link" href="{{ m.voucher_id | voucher_url }}" target="_blank" rel="noopener">In SevDesk öffnen ↗</a>
+    {% endif %}
+    {% endif %}
+  </p>
+  {% if candidates %}
+  <p class="muted">Diese Belege in SevDesk haben denselben Betrag und ein ähnliches Datum.
+    Entscheide, ob es derselbe Beleg ist.</p>
+  <table class="candidates">
+    <thead>
+      <tr><th>Beleg</th><th>Datum</th><th>Lieferant</th><th>Betrag</th><th>Score</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for c in candidates %}
+      <tr>
+        <td><a class="link" href="{{ c.url }}" target="_blank" rel="noopener"
+               aria-label="Beleg {{ c.match.voucher_id }} in SevDesk öffnen">{{ c.match.voucher_id }} ↗</a></td>
+        <td>{{ c.voucher.voucher_date | fmt_iso_date if c.voucher else "—" }}</td>
+        <td>{{ (c.voucher.supplier_name if c.voucher else none) or "—" }}</td>
+        <td class="amount">{{ c.voucher.sum_gross | fmt_amount(c.voucher.currency) if c.voucher else "—" }}</td>
+        <td class="score">{{ c.match.score | fmt_score }}</td>
+        <td>
+          <div class="candidate-actions">
+            <form method="post" action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
+              <input type="hidden" name="decision" value="confirm" />
+              <button type="submit" aria-label="Beleg {{ c.match.voucher_id }}: derselbe Beleg">Derselbe Beleg</button>
+            </form>
+            <form method="post" action="/invoices/{{ inv.id }}/matches/{{ c.match.voucher_id | urlencode }}">
+              <input type="hidden" name="decision" value="reject" />
+              <button type="submit" class="button--quiet" aria-label="Beleg {{ c.match.voucher_id }}: anderer Beleg">Anderer Beleg</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
 <div class="invoice-grid">
   <section class="giro-card">
     <h2>GiroCode</h2>
@@ -61,14 +198,16 @@
   <form method="post" action="/invoices/{{ inv.id }}/export">
     <button type="submit"
       {% if not feature_sevdesk %}disabled title="FEATURE_SEVDESK_EXPORT=false"
-      {% elif already_exported %}disabled title="Bereits als Beleg exportiert"
-      {% elif uncertain %}disabled title="Mehrdeutiger Fehler — erst in SevDesk prüfen"{% endif %}>
+      {% elif blockers.hard %}disabled{% endif %}>
       {% if already_exported %}Bereits exportiert
       {% elif uncertain %}Export unklar – in SevDesk prüfen
       {% else %}Nach SevDesk exportieren{% endif %}
     </button>
   </form>
-  {% if not feature_sevdesk and not inv.error_message %}
+  {% if feature_sevdesk and blockers.hard %}
+  <span class="muted">Export gesperrt: {{ blockers.hard }}.</span>
+  {% endif %}
+{% if not feature_sevdesk and not inv.error_message %}
   <span class="muted">SevDesk-Export ist aus (<code>FEATURE_SEVDESK_EXPORT</code>).</span>
   {% endif %}
   {% if inv.sevdesk_voucher_id %}

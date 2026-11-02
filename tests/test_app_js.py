@@ -55,16 +55,36 @@ function parseRows(html) {
   return rows;
 }
 
+// Checkboxen der Mehrfachauswahl (input[data-select]): werden aus dem HTML gelesen, frisch
+// gerenderte sind ungewaehlt — genau wie im Browser nach einem innerHTML-Tausch.
+function parseBoxes(html) {
+  const boxes = [];
+  const re = /name="ids"\\s+value="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(html || "")) !== null) boxes.push({ value: m[1], checked: false });
+  return boxes;
+}
+
 let tbodyInhalt = null;
 let tbodyRows = [];
+let boxes = [];
 const tbody = {
-  set innerHTML(v) { tbodyInhalt = v; tbodyRows = parseRows(v); },
+  set innerHTML(v) { tbodyInhalt = v; tbodyRows = parseRows(v); boxes = parseBoxes(v); },
   get innerHTML() { return tbodyInhalt; },
-  querySelectorAll: () => tbodyRows,
+  querySelectorAll: (sel) => {
+    if (String(sel).indexOf("input[data-select]") >= 0) {
+      return String(sel).indexOf(":checked") >= 0 ? boxes.filter((b) => b.checked) : boxes;
+    }
+    return tbodyRows;
+  },
 };
 // Ausgangsbestand wie vom Server gerendert: ohne ihn waere JEDE Zeile des ersten
 // Abgleichs neu und wuerde aufleuchten.
 if (scenario.initialRows) tbody.innerHTML = scenario.initialRows;
+// Vom Nutzer gesetzte Haken im Ausgangsbestand.
+if (scenario.checkedIds) {
+  boxes = scenario.checkedIds.map((v) => ({ value: v, checked: true }));
+}
 
 const table = {
   getAttribute: () => "/fragment/empfaenger",
@@ -76,6 +96,9 @@ const batchStatus = { getAttribute: () => "/fragment/empfaenger/batch-status",
                       set innerHTML(v) { batchInhalt = v; } };
 
 global.document = {
+  // app.js haengt einen delegierten change-Listener fuer die Mehrfachauswahl der
+  // Rechnungsliste an; der Harness braucht ihn nicht auszuloesen.
+  addEventListener: () => {},
   querySelector: (sel) => {
     if (sel.startsWith("table.history")) return table;
     // Marker eines laufenden KI-Laufs — Signal fuer den Abfragetakt in app.js.
@@ -154,6 +177,7 @@ eval(fs.readFileSync(process.argv[3], "utf8"));
   console.log(JSON.stringify({
     hinweisSichtbar: hidden === false, inhalt: tbodyInhalt, batchInhalt: batchInhalt,
     aufgeleuchtet: aufgeleuchtet, umleitungen: umleitungen, authAufrufe: authAufrufe,
+    gewaehlt: boxes.filter((b) => b.checked).map((b) => b.value),
   }));
   // Der Abfragetakt plant sich endlos weiter — ohne das bliebe node haengen.
   process.exit(0);
@@ -344,6 +368,30 @@ def test_geaenderte_zeile_leuchtet_auf(tmp_path):
         tmp_path,
     )
     assert ergebnis["aufgeleuchtet"] == ["1"]
+
+
+def _rows_mit_auswahl(*ids: str) -> str:
+    return "".join(
+        f'<tr data-row-id="{i}" data-rev="x">'
+        f'<td><input type="checkbox" name="ids" value="{i}" data-select></td></tr>'
+        for i in ids
+    )
+
+
+def test_mehrfachauswahl_ueberlebt_den_live_abgleich(tmp_path):
+    """Ein SSE-Refresh tauscht die Tabelle per innerHTML aus. Haken, die der Nutzer gesetzt
+    hat, muessen danach wieder stehen — fuer Zeilen, die es noch gibt. Eine verschwundene
+    Zeile (hier 3) faellt aus der Auswahl, ein nie gewaehlte Zeile (2) bleibt ungewaehlt."""
+    ergebnis = _run(
+        {
+            "responses": [True],
+            "initialRows": _rows_mit_auswahl("1", "2", "3"),
+            "checkedIds": ["1", "3"],
+            "bodies": [_rows_mit_auswahl("1", "2")],
+        },
+        tmp_path,
+    )
+    assert ergebnis["gewaehlt"] == ["1"]
 
 
 def test_unveraenderte_zeilen_leuchten_nicht_auf(tmp_path):

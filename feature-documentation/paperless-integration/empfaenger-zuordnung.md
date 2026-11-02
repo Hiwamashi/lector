@@ -66,6 +66,18 @@ Das Feature braucht nur die Paperless-Anbindung (`recipient_enabled` = URL + Tok
   `recipient` (enum aus den erlaubten Labels + `unbekannt`), `confidence` (0..1) und
   `reasoning` auf. Labels außerhalb der Optionen werden hart auf `None` gemappt — die KI
   kann **keine** neuen Empfänger erfinden.
+- **Zusatzfeld `it_consulting_probability`** (Pflichtfeld, Typ `number`): Wahrscheinlichkeit
+  (0 bis 1), dass das Dokument eine Ausgabe des Kontexts ist, **unabhängig** vom vorgeschlagenen
+  Empfänger. Das Feld kommt nur dann ins Tool-Schema, wenn der `RecipientSuggester` ein
+  Kontext-Label erhält. `PaperlessSync._suggester()` übergibt `SEVDESK_CONTEXT_LABEL`. Der
+  Absatz im System-Block nennt das Label ebenfalls. Der Absatz steht fest im Prompt, damit das
+  Prompt-Caching greift.
+- **Parsing:** Nur echte Zahlen von 0 bis 1 gelten (`_parse_probability`). Alles andere wird
+  zu `None`: Strings, Wahrheitswerte, NaN, Werte außerhalb des Bereichs und ein fehlendes Feld.
+  Der Empfänger-Vorschlag bleibt in diesem Fall gültig. Das Dokument gilt dann als „nicht
+  eingeschätzt“ (siehe [kontext-einstufung.md](kontext-einstufung.md)).
+- **Speicherung:** Der Wert wird mit dem Vorschlag in `document_recipients.it_probability`
+  geschrieben. Die Übersicht braucht dafür keinen weiteren KI-Aufruf.
 - Eingabe: Titel + Korrespondent + gekürzter OCR-Text (`_MAX_CONTENT_CHARS=6000`). Der
   statische System-Block wird per Prompt-Caching wiederverwendet.
 
@@ -79,8 +91,19 @@ Das Feature braucht nur die Paperless-Anbindung (`recipient_enabled` = URL + Tok
 ## Datenmodell
 
 - Tabelle `document_recipients`: `paperless_id` (PK), `suggested_label`, `confidence`,
-  `reasoning`, `status` (`none|suggested|applied|unknown`), `updated_at`. Reiner Cache —
-  überlebt der KI-Vorschlag einen Reload ohne erneuten LLM-Aufruf.
+  `reasoning`, `status` (`none|suggested|applied|unknown`), `it_probability` (REAL, `NULL` =
+  nicht eingeschätzt), `updated_at`. Reiner Cache — überlebt der KI-Vorschlag einen Reload ohne
+  erneuten LLM-Aufruf. Die Spalte `it_probability` kommt per `_migrate()` in bestehende
+  Datenbanken.
+- Schreibt Lector den Vorschlag in den Cache (also nicht im Auto-Apply-Fall), wird
+  `it_probability` immer mitgeschrieben, auch als `NULL`. Ein Aufruf ohne gültige
+  IT-Einschätzung löscht also einen zuvor gespeicherten Wert. Die Ausnahme ist
+  `mark_recipient_applied`: Es setzt den Status auf `applied`, leert Vorschlag, Konfidenz und
+  Begründung und lässt die IT-Einschätzung unverändert.
+- **Automatisch angewendeter Vorschlag** (`RECIPIENT_LLM_AUTO_APPLY`): Der Vorschlag geht direkt
+  in das Paperless-Feld. Dabei entsteht über `mark_recipient_applied` nur ein Status-Eintrag
+  `applied`, ohne Vorschlag und ohne IT-Einschätzung. Das Dokument hat dann einen Empfänger, und
+  die Einstufung nutzt den Empfänger als Quelle 1.
 - Repository: `get_recipient_cache(s)`, `set_recipient_cache`, `mark_recipient_applied`,
   `notify_recipient` (SSE-Token `rec:<id>`), `notify_batch` (SSE-Token `batch:recipient`,
   gedrosselt auf höchstens alle `BATCH_PUBLISH_INTERVAL=2.0` Sekunden; Start und Ende des
@@ -101,26 +124,59 @@ Das Feature braucht nur die Paperless-Anbindung (`recipient_enabled` = URL + Tok
   **vor** `repo.close()` aufgerufen — sonst könnte der Task bei einem SIGTERM mitten im Lauf
   auf die bereits geschlossene SQLite-Verbindung zugreifen.
 
+## Batch-Auswahl und IT-Einschätzung
+
+`_collect_missing_ids(client, field, limit)` (`app/paperless_sync.py`) bestimmt die Menge eines
+Batch-Laufs:
+
+- Berücksichtigt werden nur Dokumente **ohne** gesetzten Empfänger (Paperless-Filter
+  `missing_field_id`).
+- **Übersprungen** wird ein Dokument mit vollständigem Cache-Eintrag: Status ungleich `none` **und**
+  `it_probability` gesetzt (`_recipient_cache_complete`).
+- **Aufgenommen** werden alle übrigen, also auch Einträge aus der Zeit vor dem Change, die einen
+  Vorschlag, aber keine IT-Einschätzung haben. Der Batch ergänzt die Einschätzung dann nach.
+- Die Auswahl läuft über alle Seiten. Ist das Limit erreicht, zählt sie die übrigen passenden
+  Dokumente als `rest`.
+
+Ein Dokument mit Vorschlag **und** Einschätzung, aber ohne Empfänger, wird also übersprungen. Ein
+Dokument ohne Vorschlag wird bearbeitet.
+
+### Fallstrick: ungültiger KI-Wert führt zu erneuter Anfrage
+
+Liefert die KI keine gültige IT-Einschätzung (Wert außerhalb 0 bis 1, Text, fehlend), wird
+`it_probability` als `NULL` gespeichert. Der Eintrag gilt dann als **unvollständig**. Der nächste
+Batch-Lauf wählt das Dokument erneut aus und stellt die KI-Anfrage nochmals. Das wiederholt sich
+bei jedem Lauf, solange der Wert ungültig bleibt, und kostet jedes Mal Tokens.
+
+Lector hat dafür keinen Zähler und keinen Sperrvermerk. Das ist **bewusst unverändert**: Eine
+Gegenmaßnahme (Zählung, Sperrvermerk oder Wiederholgrenze) ist nicht umgesetzt. Der Kostenhinweis
+gilt weiterhin.
+
+TODO: Wie oft die KI in der Praxis ungültige Werte liefert, ist nicht gemessen.
+
 ## Konfiguration (ENV)
 
 `CF_RECIPIENT`, `FEATURE_RECIPIENT_LLM`, `ANTHROPIC_API_KEY`, `RECIPIENT_LLM_MODEL`
 (Default `claude-sonnet-4-6`), `RECIPIENT_LLM_AUTO_APPLY`, `RECIPIENT_LLM_MIN_CONFIDENCE`,
 `RECIPIENT_BATCH_MAX` (Default 1000, Obergrenze für einen Batch-Lauf — die tatsächliche Menge
-wählt der Anwender pro Lauf in der Oberfläche).
+wählt der Anwender pro Lauf in der Oberfläche). Für die IT-Einschätzung zusätzlich
+`SEVDESK_CONTEXT_LABEL` (Default `IT-Consulting`, siehe [konfiguration.md](../konfiguration.md)).
 
 ## Fallstricke
 
 - **`follow_redirects=True`** im Paperless-Client: paginierte `next`-URLs kommen teils mit
   `http`-Schema und lösen hinter dem HTTPS-Proxy einen 308 aus — muss verfolgt werden.
 - Der Batch-Lauf ist auf `RECIPIENT_BATCH_MAX` (Default 1000) Dokumente pro Durchlauf gedeckelt
-  und überspringt bereits gecachte/gesetzte Dokumente — damit gefahrlos wiederholbar. Bleiben
+  und überspringt Dokumente mit vollständigem Cache-Eintrag (Vorschlag und IT-Einschätzung) sowie
+  gesetzte Dokumente — damit gefahrlos wiederholbar. Bleiben
   wegen des Limits Dokumente offen, zählt `BatchProgress.remaining` sie; das erscheint in der
   Toolbar, nicht nur im Log. Der Lauf muss dann erneut gestartet werden.
 - **Angezeigter Bestand ≠ Arbeitsmenge des Laufs:** `missing_total` (Toolbar) zählt Dokumente
   ohne gesetzten Empfänger, per `count_missing_recipients`. `_collect_missing_ids` überspringt
-  zusätzlich Dokumente mit einem bestehenden Cache-Eintrag (Vorschlag unter der
-  Konfidenzschwelle oder „unbekannt" setzt das Paperless-Feld nicht) — die tatsächliche
-  Arbeitsmenge eines Laufs kann daher kleiner sein als der angezeigte Bestand. Ein exakter
+  zusätzlich Dokumente mit vollständigem Cache-Eintrag (Vorschlag und IT-Einschätzung vorhanden;
+  ein Vorschlag unter der Konfidenzschwelle oder „unbekannt" setzt das Paperless-Feld nicht) — die
+  tatsächliche Arbeitsmenge eines Laufs kann daher kleiner sein als der angezeigte Bestand.
+  Einträge ohne IT-Einschätzung zählen dagegen wieder zur Arbeitsmenge. Ein exakter
   Abgleich bräuchte bei jedem Seitenaufruf einen Vollscan und ist bewusst nicht implementiert;
   die Toolbar benennt daher präzise „ohne gesetzten Empfänger" statt eine 1:1-Deckung zu
   suggerieren. Endet ein Lauf mit `total == 0` (nichts Neues zu tun), zeigt die Oberfläche das

@@ -1834,3 +1834,593 @@ def test_noch_nicht_vorhandener_arbeitsordner_wird_angelegt_und_start_laeuft_wei
     with TestClient(main.app) as c:
         assert watch_dir.is_dir()
         assert c.get("/healthz").status_code == 200
+
+
+# ---- Export-Übersicht (SevDesk-Abgleich, Kontext, Mehrfachexport) -------------------------
+
+
+def _sevdesk_on(application, monkeypatch):
+    """Schaltet SevDesk-Export und -Abgleich für die Oberfläche ein (ohne Netzwerk)."""
+    sync = application.state.sync
+    monkeypatch.setattr(type(sync), "sevdesk_enabled", property(lambda self: True))
+    application.state.settings.feature_sevdesk_export = True
+    return sync
+
+
+def _invoice(repo, paperless_id, title, *, correspondent=None, label=None, amount=None, date=None):
+    from app.models import GiroStatus
+
+    inv_id = repo.upsert_invoice(
+        paperless_id=paperless_id,
+        title=title,
+        correspondent=correspondent,
+        document_date=date,
+        recipient_label=label,
+    )
+    if amount is not None:
+        repo.set_giro_data(
+            inv_id, creditor_name=correspondent, iban=None, bic=None, amount=amount,
+            currency="EUR", purpose=None, source="ocr", giro_status=GiroStatus.READY,
+        )
+    return inv_id
+
+
+def _titles_in(html: str, *titles: str) -> list[str]:
+    return [t for t in titles if t in html]
+
+
+def test_uebersicht_zeigt_je_kontextquelle_und_abgleich_nicht_verfuegbar(client):
+    from app.models import RecipientStatus
+
+    c, application = client
+    repo = application.state.repo
+    _invoice(repo, 1, "Quelle-Empfaenger", correspondent="Solo", label="IT-Consulting")
+    for n in range(3):  # drei entschiedene Vorgänger -> Korrespondent 3/3
+        _invoice(repo, 10 + n, f"Alt {n}", correspondent="Acme", label="IT-Consulting")
+    _invoice(repo, 2, "Quelle-Korrespondent", correspondent="Acme")
+    _invoice(repo, 3, "Quelle-KI", correspondent="Neu")
+    repo.set_recipient_cache(
+        3, suggested_label="Sascha", confidence=0.7, reasoning="Hosting",
+        status=RecipientStatus.SUGGESTED, it_probability=0.9,
+    )
+    _invoice(repo, 4, "Quelle-Keine", correspondent="Nix")
+    _invoice(repo, 5, "Quelle-Familie", correspondent="Privat", label="Familie")
+
+    html = c.get("/invoices").text
+
+    assert "Empfänger" in html  # Quelle der ersten Zeile
+    assert "Korrespondent 3/3" in html
+    assert "· KI" in html
+    assert "90 %" in html  # Konfidenz als Prozent
+    assert "Nicht eingeschätzt" in html
+    assert "Nicht IT-Consulting" in html
+    # Noch nie abgerufen: nicht „Kein Treffer“.
+    assert "Abgleich nicht verfügbar" in html
+    assert "Kein Treffer" not in html
+
+
+def test_uebersicht_filter_wirken_und_lassen_sich_kombinieren(client):
+    from app.models import InvoiceVoucherMatch, MatchKind, SevdeskStatus, SevdeskVoucher
+
+    c, application = client
+    repo = application.state.repo
+    it_offen = _invoice(
+        repo, 1, "Rg-IT-offen", label="IT-Consulting", amount=10.0, date="2026-10-03"
+    )
+    it_exportiert = _invoice(repo, 2, "Rg-IT-exportiert", label="IT-Consulting")
+    repo.set_sevdesk_status(it_exportiert, SevdeskStatus.EXPORTED, voucher_id="V9")
+    _invoice(repo, 3, "Rg-Privat", label="Familie")
+    dup = _invoice(repo, 4, "Rg-Dublette", label="IT-Consulting", amount=20.0, date="2026-10-03")
+    pruef = _invoice(repo, 5, "Rg-Pruefen", label="Familie")
+    repo.set_review(pruef, "anderer Empfänger")
+    repo.replace_vouchers(
+        [SevdeskVoucher(voucher_id="987", voucher_date="2026-10-04", supplier_name="X",
+                        sum_gross=20.0, currency="EUR")]
+    )
+    repo.set_sevdesk_sync_success()
+    repo.replace_auto_matches(
+        [InvoiceVoucherMatch(invoice_id=dup, voucher_id="987", kind=MatchKind.SIMILAR, score=0.8)]
+    )
+    alle = ("Rg-IT-offen", "Rg-IT-exportiert", "Rg-Privat", "Rg-Dublette", "Rg-Pruefen")
+
+    assert _titles_in(c.get("/invoices", params={"ctx": "it"}).text, *alle) == [
+        "Rg-IT-offen", "Rg-IT-exportiert", "Rg-Dublette"
+    ]
+    assert _titles_in(c.get("/invoices", params={"ctx": "it", "open": "1"}).text, *alle) == [
+        "Rg-IT-offen", "Rg-Dublette"
+    ]
+    assert _titles_in(c.get("/invoices", params={"dup": "1"}).text, *alle) == ["Rg-Dublette"]
+    assert _titles_in(c.get("/invoices", params={"review": "1"}).text, *alle) == ["Rg-Pruefen"]
+    # Review-Filter plus ein anderer Status ergibt die leere Schnittmenge.
+    leer = c.get("/invoices", params={"review": "1", "sevdesk": "exported"}).text
+    assert "Keine Rechnungen für diese Filter." in leer
+    # Filter wirken auch im Fragment, und data-fragment trägt sie mit.
+    page = c.get("/invoices", params={"ctx": "it", "open": "1", "q": "Rg-Dub"}).text
+    import html as html_lib
+
+    assert "/fragment/invoices?sort=date&dir=desc&q=Rg-Dub&ctx=it&open=1" in html_lib.unescape(page)
+    frag = c.get("/fragment/invoices", params={"ctx": "it", "open": "1"}).text
+    assert _titles_in(frag, *alle) == ["Rg-IT-offen", "Rg-Dublette"]
+    assert "mögliche Dublette".casefold() in frag.casefold()
+    assert "Score 0,80" in frag
+    assert it_offen  # Rechnung existiert
+
+
+def test_fragment_hat_dieselben_kontextschluessel_wie_die_seite(client, monkeypatch):
+    """Fallstrick: Seite und Fragment rendern dasselbe Partial. Fehlte dem Fragment ein
+    Schlüssel (hier sevdesk_enabled für die Checkbox), sähe der SSE-Refresh anders aus."""
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    _invoice(application.state.repo, 1, "Auswahl", label="IT-Consulting")
+
+    page = c.get("/invoices", params={"review": "", "dup": "0"}).text
+    frag = c.get("/fragment/invoices").text
+
+    assert 'name="ids"' in page and 'name="ids"' in frag
+    assert "Ausgewählte exportieren" in page
+    assert "Kein Treffer" not in frag  # Abgleich noch nie abgerufen
+    assert c.get("/fragment/invoices/overview-status").status_code == 200
+
+
+def test_checkbox_nur_fuer_exportierbare_zeilen(client, monkeypatch):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    frei = _invoice(repo, 1, "Frei")
+    fertig = _invoice(repo, 2, "Fertig")
+    repo.set_sevdesk_status(fertig, SevdeskStatus.EXPORTED, voucher_id="V1")
+
+    html = c.get("/invoices").text
+
+    assert f'name="ids" value="{frei}"' in html
+    assert f'name="ids" value="{fertig}"' not in html
+
+
+def test_abrufstand_und_fehlerhinweis(client, monkeypatch):
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    _invoice(repo, 1, "Eine")
+
+    assert "Abgleich: noch nicht abgerufen" in c.get("/invoices").text
+
+    repo.set_sevdesk_sync_success()
+    assert "Abgleich: Stand" in c.get("/invoices").text
+
+    repo.set_sevdesk_sync_error("Timeout")
+    html = c.get("/invoices").text
+    assert "Abruf der SevDesk-Belege fehlgeschlagen" in html
+    assert "letzten erfolgreichen Abruf" in html
+    assert "Grund: Timeout" in html
+    assert "Abgleich aktualisieren" in html
+
+
+def test_hinweis_bei_sicher_fehlender_kontext_option(client):
+    from app.paperless import SelectField
+
+    c, application = client
+    _invoice(application.state.repo, 1, "Eine", label="Familie")
+    sync = application.state.sync
+
+    # Feldzustand unbekannt: kein Hinweis, Einstufung wird angezeigt.
+    unbekannt = c.get("/invoices").text
+    assert "fehlt die Option" not in unbekannt
+    assert "Nicht IT-Consulting" in unbekannt
+
+    sync._recipient_field = SelectField(
+        field_id=1, label_to_id={"Familie": "a"}, id_to_label={"a": "Familie"}
+    )
+    sync._recipient_field_resolved = True
+    html = c.get("/invoices").text
+    assert "fehlt die Option „IT-Consulting“" in html
+    assert "Nicht einstufbar" in html
+    assert "fehlt die Option „IT-Consulting“" in c.get("/fragment/invoices/overview-status").text
+
+
+def test_export_mit_rueckfragegrund_fragt_nach_statt_zu_exportieren(client, monkeypatch):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Privat", correspondent="Kita", label="Familie")
+
+    resp = c.post(f"/invoices/{inv_id}/export", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/invoices/{inv_id}?ask=1"
+
+    page = c.get(resp.headers["location"]).text
+    assert "Vor dem Export klären" in page
+    assert "anderer Empfänger: Familie" in page
+    assert 'name="confirm" value="1"' in page
+    assert "auf IT-Consulting umgestellt" in page
+    # Nichts wurde exportiert oder angefasst.
+    assert repo.get_invoice(inv_id).sevdesk_status == SevdeskStatus.NONE
+    # Der Fragment-Refresh behält die Rückfrage (data-fragment trägt ask=1).
+    assert "?ask=1" in page
+    assert "Vor dem Export klären" in c.get(f"/fragment/invoices/{inv_id}?ask=1").text
+    assert "Vor dem Export klären" not in c.get(f"/invoices/{inv_id}").text
+
+
+def test_export_mit_confirm_reicht_die_bestaetigung_weiter(client, monkeypatch):
+    from app.sevdesk_export_checks import ExportOutcome, ExportStatus
+
+    c, application = client
+    sync = _sevdesk_on(application, monkeypatch)
+    inv_id = _invoice(application.state.repo, 1, "Privat", label="Familie")
+    seen = []
+
+    async def spy(invoice_id, confirmed=False):
+        seen.append((invoice_id, confirmed))
+        return ExportOutcome(ExportStatus.EXPORTED, "Beleg 1", voucher_id="1")
+
+    monkeypatch.setattr(sync, "export_invoice", spy)
+
+    resp = c.post(f"/invoices/{inv_id}/export", data={"confirm": "1"}, follow_redirects=False)
+    assert resp.headers["location"] == f"/invoices/{inv_id}"
+    c.post(f"/invoices/{inv_id}/export", follow_redirects=False)
+    assert seen == [(inv_id, True), (inv_id, False)]
+
+
+def test_export_gesperrte_rechnung_zeigt_hinweis_ohne_bestaetigen(client, monkeypatch):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Fertig")
+    repo.set_sevdesk_status(inv_id, SevdeskStatus.EXPORTED, voucher_id="V1")
+
+    resp = c.post(f"/invoices/{inv_id}/export", data={"confirm": "1"}, follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert "Export gesperrt: bereits exportiert (Beleg V1)" in resp.text
+    assert "Vor dem Export klären" not in resp.text
+    assert repo.get_invoice(inv_id).sevdesk_status == SevdeskStatus.EXPORTED
+
+
+def test_batch_export_meldet_uebersprungene_mit_grund(client, monkeypatch):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    privat = _invoice(repo, 1, "Privat", label="Familie")
+    fertig = _invoice(repo, 2, "Fertig")
+    repo.set_sevdesk_status(fertig, SevdeskStatus.EXPORTED, voucher_id="V1")
+
+    resp = c.post(
+        "/invoices/export-batch",
+        data={"ids": [str(privat), str(fertig)], "back": "ctx=it&evil=1&review=1"},
+    )
+
+    assert resp.status_code == 200
+    assert "0 Rechnungen exportiert, 2 nicht exportiert." in " ".join(resp.text.split())
+    assert "anderer Empfänger: Familie" in resp.text
+    assert "bereits exportiert (Beleg V1)" in resp.text
+    assert 'href="/invoices?ctx=it&amp;review=1"' in resp.text  # nur bekannte Parameter
+
+    # Ohne Auswahl: zurück zur Liste, nichts zu melden.
+    leer = c.post("/invoices/export-batch", data={"back": "q=x"}, follow_redirects=False)
+    assert leer.status_code == 303
+    assert leer.headers["location"] == "/invoices?q=x"
+
+
+def test_batch_export_ruft_export_invoices_mit_den_ids(client, monkeypatch):
+    from app.sevdesk_export_checks import ExportOutcome, ExportStatus
+
+    c, application = client
+    sync = _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    a = _invoice(repo, 1, "A")
+    b = _invoice(repo, 2, "B")
+    got = []
+
+    async def spy(ids):
+        got.append(ids)
+        return [
+            (a, ExportOutcome(ExportStatus.EXPORTED, "Beleg 7", voucher_id="7")),
+            (b, ExportOutcome(ExportStatus.FAILED, "SevDesk lehnt ab")),
+        ]
+
+    monkeypatch.setattr(sync, "export_invoices", spy)
+
+    html = c.post("/invoices/export-batch", data={"ids": [str(a), str(b), str(a)]}).text
+
+    assert got == [[a, b]]  # doppelte IDs entfernt, Reihenfolge erhalten
+    assert "1 Rechnung exportiert, 1 nicht exportiert." in " ".join(html.split())
+    assert "SevDesk lehnt ab" in html
+
+
+def test_sevdesk_refresh_ruft_abruf_und_kehrt_mit_filtern_zurueck(client, monkeypatch):
+    c, application = client
+    sync = _sevdesk_on(application, monkeypatch)
+    calls = []
+
+    async def spy():
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(sync, "sync_vouchers", spy)
+
+    resp = c.post(
+        "/invoices/sevdesk-refresh",
+        data={"back": "q=Amazon&dup=1&sort=title&dir=asc&x=1"},
+        follow_redirects=False,
+    )
+
+    assert calls == [1]
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/invoices?q=Amazon&dup=1&sort=title&dir=asc"
+
+
+def test_entscheidung_ueber_treffer_berechnet_abgleich_neu(client, monkeypatch):
+    from app.models import InvoiceVoucherMatch, MatchKind, SevdeskVoucher
+
+    c, application = client
+    sync = _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Hosting", label="IT-Consulting", amount=20.0, date="2026-10-03")
+    repo.replace_vouchers(
+        [SevdeskVoucher(voucher_id="987", voucher_date="2026-10-04", supplier_name="AWS EMEA",
+                        sum_gross=20.0, currency="EUR")]
+    )
+    repo.set_sevdesk_sync_success()
+    repo.replace_auto_matches(
+        [
+            InvoiceVoucherMatch(
+                invoice_id=inv_id, voucher_id="987", kind=MatchKind.SIMILAR, score=0.8
+            )
+        ]
+    )
+    recomputed = []
+    monkeypatch.setattr(sync, "recompute_matches", lambda: recomputed.append(1) or 0)
+
+    detail = c.get(f"/invoices/{inv_id}").text
+    assert "Derselbe Beleg" in detail and "Anderer Beleg" in detail
+    assert "https://my.sevdesk.de/fi/edit/type/VOU/id/987" in detail
+    candidates = detail.split("candidates")[1]
+    assert "AWS EMEA" in candidates and "0,80" in candidates and "04.10.2026" in candidates
+
+    bad = c.post(f"/invoices/{inv_id}/matches/987", data={"decision": "vielleicht"})
+    assert bad.status_code == 400
+    assert recomputed == []
+
+    resp = c.post(
+        f"/invoices/{inv_id}/matches/987", data={"decision": "confirm"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert recomputed == [1]
+    kinds = {m.voucher_id: m.kind for m in repo.list_matches([inv_id])}
+    assert kinds["987"] == MatchKind.CONFIRMED
+    after = c.get(f"/invoices/{inv_id}").text
+    assert "Derselbe Beleg" not in after  # kein offener Kandidat mehr
+    assert "In SevDesk" in after
+
+    other = _invoice(repo, 2, "Anders", label="IT-Consulting")
+    repo.replace_auto_matches(
+        [InvoiceVoucherMatch(invoice_id=other, voucher_id="987", kind=MatchKind.SIMILAR, score=0.5)]
+    )
+    c.post(f"/invoices/{other}/matches/987", data={"decision": "reject"})
+    assert {m.voucher_id: m.kind for m in repo.list_matches([other])}["987"] == MatchKind.REJECTED
+    assert recomputed == [1, 1]
+
+
+def test_dismiss_verwirft_pruefall(client, monkeypatch):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Pruefen", label="Familie")
+    repo.set_review(inv_id, "anderer Empfänger: Familie (nicht IT-Consulting)")
+
+    detail = c.get(f"/invoices/{inv_id}").text
+    assert "Zu prüfen." in detail
+    assert "anderer Empfänger: Familie" in detail
+    assert "Trotzdem exportieren" in detail
+    assert f'action="/invoices/{inv_id}/dismiss"' in detail
+
+    resp = c.post(f"/invoices/{inv_id}/dismiss", follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert repo.get_invoice(inv_id).sevdesk_status == SevdeskStatus.DISMISSED
+    assert "Zu prüfen." not in c.get(f"/invoices/{inv_id}").text
+    assert repo.list_invoice_events(inv_id)[-1]["event_type"] == "sevdesk_dismissed"
+
+
+def test_detail_zeigt_kontext_mit_quelle_und_begruendung(client):
+    c, application = client
+    inv_id = _invoice(application.state.repo, 1, "Mit Empfaenger", label="IT-Consulting")
+
+    html = c.get(f"/invoices/{inv_id}").text
+
+    assert "Konfidenz 100 %" in html
+    assert "Quelle Empfänger" in html
+    assert "Am Dokument ist der Empfänger „IT-Consulting“ gesetzt." in html
+    assert "Abgleich nicht verfügbar" in html
+
+
+# ---- Review-Befunde: Prüfkasten, Treffer-Route, Filter ---------------------------
+
+
+def test_review_kasten_zeigt_aktuelle_gruende_und_sendet_kein_confirm(client, monkeypatch):
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Pruefen", label="Familie")
+    repo.set_review(inv_id, "alter Grund XY")
+
+    box = c.get(f"/invoices/{inv_id}").text.split('id="review-box"')[1].split("</section>")[0]
+
+    assert "anderer Empfänger: Familie" in box  # aktueller Grund aus den Blockern
+    assert "Ursprünglicher Grund: alter Grund XY" in box
+    assert 'name="confirm"' not in box.split("/dismiss")[0]
+
+    resp = c.post(f"/invoices/{inv_id}/export", follow_redirects=False)
+    assert resp.status_code == 303 and resp.headers["location"] == f"/invoices/{inv_id}?ask=1"
+    ask = c.get(f"/invoices/{inv_id}?ask=1").text
+    assert 'id="export-ask"' in ask and "anderer Empfänger: Familie" in ask
+
+
+def test_review_kasten_ohne_aktuellen_grund_sagt_das(client, monkeypatch):
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Pruefen", label="IT-Consulting")
+    repo.set_review(inv_id, "anderer Empfänger: Familie (nicht IT-Consulting)")
+
+    box = c.get(f"/invoices/{inv_id}").text.split('id="review-box"')[1]
+
+    assert "kein Rückfragegrund mehr" in box
+    assert "Ursprünglicher Grund: anderer Empfänger: Familie" in box
+
+
+def test_nicht_exportiert_filter_blendet_gesperrte_rechnungen_aus(client):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    repo = application.state.repo
+    offen = _invoice(repo, 1, "Rg-offen", label="IT-Consulting")
+    unklar = _invoice(repo, 2, "Rg-unklar", label="IT-Consulting")
+    repo.set_sevdesk_status(unklar, SevdeskStatus.UNCERTAIN)
+    laeuft = _invoice(repo, 3, "Rg-laeuft", label="IT-Consulting")
+    repo.set_sevdesk_status(laeuft, SevdeskStatus.EXPORTING)
+    fehlt = repo.upsert_invoice(
+        paperless_id=4, title="Rg-fehlt", correspondent=None, paperless_voucher_ref="404"
+    )
+    repo.replace_vouchers([])
+    repo.set_sevdesk_sync_success()
+    alle = ("Rg-offen", "Rg-unklar", "Rg-laeuft", "Rg-fehlt")
+
+    html = c.get("/invoices", params={"open": "1"}).text
+
+    assert _titles_in(html, *alle) == ["Rg-offen"]
+    assert offen and fehlt
+
+
+def test_treffer_route_unbekannte_rechnung_404_ohne_sperre(client, monkeypatch):
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+
+    resp = c.post("/invoices/999/matches/V1", data={"decision": "reject"})
+
+    assert resp.status_code == 404
+    assert repo.list_matches() == []
+
+
+def test_treffer_route_entscheidet_nur_offene_aehnliche_treffer(client, monkeypatch):
+    from app.models import InvoiceVoucherMatch, MatchKind
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Hosting", label="IT-Consulting", amount=20.0)
+    repo.replace_auto_matches(
+        [
+            InvoiceVoucherMatch(
+                invoice_id=inv_id, voucher_id="REAL", kind=MatchKind.SIMILAR, score=0.8
+            )
+        ]
+    )
+
+    for decision in ("confirm", "reject"):
+        resp = c.post(
+            f"/invoices/{inv_id}/matches/ERFUNDEN", data={"decision": decision},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 404
+    assert {m.voucher_id: m.kind for m in repo.list_matches([inv_id])} == {
+        "REAL": MatchKind.SIMILAR
+    }  # keine Sperre durch erfundene ID
+
+    ok = c.post(
+        f"/invoices/{inv_id}/matches/REAL", data={"decision": "reject"}, follow_redirects=False
+    )
+    assert ok.status_code == 303
+    # Erneutes Absenden derselben Entscheidung ist harmlos.
+    again = c.post(
+        f"/invoices/{inv_id}/matches/REAL", data={"decision": "reject"}, follow_redirects=False
+    )
+    assert again.status_code == 303
+    assert repo.list_matches([inv_id])[0].kind == MatchKind.REJECTED
+
+
+def test_bestaetigter_treffer_bei_uncertain_setzt_exported_mit_beleg(client, monkeypatch):
+    from app.models import InvoiceVoucherMatch, MatchKind, SevdeskStatus, SevdeskVoucher
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Hosting", label="IT-Consulting", amount=20.0, date="2026-10-03")
+    repo.set_sevdesk_status(inv_id, SevdeskStatus.UNCERTAIN, error_message="unklar")
+    repo.replace_vouchers([SevdeskVoucher(voucher_id="987", voucher_date="2026-10-03")])
+    repo.set_sevdesk_sync_success()
+    repo.replace_auto_matches(
+        [
+            InvoiceVoucherMatch(
+                invoice_id=inv_id, voucher_id="987", kind=MatchKind.SIMILAR, score=0.9
+            )
+        ]
+    )
+
+    c.post(f"/invoices/{inv_id}/matches/987", data={"decision": "confirm"})
+
+    inv = repo.get_invoice(inv_id)
+    assert inv.sevdesk_status == SevdeskStatus.EXPORTED and inv.sevdesk_voucher_id == "987"
+    assert any(e["event_type"] == "sevdesk_exported" for e in repo.list_invoice_events(inv_id))
+
+
+def test_abgelehnter_treffer_bei_uncertain_aendert_status_nicht(client, monkeypatch):
+    from app.models import InvoiceVoucherMatch, MatchKind, SevdeskStatus
+
+    c, application = client
+    _sevdesk_on(application, monkeypatch)
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Hosting", label="IT-Consulting", amount=20.0)
+    repo.set_sevdesk_status(inv_id, SevdeskStatus.UNCERTAIN)
+    repo.replace_auto_matches(
+        [
+            InvoiceVoucherMatch(
+                invoice_id=inv_id, voucher_id="987", kind=MatchKind.SIMILAR, score=0.9
+            )
+        ]
+    )
+
+    c.post(f"/invoices/{inv_id}/matches/987", data={"decision": "reject"})
+
+    assert repo.get_invoice(inv_id).sevdesk_status == SevdeskStatus.UNCERTAIN
+
+
+def test_rueckschrieb_offen_in_detail_und_liste_bis_nachgeholt(client):
+    from app.models import SevdeskStatus
+
+    c, application = client
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Exportiert", label="IT-Consulting")
+    repo.set_sevdesk_status(inv_id, SevdeskStatus.EXPORTED, voucher_id="V1")
+
+    hinweis = "Rückschrieb an Paperless offen — wird beim nächsten Sync nachgeholt."
+    assert hinweis in c.get(f"/invoices/{inv_id}").text
+    assert "Rückschrieb offen" in c.get("/invoices").text
+
+    repo.mark_written_back(inv_id)
+
+    assert hinweis not in c.get(f"/invoices/{inv_id}").text
+    assert "Rückschrieb offen" not in c.get("/invoices").text
+
+
+def test_rueckschrieb_fehler_ereignis_hat_label_im_verlauf(client):
+    from app.models import InvoiceEventType
+
+    c, application = client
+    repo = application.state.repo
+    inv_id = _invoice(repo, 1, "Exportiert", label="IT-Consulting")
+    repo.add_invoice_event(inv_id, InvoiceEventType.WRITE_BACK_FAILED, "ConnectError: weg")
+
+    html = c.get(f"/invoices/{inv_id}").text
+
+    assert "Rückschrieb fehlgeschlagen" in html and "ConnectError: weg" in html

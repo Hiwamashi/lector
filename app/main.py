@@ -18,10 +18,10 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, BinaryIO
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, quote, urlencode
 
 import httpx
-from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse,
@@ -54,12 +54,24 @@ from .decisions import DecisionResult, discard_document, release_document
 from .events import EventBus
 from .fileops import sanitize_upload_filename, store_upload
 from .girocode import PaymentData, qr_svg
+from .invoice_overview import (
+    FILTERED_LIMIT,
+    SEVDESK_VOUCHER_URL,
+    UNFILTERED_LIMIT,
+    InvoiceRow,
+    OverviewFilters,
+    apply_filters,
+    build_rows,
+    candidates_of,
+)
 from .models import (
+    ContextSource,
     DocStatus,
     DocType,
     EventType,
     GiroStatus,
     InvoiceEventType,
+    MatchKind,
     RecipientStatus,
     SevdeskStatus,
 )
@@ -68,6 +80,8 @@ from .paperless import LoginResult, obtain_token
 from .paperless_sync import PaperlessSync
 from .recovery import resolve_stale_processing
 from .repository import Repository
+from .sevdesk_export_checks import ExportStatus
+from .sevdesk_matching import MatchState
 from .worker import Worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -118,7 +132,13 @@ EVENT_LABELS = {
     InvoiceEventType.SEVDESK_EXPORTED: "Nach SevDesk exportiert",
     InvoiceEventType.SEVDESK_FAILED: "SevDesk-Export fehlgeschlagen",
     InvoiceEventType.WRITTEN_BACK: "Nach Paperless zurückgeschrieben",
+    InvoiceEventType.WRITE_BACK_FAILED: "Rückschrieb fehlgeschlagen",
     InvoiceEventType.MARKED_PAID: "Überweisung",
+    InvoiceEventType.SEVDESK_REVIEW: "Zu prüfen",
+    InvoiceEventType.SEVDESK_DISMISSED: "Prüffall verworfen",
+    InvoiceEventType.MATCH_CONFIRMED: "Beleg bestätigt",
+    InvoiceEventType.MATCH_REJECTED: "Beleg als anderer markiert",
+    InvoiceEventType.VOUCHERS_SYNCED: "SevDesk-Belege abgerufen",
 }
 
 PAYMENT_SOURCE_LABELS = {
@@ -152,6 +172,54 @@ def _fmt_amount_input(value: float | None) -> str:
     return "" if value is None else f"{value:.2f}".replace(".", ",")
 
 
+def _fmt_percent(value: float | None) -> str:
+    """Konfidenz als ganze Prozent: ``0,95`` -> ``95 %``."""
+    return "—" if value is None else f"{round(value * 100)} %"
+
+
+def _fmt_score(value: float | None) -> str:
+    """Score mit Komma: ``0.874`` -> ``0,87``."""
+    return "—" if value is None else f"{value:.2f}".replace(".", ",")
+
+
+def _ctx_source_label(assessment) -> str:
+    """Quelle einer Einstufung für die Zeile: „Empfänger“, „Korrespondent 3/3“, „KI“."""
+    source = assessment.source
+    if source == ContextSource.RECIPIENT:
+        return "Empfänger"
+    if source == ContextSource.CORRESPONDENT:
+        # detail beginnt mit „<n>/<n> …“ (siehe context_classification).
+        ratio = (assessment.detail or "").split(" ", 1)[0]
+        return f"Korrespondent {ratio}".strip()
+    if source == ContextSource.LLM:
+        return "KI"
+    return ""
+
+
+def _voucher_url(voucher_id: str) -> str:
+    """Link auf einen Beleg in SevDesk."""
+    return SEVDESK_VOUCHER_URL.format(id=quote(str(voucher_id), safe=""))
+
+
+def _fmt_iso_date(value: str | None) -> str:
+    """``2026-10-03`` (Belegdatum aus dem Abzug) -> ``03.10.2026``."""
+    if not value:
+        return "—"
+    try:
+        return datetime.fromisoformat(value[:10]).strftime("%d.%m.%Y")
+    except ValueError:
+        return value
+
+
+def _ctx_label(row: InvoiceRow, context_label: str) -> str:
+    """Bucket-Kennzeichnung der Zeile; „IT-Consulting“ trägt das konfigurierte Label."""
+    if row.assessment.source == ContextSource.UNAVAILABLE:
+        return CONTEXT_UNAVAILABLE_LABEL
+    if row.bucket == "it":
+        return context_label
+    return CONTEXT_BUCKET_LABELS[row.bucket]
+
+
 def _fmt_dt(value: datetime | None) -> str:
     if value is None:
         return "—"
@@ -171,6 +239,37 @@ SEVDESK_LABELS = {
     SevdeskStatus.EXPORTED: "Exportiert",
     SevdeskStatus.FAILED: "Fehlgeschlagen",
     SevdeskStatus.UNCERTAIN: "Unklar – prüfen",
+    SevdeskStatus.REVIEW: "Zu prüfen",
+    SevdeskStatus.DISMISSED: "Verworfen",
+}
+
+# Export-Übersicht: Kontext-Einstufung (Bucket), Abgleich mit SevDesk, Ergebnis des
+# Mehrfachexports. Die Zeile „Kontext“ nennt zusätzlich Konfidenz und Quelle (siehe
+# `_ctx_source_label`).
+CONTEXT_BUCKET_LABELS = {
+    "it": "IT-Consulting",
+    "unsure": "Unsicher",
+    "not_it": "Nicht IT-Consulting",
+    "unknown": "Nicht eingeschätzt",
+}
+CONTEXT_UNAVAILABLE_LABEL = "Nicht einstufbar"
+
+MATCH_STATE_LABELS = {
+    MatchState.UNAVAILABLE: "Abgleich nicht verfügbar",
+    MatchState.IN_SEVDESK: "In SevDesk",
+    MatchState.MISSING_IN_SEVDESK: "Beleg in SevDesk nicht gefunden",
+    MatchState.POSSIBLE_DUPLICATE: "Mögliche Dublette",
+    MatchState.NO_AMOUNT: "Ohne Betrag nicht prüfbar",
+    MatchState.NO_MATCH: "Kein Treffer",
+}
+
+EXPORT_RESULT_LABELS = {
+    ExportStatus.EXPORTED: "Exportiert",
+    ExportStatus.SKIPPED: "Übersprungen",
+    ExportStatus.BLOCKED: "Übersprungen",
+    ExportStatus.NEEDS_CONFIRMATION: "Übersprungen",
+    ExportStatus.FAILED: "Fehlgeschlagen",
+    ExportStatus.UNCERTAIN: "Unklar – prüfen",
 }
 
 GIRO_LABELS = {
@@ -260,6 +359,12 @@ _static_versions: dict[str, str] = {}
 templates.env.filters["fmt_dt"] = _fmt_dt
 templates.env.filters["fmt_date"] = _fmt_date
 templates.env.filters["fmt_amount"] = _fmt_amount
+templates.env.filters["fmt_percent"] = _fmt_percent
+templates.env.filters["fmt_score"] = _fmt_score
+templates.env.filters["ctx_source_label"] = _ctx_source_label
+templates.env.filters["ctx_label"] = _ctx_label
+templates.env.filters["voucher_url"] = _voucher_url
+templates.env.filters["fmt_iso_date"] = _fmt_iso_date
 templates.env.filters["fmt_amount_input"] = _fmt_amount_input
 templates.env.filters["doc_type_label"] = _label(DOC_TYPE_LABELS)
 templates.env.filters["event_label"] = _label(EVENT_LABELS)
@@ -267,6 +372,8 @@ templates.env.filters["payment_source_label"] = _label(PAYMENT_SOURCE_LABELS)
 templates.env.globals["status_labels"] = STATUS_LABELS
 templates.env.globals["sevdesk_labels"] = SEVDESK_LABELS
 templates.env.globals["giro_labels"] = GIRO_LABELS
+templates.env.globals["context_bucket_labels"] = CONTEXT_BUCKET_LABELS
+templates.env.globals["match_state_labels"] = MATCH_STATE_LABELS
 templates.env.globals["recipient_status_labels"] = RECIPIENT_STATUS_LABELS
 templates.env.globals["static_url"] = static_url
 
@@ -907,66 +1014,261 @@ def _invoice_sort(sort: str | None, direction: str | None) -> tuple[str, bool]:
     return key, descending
 
 
-@app.get("/invoices", response_class=HTMLResponse)
-async def invoices(
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "on", "yes")
+
+
+# Parameter, die eine Rückkehr zur Übersicht mit denselben Filtern/Sortierung tragen darf.
+_OVERVIEW_PARAMS = ("q", "sevdesk", "ctx", "open", "dup", "review", "sort", "dir")
+
+
+def _overview_back(back: str | None) -> str:
+    """Baut aus dem Formularfeld ``back`` eine sichere Rückkehr-URL (nur bekannte Parameter,
+    nur relativ auf ``/invoices`` — nie ein vom Client gelieferter Pfad)."""
+    kept = [(k, v) for k, v in parse_qsl(back or "") if k in _OVERVIEW_PARAMS and v]
+    return f"/invoices?{urlencode(kept)}" if kept else "/invoices"
+
+
+def _invoice_title(inv, invoice_id: int) -> str:
+    if inv is None:
+        return f"#{invoice_id}"
+    return inv.title or f"#{inv.paperless_id}"
+
+
+def _overview_context(
     request: Request,
-    sevdesk: str | None = Query(None),
-    q: str | None = Query(None),
-    sort: str | None = Query(None),
-    dir: str | None = Query(None),
-):
+    *,
+    sevdesk: str | None,
+    q: str | None,
+    ctx: str | None,
+    open_: str | None,
+    dup: str | None,
+    review: str | None,
+    sort: str | None,
+    dir: str | None,
+) -> dict:
+    """Gemeinsamer Kontext von Seite und Fragment der Export-Übersicht.
+
+    Beide Endpunkte rendern dasselbe Partial; ein Schlüssel, den nur die Seite lieferte,
+    ließe das Fragment (SSE-Refresh) anders aussehen als die Seite. Deshalb EIN Aufbau.
+    Einstufung und Abgleich entstehen einmal je Aufruf aus SQLite für die geladene Menge
+    (`build_rows`); es gibt keinen Paperless-/SevDesk-/KI-Aufruf.
+    """
     repo: Repository = request.app.state.repo
     settings = request.app.state.settings
+    sync: PaperlessSync = request.app.state.sync
     status_enum, search = _invoice_filters(sevdesk, q)
     sort_key, descending = _invoice_sort(sort, dir)
-    items = repo.list_invoices(
-        sevdesk_status=status_enum, search=search, sort=sort_key, descending=descending
+    filters = OverviewFilters(
+        ctx_it=(ctx or "").lower() == "it",
+        open_only=_truthy(open_),
+        duplicate=_truthy(dup),
+        review=_truthy(review),
     )
-    return templates.TemplateResponse(
-        request,
-        "invoices.html",
+    filtered = bool(status_enum or search or filters.active)
+
+    # „zu prüfen“ ist ein Status: als SQL-Filter, damit die Obergrenze nicht davor greift.
+    # Kollidiert er mit einem anderen gewählten Status, ist die Schnittmenge leer.
+    sql_status = status_enum
+    empty = False
+    if filters.review:
+        if sql_status is None:
+            sql_status = SevdeskStatus.REVIEW
+        elif sql_status != SevdeskStatus.REVIEW:
+            empty = True
+    items = []
+    if not empty:
+        items = repo.list_invoices(
+            sevdesk_status=sql_status,
+            search=search,
+            sort=sort_key,
+            descending=descending,
+            limit=FILTERED_LIMIT if filters.needs_python else UNFILTERED_LIMIT,
+        )
+    option = sync.recipient_option_available(settings.sevdesk_context_label)
+    overview = build_rows(
+        repo,
+        items,
+        context_label=settings.sevdesk_context_label,
+        threshold=settings.sevdesk_context_min_confidence,
+        option_available=option,
+    )
+    rows = apply_filters(overview.rows, filters)
+
+    params = {
+        "q": q or "",
+        "sevdesk": sevdesk or "",
+        "ctx": "it" if filters.ctx_it else "",
+        "open": "1" if filters.open_only else "",
+        "dup": "1" if filters.duplicate else "",
+        "review": "1" if filters.review else "",
+    }
+    filter_query = urlencode({k: v for k, v in params.items() if v})
+    page_query = urlencode(
         {
-            "invoices": items,
-            "filters": {"sevdesk": sevdesk or "", "q": q or ""},
-            "filtered": bool(status_enum or search),
-            "sort": {"key": sort_key, "dir": "desc" if descending else "asc"},
-            "feature_sync": settings.feature_paperless_sync,
-            "feature_sevdesk": settings.feature_sevdesk_export,
-        },
+            **{k: v for k, v in params.items() if v},
+            "sort": sort_key,
+            "dir": "desc" if descending else "asc",
+        }
+    )
+    return {
+        "rows": rows,
+        "filters": params,
+        "filter_query": filter_query,
+        "page_query": page_query,
+        "filtered": filtered,
+        "sort": {"key": sort_key, "dir": "desc" if descending else "asc"},
+        "feature_sync": settings.feature_paperless_sync,
+        "feature_sevdesk": settings.feature_sevdesk_export,
+        "sevdesk_enabled": sync.sevdesk_enabled,
+        "context_label": settings.sevdesk_context_label,
+        "context_threshold": settings.sevdesk_context_min_confidence,
+        "sync_state": overview.sync_state,
+        "sync_available": overview.sync_available,
+        "option_missing": option is False,
+    }
+
+
+def _overview_params(
+    sevdesk: str | None = Query(None),
+    q: str | None = Query(None),
+    ctx: str | None = Query(None),
+    open_: str | None = Query(None, alias="open"),
+    dup: str | None = Query(None),
+    review: str | None = Query(None),
+    sort: str | None = Query(None),
+    dir: str | None = Query(None),
+) -> dict:
+    return {
+        "sevdesk": sevdesk,
+        "q": q,
+        "ctx": ctx,
+        "open_": open_,
+        "dup": dup,
+        "review": review,
+        "sort": sort,
+        "dir": dir,
+    }
+
+
+OverviewParams = Annotated[dict, Depends(_overview_params)]
+
+
+@app.get("/invoices", response_class=HTMLResponse)
+async def invoices(request: Request, params: OverviewParams):
+    return templates.TemplateResponse(
+        request, "invoices.html", _overview_context(request, **params)
     )
 
 
 @app.get("/fragment/invoices", response_class=HTMLResponse)
-async def invoices_fragment(
-    request: Request,
-    sevdesk: str | None = Query(None),
-    q: str | None = Query(None),
-    sort: str | None = Query(None),
-    dir: str | None = Query(None),
-):
-    repo: Repository = request.app.state.repo
-    status_enum, search = _invoice_filters(sevdesk, q)
-    sort_key, descending = _invoice_sort(sort, dir)
-    items = repo.list_invoices(
-        sevdesk_status=status_enum, search=search, sort=sort_key, descending=descending
+async def invoices_fragment(request: Request, params: OverviewParams):
+    return templates.TemplateResponse(
+        request, "partials/invoice_rows.html", _overview_context(request, **params)
     )
+
+
+def _overview_status_context(request: Request) -> dict:
+    """Abrufstand und Optionshinweis — ohne Filter, ändert sich mit `vouchers:sync`."""
+    settings = request.app.state.settings
+    sync: PaperlessSync = request.app.state.sync
+    repo: Repository = request.app.state.repo
+    state = repo.get_sevdesk_sync_state()
+    return {
+        "sevdesk_enabled": sync.sevdesk_enabled,
+        "sync_state": state,
+        "sync_available": state.last_success_at is not None,
+        "context_label": settings.sevdesk_context_label,
+        "option_missing": sync.recipient_option_available(settings.sevdesk_context_label)
+        is False,
+    }
+
+
+# Statisch, daher VOR `/fragment/invoices/{invoice_id}` (sonst 422 wegen int-Parsing).
+@app.get("/fragment/invoices/overview-status", response_class=HTMLResponse)
+async def invoices_overview_status(request: Request):
+    return templates.TemplateResponse(
+        request, "partials/invoice_overview_status.html", _overview_status_context(request)
+    )
+
+
+@app.post("/invoices/sevdesk-refresh")
+async def invoices_sevdesk_refresh(request: Request, back: str = Form("")):
+    """Ruft die SevDesk-Belege sofort ab; ein Fehler steht danach im Abrufstand."""
+    sync: PaperlessSync = request.app.state.sync
+    await sync.sync_vouchers()
+    return RedirectResponse(_overview_back(back), status_code=303)
+
+
+@app.post("/invoices/export-batch", response_class=HTMLResponse)
+async def invoices_export_batch(
+    request: Request,
+    ids: Annotated[list[int] | None, Form()] = None,
+    back: str = Form(""),
+):
+    """Mehrfachexport. Das Ergebnis wird direkt als Seite gezeigt (kein Redirect): so
+    braucht es keinen Zwischenspeicher, und jede Rechnung nennt ihren Grund.
+
+    Ein erneutes Absenden ist harmlos — exportierte Rechnungen sind danach gesperrt und
+    kommen als „übersprungen“ zurück (Claim gegen Doppel-Belege).
+    """
+    repo: Repository = request.app.state.repo
+    sync: PaperlessSync = request.app.state.sync
+    selected = list(dict.fromkeys(ids or []))
+    back_url = _overview_back(back)
+    if not selected:
+        return RedirectResponse(back_url, status_code=303)
+    results = await sync.export_invoices(selected)
+    entries = []
+    for invoice_id, outcome in results:
+        inv = repo.get_invoice(invoice_id)
+        entries.append(
+            {
+                "id": invoice_id,
+                "title": _invoice_title(inv, invoice_id),
+                "status": outcome.status,
+                "label": EXPORT_RESULT_LABELS.get(outcome.status, str(outcome.status)),
+                "reasons": outcome.reasons or ([outcome.message] if outcome.message else []),
+            }
+        )
+    exported = sum(1 for e in entries if e["status"] == ExportStatus.EXPORTED)
     return templates.TemplateResponse(
         request,
-        "partials/invoice_rows.html",
-        {"invoices": items, "filtered": bool(status_enum or search)},
+        "invoice_batch_result.html",
+        {
+            "entries": entries,
+            "exported": exported,
+            "not_exported": len(entries) - exported,
+            "back_url": back_url,
+        },
     )
 
 
-def _invoice_detail_context(request: Request, invoice_id: int):
+def _invoice_detail_context(request: Request, invoice_id: int, ask: bool = False):
     repo: Repository = request.app.state.repo
     settings = request.app.state.settings
+    sync: PaperlessSync = request.app.state.sync
     inv = repo.get_invoice(invoice_id)
     if inv is None:
         return None
     public_url = (settings.paperless_public_url or settings.paperless_url).rstrip("/")
     document_url = f"{public_url}/documents/{inv.paperless_id}/details" if public_url else ""
+    option = sync.recipient_option_available(settings.sevdesk_context_label)
+    overview = build_rows(
+        repo,
+        [inv],
+        context_label=settings.sevdesk_context_label,
+        threshold=settings.sevdesk_context_min_confidence,
+        option_available=option,
+    )
+    row = overview.rows[0]
     return {
         "inv": inv,
+        "row": row,
+        "candidates": candidates_of(repo, row),
+        "ask": ask,
+        "context_label": settings.sevdesk_context_label,
+        "option_missing": option is False,
         "giro_svg": _giro_svg(inv),
         "events": repo.list_invoice_events(invoice_id),
         "feature_sevdesk": settings.feature_sevdesk_export,
@@ -976,16 +1278,18 @@ def _invoice_detail_context(request: Request, invoice_id: int):
 
 
 @app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
-async def invoice_detail(request: Request, invoice_id: int):
-    ctx = _invoice_detail_context(request, invoice_id)
+async def invoice_detail(request: Request, invoice_id: int, ask: str | None = Query(None)):
+    ctx = _invoice_detail_context(request, invoice_id, ask=_truthy(ask))
     if ctx is None:
         return HTMLResponse("Rechnung nicht gefunden", status_code=404)
     return templates.TemplateResponse(request, "invoice_detail.html", ctx)
 
 
 @app.get("/fragment/invoices/{invoice_id}", response_class=HTMLResponse)
-async def invoice_detail_fragment(request: Request, invoice_id: int):
-    ctx = _invoice_detail_context(request, invoice_id)
+async def invoice_detail_fragment(
+    request: Request, invoice_id: int, ask: str | None = Query(None)
+):
+    ctx = _invoice_detail_context(request, invoice_id, ask=_truthy(ask))
     if ctx is None:
         return HTMLResponse("", status_code=404)
     return templates.TemplateResponse(request, "partials/invoice_detail_body.html", ctx)
@@ -1058,9 +1362,63 @@ async def invoice_save_giro(
 
 
 @app.post("/invoices/{invoice_id}/export")
-async def invoice_export(request: Request, invoice_id: int):
+async def invoice_export(request: Request, invoice_id: int, confirm: str = Form("")):
+    """Exportiert eine Rechnung. Mit Rückfragegrund und ohne ``confirm=1`` passiert nichts:
+    die Detailseite zeigt dann die Rückfrage mit den Gründen (``?ask=1``). Eine harte Sperre
+    steht dort ohnehin am Export-Knopf — Bestätigen ändert daran nichts."""
     sync: PaperlessSync = request.app.state.sync
-    await sync.export_invoice(invoice_id)
+    outcome = await sync.export_invoice(invoice_id, confirmed=_truthy(confirm))
+    if outcome.status == ExportStatus.NEEDS_CONFIRMATION:
+        return RedirectResponse(f"/invoices/{invoice_id}?ask=1", status_code=303)
+    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+
+
+@app.post("/invoices/{invoice_id}/dismiss")
+async def invoice_dismiss(request: Request, invoice_id: int):
+    """Verwirft einen Prüffall; bei exportierten/laufenden/unklaren Rechnungen wirkungslos."""
+    sync: PaperlessSync = request.app.state.sync
+    sync.dismiss_invoice(invoice_id)
+    return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+
+
+@app.post("/invoices/{invoice_id}/matches/{voucher_id}")
+async def invoice_match_decision(
+    request: Request, invoice_id: int, voucher_id: str, decision: str = Form("")
+):
+    """Hält fest, ob ein ähnlicher Beleg derselbe (``confirm``) oder ein anderer
+    (``reject``) ist, und berechnet danach den Abgleich neu."""
+    if decision not in ("confirm", "reject"):
+        return HTMLResponse("Unbekannte Entscheidung", status_code=400)
+    repo: Repository = request.app.state.repo
+    sync: PaperlessSync = request.app.state.sync
+    inv = repo.get_invoice(invoice_id)
+    if inv is None:
+        return HTMLResponse("Rechnung nicht gefunden", status_code=404)
+    confirmed = decision == "confirm"
+    wanted = MatchKind.CONFIRMED if confirmed else MatchKind.REJECTED
+    pair_kinds = {m.kind for m in repo.list_matches([invoice_id]) if m.voucher_id == voucher_id}
+    if wanted in pair_kinds:
+        # Doppelklick/erneutes Absenden: die Entscheidung steht schon.
+        return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
+    if MatchKind.SIMILAR not in pair_kinds:
+        # Nur offene ähnliche Treffer sind entscheidbar — keine Sperre durch erfundene IDs.
+        return HTMLResponse("Kein offener Treffer für dieses Paar", status_code=404)
+    if repo.decide_match(invoice_id, voucher_id, confirmed):
+        repo.add_invoice_event(
+            invoice_id,
+            InvoiceEventType.MATCH_CONFIRMED if confirmed else InvoiceEventType.MATCH_REJECTED,
+            f"Beleg {voucher_id}",
+        )
+        if confirmed and inv.sevdesk_status == SevdeskStatus.UNCERTAIN:
+            # Unklarer Export aufgelöst: der bestätigte Beleg IST der Export dieser Rechnung.
+            repo.set_sevdesk_status(invoice_id, SevdeskStatus.EXPORTED, voucher_id=voucher_id)
+            repo.add_invoice_event(
+                invoice_id,
+                InvoiceEventType.SEVDESK_EXPORTED,
+                f"Beleg {voucher_id} (als unklaren Export bestätigt)",
+            )
+        sync.recompute_matches()
+        repo.notify_vouchers()
     return RedirectResponse(f"/invoices/{invoice_id}", status_code=303)
 
 

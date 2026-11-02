@@ -14,6 +14,9 @@
   paginierte Abfrage (`/api/correspondents/`). Von `PaperlessSync` einmal je Lauf genutzt
   (Details: `sync-und-aktionen.md`), statt `get_correspondent_name` je Dokument aufzurufen.
 - `download_original(id)` — Originaldatei + Dateiname (`/api/documents/{id}/download/?original=true`).
+- `get_notes(id)` — Texte der Notizen eines Dokuments (`/api/documents/{id}/notes/`). Genutzt vom
+  Rückschrieb des SevDesk-Exports, damit die Export-Notiz beim Nachholen nicht doppelt entsteht
+  (`sync-und-aktionen.md`).
 
 `PaperlessDocument` bündelt `id, title, content (OCR-Text), correspondent_id,
 document_type_id, tag_ids, custom_fields, original_file_name`.
