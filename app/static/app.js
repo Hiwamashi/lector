@@ -1,5 +1,6 @@
 // Live-Updates via Server-Sent Events. Tokens haben die Form "doc:<id>" (Dokumente),
-// "inv:<id>" (Paperless-Rechnungen) bzw. "batch:recipient" (Fortschritt des KI-Laufs).
+// "inv:<id>" (Paperless-Rechnungen), "vouchers:sync" (SevDesk-Belegabzug) bzw.
+// "batch:recipient" (Fortschritt des KI-Laufs).
 // Bei einem passenden Ereignis wird der dynamische Bereich der aktuellen Seite
 // (Listentabelle bzw. Detailansicht) neu geladen und ersetzt. Antworten mit Fehlerstatus
 // (z.B. 503, wenn Paperless gerade nicht erreichbar ist) werden verworfen — der zuletzt
@@ -101,9 +102,48 @@
     setTimeout(function () { row.classList.remove("row-updated"); }, FLASH_MS);
   }
 
+  // Mehrfachauswahl der Rechnungsliste (Checkboxen name="ids" mit data-select). Ein SSE-
+  // Refresh ersetzt die ganze Tabelle per innerHTML und wuerde die Haken verlieren — mitten
+  // in einer Auswahl waere das ein Datenverlust fuer den Nutzer. Statt den Refresh zu
+  // pausieren (dann stuende die Liste waehrend der Auswahl still, und ein Export-Ergebnis
+  // oder neue Belege wuerden nicht sichtbar) werden die gewaehlten IDs vor dem Tausch
+  // gesichert und danach wiederhergestellt. Zeilen, die verschwunden oder nicht mehr
+  // exportierbar sind, haben danach keine Checkbox mehr und fallen so aus der Auswahl.
+  function gewaehlteIds(container) {
+    var ids = {};
+    var boxes = container.querySelectorAll("input[data-select]:checked");
+    for (var i = 0; i < boxes.length; i++) ids[boxes[i].value] = true;
+    return ids;
+  }
+
+  function stelleAuswahlHer(container, ids) {
+    var boxes = container.querySelectorAll("input[data-select]");
+    for (var i = 0; i < boxes.length; i++) {
+      if (ids[boxes[i].value]) boxes[i].checked = true;
+    }
+  }
+
+  function aktualisiereAuswahlKnopf() {
+    var knopf = document.getElementById("batch-export");
+    if (!knopf) return;
+    var n = document.querySelectorAll("input[data-select]:checked").length;
+    knopf.disabled = n === 0;
+    var basis = knopf.getAttribute("data-label") || knopf.textContent;
+    knopf.textContent = n > 0 ? basis + " (" + n + ")" : basis;
+  }
+
+  document.addEventListener("change", function (ev) {
+    if (ev.target && ev.target.matches && ev.target.matches("input[data-select]")) {
+      aktualisiereAuswahlKnopf();
+    }
+  });
+
   function applyRows(body, html) {
     var vorher = signaturen(body);
+    var auswahl = gewaehlteIds(body);
     body.innerHTML = html;
+    stelleAuswahlHer(body, auswahl);
+    aktualisiereAuswahlKnopf();
     var rows = body.querySelectorAll("tr[data-row-id]");
     for (var i = 0; i < rows.length; i++) {
       // Unbekannte id = neue Zeile, abweichende Signatur = geaenderte Zeile. Beides
@@ -195,6 +235,14 @@
         mine
       ));
     }
+    var status = document.getElementById("overview-status");
+    if (status && status.getAttribute("data-fragment")) {
+      jobs.push(loadFragment(
+        status.getAttribute("data-fragment"), undefined,
+        function (html) { status.innerHTML = html; },
+        mine
+      ));
+    }
     var batch = document.getElementById("batch-status");
     if (batch && batch.getAttribute("data-fragment")) {
       jobs.push(loadFragment(
@@ -225,6 +273,7 @@
 
   // Vor dem EventSource-Check: Ohne SSE-Unterstuetzung soll der Fortschritt trotzdem laufen.
   syncBatchPolling();
+  aktualisiereAuswahlKnopf();
 
   if (!window.EventSource) return;
   var source = new EventSource("/events");

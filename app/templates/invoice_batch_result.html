@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Mehrfachexport — Lector{% endblock %}
+{% block content %}
+<a class="link back" href="{{ back_url }}">← Alle Rechnungen</a>
+<h1>Mehrfachexport</h1>
+
+<div class="notice {{ 'notice--success' if not_exported == 0 else 'notice--info' }}">
+  <p class="notice-text">
+    {{ exported }} {{ "Rechnung" if exported == 1 else "Rechnungen" }} exportiert{% if not_exported %},
+    {{ not_exported }} nicht exportiert{% endif %}.
+  </p>
+</div>
+
+<div class="table-scroll">
+<table class="history">
+  <thead>
+    <tr><th>Rechnung</th><th>Ergebnis</th><th>Grund</th></tr>
+  </thead>
+  <tbody>
+    {% for e in entries %}
+    <tr>
+      <td class="filename"><a href="/invoices/{{ e.id }}">{{ e.title }}</a></td>
+      <td><span class="badge badge--export-{{ e.status }}">{{ e.label }}</span></td>
+      <td>
+        {% for reason in e.reasons %}{{ reason }}{% if not loop.last %}<br />{% endif %}{% else %}—{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

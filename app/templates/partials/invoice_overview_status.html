@@ -1,0 +1,28 @@
+{# Abrufstand und Optionshinweis der Export-Übersicht; eigenes Fragment, damit er mit
+   `vouchers:sync` live nachzieht (siehe app.js, #overview-status). #}
+{% if option_missing %}
+<div class="notice notice--info overview-alert">
+  <p class="notice-text"><strong>Rechnungen sind nicht einstufbar.</strong> Im Paperless-Feld
+    „Empfänger“ fehlt die Option „{{ context_label }}“. Lege sie dort an, damit Lector den
+    Kontext einschätzen kann.</p>
+</div>
+{% endif %}
+{% if sevdesk_enabled %}
+  {% if sync_state.last_error %}
+  <div class="alert overview-alert">
+    <p class="notice-text"><strong>Abruf der SevDesk-Belege fehlgeschlagen</strong>
+      {% if sync_state.last_error_at %}am {{ sync_state.last_error_at | fmt_dt }}{% endif %}.
+      {% if sync_available %}
+      Angezeigt wird der Abgleich vom letzten erfolgreichen Abruf am {{ sync_state.last_success_at | fmt_dt }}.
+      {% else %}
+      Es gibt noch keinen erfolgreichen Abruf, der Abgleich ist nicht verfügbar.
+      {% endif %}
+    </p>
+    <p class="notice-text">Grund: {{ sync_state.last_error }}</p>
+  </div>
+  {% endif %}
+  <p class="muted">
+    {% if sync_available %}Abgleich: Stand {{ sync_state.last_success_at | fmt_dt }}
+    {% else %}Abgleich: noch nicht abgerufen{% endif %}
+  </p>
+{% endif %}

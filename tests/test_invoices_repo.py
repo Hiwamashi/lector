@@ -1,7 +1,19 @@
 import asyncio
+import sqlite3
+
+import pytest
 
 from app.config import Settings
-from app.models import GiroStatus, InvoiceEventType, SevdeskStatus
+from app.models import (
+    GiroStatus,
+    InvoiceEventType,
+    InvoiceVoucherMatch,
+    MatchKind,
+    RecipientStatus,
+    SevdeskStatus,
+    SevdeskVoucher,
+)
+from app.paperless import PaperlessClient
 from app.paperless_sync import PaperlessSync
 from app.repository import Repository
 
@@ -375,6 +387,13 @@ class _CorrCountingClient:
         self.single_lookup_calls.append(correspondent_id)
         return self._corr_map.get(correspondent_id)
 
+    async def resolve_select_field(self, name):
+        return None  # kein Empfänger-Feld: Spiegelung bleibt aus
+
+    @staticmethod
+    def select_value(doc, field_id):
+        return PaperlessClient.select_value(doc, field_id)
+
 
 async def test_sync_invoices_resolves_shared_correspondent_from_one_map(tmp_path, monkeypatch):
     """Mehrere Rechnungen mit DEMSELBEN Korrespondenten lösen den Namen ausschließlich
@@ -552,3 +571,272 @@ def test_reset_stale_exports_recovers_interrupted_claim(tmp_path):
     assert repo.claim_for_export(inv_id) is False
     # Idempotent: ein zweiter Lauf findet nichts mehr.
     assert repo.reset_stale_exports() == 0
+
+
+# --- SevDesk-Übersicht: Migration, Belegabzug, Treffer, Historie ----------------------
+
+_OLD_SCHEMA = """
+CREATE TABLE paperless_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, paperless_id INTEGER NOT NULL UNIQUE,
+    title TEXT, correspondent TEXT, creditor_name TEXT, iban TEXT, bic TEXT, amount REAL,
+    currency TEXT NOT NULL DEFAULT 'EUR', purpose TEXT, source TEXT,
+    giro_status TEXT NOT NULL DEFAULT 'none', sevdesk_status TEXT NOT NULL DEFAULT 'none',
+    sevdesk_voucher_id TEXT, paid INTEGER NOT NULL DEFAULT 0, exported_at TEXT,
+    written_back_at TEXT, last_synced_at TEXT, error_message TEXT, document_date TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE document_recipients (
+    paperless_id INTEGER PRIMARY KEY, suggested_label TEXT, confidence REAL, reasoning TEXT,
+    status TEXT NOT NULL DEFAULT 'none', updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO paperless_invoices (paperless_id, title, sevdesk_status)
+    VALUES (7, 'Alt', 'exported');
+INSERT INTO document_recipients (paperless_id, status) VALUES (7, 'applied');
+"""
+
+
+def _columns(conn, table):
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_migration_adds_new_columns_and_tables_to_old_db(tmp_path):
+    db = tmp_path / "alt.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_OLD_SCHEMA)
+    conn.commit()
+    conn.close()
+
+    repo = Repository(db)  # init_db() zieht die DB nach
+    conn = sqlite3.connect(db)
+    assert {"recipient_label", "paperless_voucher_ref", "review_reason"} <= _columns(
+        conn, "paperless_invoices"
+    )
+    assert "it_probability" in _columns(conn, "document_recipients")
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"sevdesk_vouchers", "invoice_voucher_matches", "sevdesk_sync_state"} <= tables
+    indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_invoices_recipient" in indexes
+    conn.close()
+    # Bestehende Daten bleiben lesbar, neue Felder sind leer.
+    inv = repo.get_invoice_by_paperless(7)
+    assert inv.sevdesk_status == SevdeskStatus.EXPORTED
+    assert inv.recipient_label is None and inv.review_reason is None
+    assert repo.get_recipient_cache(7).it_probability is None
+    # Zweiter Start ist idempotent.
+    Repository(db)
+
+
+def test_upsert_invoice_mirrors_paperless_fields_with_sentinel(tmp_path):
+    repo = make_repo(tmp_path)
+    inv_id = repo.upsert_invoice(
+        paperless_id=1, title="A", correspondent="Acme",
+        recipient_label="IT-Consulting", paperless_voucher_ref="V1",
+    )
+    inv = repo.get_invoice(inv_id)
+    assert inv.recipient_label == "IT-Consulting" and inv.paperless_voucher_ref == "V1"
+    # Ohne Kwarg bleiben die Werte stehen.
+    repo.upsert_invoice(paperless_id=1, title="A2", correspondent="Acme")
+    inv = repo.get_invoice(inv_id)
+    assert inv.recipient_label == "IT-Consulting" and inv.paperless_voucher_ref == "V1"
+    # None = in Paperless entfernt -> lokal NULL.
+    repo.upsert_invoice(
+        paperless_id=1, title="A2", correspondent="Acme",
+        recipient_label=None, paperless_voucher_ref=None,
+    )
+    inv = repo.get_invoice(inv_id)
+    assert inv.recipient_label is None and inv.paperless_voucher_ref is None
+
+
+def test_recipient_cache_it_probability_roundtrip_and_keep(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.set_recipient_cache(
+        5, suggested_label="Sascha", confidence=0.9, reasoning="x",
+        status=RecipientStatus.SUGGESTED, it_probability=0.8,
+    )
+    assert repo.get_recipient_cache(5).it_probability == 0.8
+    # mark_recipient_applied kennt den Wert nicht und darf ihn nicht löschen.
+    repo.mark_recipient_applied(5)
+    assert repo.get_recipient_cache(5).it_probability == 0.8
+    # Explizit None = nicht eingeschätzt.
+    repo.set_recipient_cache(
+        5, suggested_label=None, confidence=None, reasoning=None,
+        status=RecipientStatus.UNKNOWN, it_probability=None,
+    )
+    assert repo.get_recipient_caches([5])[5].it_probability is None
+
+
+def _v(vid, **kw):
+    return SevdeskVoucher(voucher_id=vid, voucher_date="2026-01-05", supplier_name="AWS",
+                          sum_gross=10.0, currency="EUR", **kw)
+
+
+def test_replace_vouchers_upserts_and_deletes_undelivered(tmp_path):
+    repo = make_repo(tmp_path)
+    assert repo.replace_vouchers([_v("1"), _v("2"), _v("3")]) == 0
+    deleted = repo.replace_vouchers([_v("2", description="neu"), _v("4")])
+    assert deleted == 2
+    by_id = {v.voucher_id: v for v in repo.list_vouchers()}
+    assert set(by_id) == {"2", "4"}
+    assert by_id["2"].description == "neu"
+    assert by_id["2"].last_seen_at is not None
+    assert repo.replace_vouchers([]) == 2
+    assert repo.list_vouchers() == []
+
+
+def test_upsert_voucher_adds_single_voucher(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.replace_vouchers([_v("1")])
+    repo.upsert_voucher(_v("9"))
+    assert {v.voucher_id for v in repo.list_vouchers()} == {"1", "9"}
+    assert repo.get_voucher("9").supplier_name == "AWS"
+    assert repo.get_voucher("nope") is None
+
+
+def test_sync_state_success_and_error(tmp_path):
+    repo = make_repo(tmp_path)
+    st = repo.get_sevdesk_sync_state()
+    assert st.last_success_at is None and st.last_error is None
+    repo.set_sevdesk_sync_error("Netz weg")
+    st = repo.get_sevdesk_sync_state()
+    assert st.last_error == "Netz weg" and st.last_error_at and st.last_success_at is None
+    repo.set_sevdesk_sync_success()
+    st = repo.get_sevdesk_sync_state()
+    assert st.last_success_at and st.last_error is None and st.last_error_at is None
+    repo.set_sevdesk_sync_error("wieder")
+    st = repo.get_sevdesk_sync_state()
+    assert st.last_error == "wieder" and st.last_success_at is not None  # bleibt stehen
+
+
+def _m(inv, vid, kind, score=None):
+    return InvoiceVoucherMatch(invoice_id=inv, voucher_id=vid, kind=kind, score=score)
+
+
+def _inv(repo, pid, corr="Acme", **kw):
+    return repo.upsert_invoice(paperless_id=pid, title=f"R{pid}", correspondent=corr, **kw)
+
+
+def test_replace_auto_matches_keeps_decisions(tmp_path):
+    repo = make_repo(tmp_path)
+    a, b = _inv(repo, 1), _inv(repo, 2)
+    repo.replace_auto_matches([_m(a, "V1", MatchKind.SIMILAR, 0.7), _m(b, "V2", MatchKind.ID)])
+    repo.decide_match(a, "V1", True)
+    repo.decide_match(a, "V3", False)
+    # Neuberechnung: alte similar/id verschwinden, Entscheidungen bleiben, ein erneuter
+    # automatischer Treffer auf ein entschiedenes Paar wird übersprungen.
+    repo.replace_auto_matches(
+        [_m(a, "V1", MatchKind.SIMILAR, 0.9), _m(a, "V3", MatchKind.SIMILAR, 0.5)]
+    )
+    got = {(m.invoice_id, m.voucher_id): m.kind for m in repo.list_matches()}
+    assert got == {(a, "V1"): MatchKind.CONFIRMED, (a, "V3"): MatchKind.REJECTED}
+    assert [m.voucher_id for m in repo.list_matches([a])] == ["V1", "V3"]
+    assert repo.list_matches([]) == []
+    with pytest.raises(ValueError):
+        repo.replace_auto_matches([_m(a, "V1", MatchKind.CONFIRMED)])
+
+
+def test_id_treffer_verdraengt_fruehere_rejected_entscheidung_desselben_paars(tmp_path):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1)
+    repo.replace_auto_matches([_m(a, "V1", MatchKind.SIMILAR, 0.7)])
+    repo.decide_match(a, "V1", False)  # „anderer Beleg“
+    repo.decide_match(a, "V2", False)  # bleibt: kein id-Treffer dazu
+
+    repo.replace_auto_matches([_m(a, "V1", MatchKind.ID, 1.0)])
+
+    got = {m.voucher_id: m.kind for m in repo.list_matches([a])}
+    assert got == {"V1": MatchKind.ID, "V2": MatchKind.REJECTED}
+
+
+def test_decide_match_sets_kind_keeps_score_and_protects_id(tmp_path):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1)
+    repo.replace_auto_matches([_m(a, "V1", MatchKind.SIMILAR, 0.7), _m(a, "V2", MatchKind.ID)])
+    assert repo.decide_match(a, "V1", True) is True
+    m = {x.voucher_id: x for x in repo.list_matches([a])}
+    assert m["V1"].kind == MatchKind.CONFIRMED and m["V1"].score == 0.7 and m["V1"].decided_at
+    assert repo.decide_match(a, "V1", False) is True
+    assert {x.voucher_id: x for x in repo.list_matches([a])}["V1"].kind == MatchKind.REJECTED
+    # Sicherer Treffer lässt sich nicht verwerfen.
+    assert repo.decide_match(a, "V2", False) is False
+    assert {x.voucher_id: x for x in repo.list_matches([a])}["V2"].kind == MatchKind.ID
+
+
+def test_matches_are_removed_with_invoice(tmp_path):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1)
+    repo.replace_auto_matches([_m(a, "GONE", MatchKind.ID)])  # Beleg nicht im Abzug: erlaubt
+    repo._conn.execute("DELETE FROM paperless_invoices WHERE id = ?", (a,))
+    assert repo.list_matches() == []
+
+
+def test_vouchers_without_invoice(tmp_path):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1)
+    repo.replace_vouchers([_v("ID"), _v("SIM"), _v("CONF"), _v("REJ"), _v("FREI")])
+    repo.replace_auto_matches([_m(a, "ID", MatchKind.ID), _m(a, "SIM", MatchKind.SIMILAR, 0.6)])
+    repo.decide_match(a, "CONF", True)
+    repo.decide_match(a, "REJ", False)
+    assert {v.voucher_id for v in repo.vouchers_without_invoice()} == {"REJ", "FREI"}
+
+
+def test_correspondent_context_history(tmp_path):
+    repo = make_repo(tmp_path)
+    it1 = _inv(repo, 1, "Acme", recipient_label="IT-Consulting")
+    other = _inv(repo, 2, "Acme", recipient_label="Familie")
+    exported = _inv(repo, 3, "Acme")
+    repo.set_sevdesk_status(exported, SevdeskStatus.EXPORTED, voucher_id="V")
+    confirmed = _inv(repo, 4, "Beta")
+    repo.decide_match(confirmed, "VX", True)
+    _inv(repo, 5, "Acme")  # unentschieden
+    _inv(repo, 6, None, recipient_label="IT-Consulting")  # ohne Korrespondent
+    # Empfänger gewinnt gegen "exported": gesetzt auf anderen Empfänger -> nicht IT.
+    both = _inv(repo, 7, "Gamma", recipient_label="Familie")
+    repo.set_sevdesk_status(both, SevdeskStatus.EXPORTED, voucher_id="W")
+
+    hist = repo.correspondent_context_history("IT-Consulting")
+    assert set(hist) == {"Acme", "Beta", "Gamma"}
+    assert hist["Acme"].it_ids == {it1, exported}
+    assert hist["Acme"].other_ids == {other}
+    assert hist["Beta"].it_ids == {confirmed} and not hist["Beta"].other_ids
+    assert hist["Gamma"].other_ids == {both} and not hist["Gamma"].it_ids
+
+
+def test_correspondent_context_history_vergleicht_label_ohne_gross_klein_und_rand(tmp_path):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1, "Acme", recipient_label="it-consulting ")
+    b = _inv(repo, 2, "Acme", recipient_label="Familie")
+
+    hist = repo.correspondent_context_history(" IT-Consulting")
+
+    assert hist["Acme"].it_ids == {a} and hist["Acme"].other_ids == {b}
+
+
+def test_set_review_and_dismiss(tmp_path):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1)
+    assert repo.set_review(a, "Mögliche Dublette") is True
+    inv = repo.get_invoice(a)
+    assert inv.sevdesk_status == SevdeskStatus.REVIEW
+    assert inv.review_reason == "Mögliche Dublette"
+    # Ein Statuswechsel weg von review leert den Grund.
+    repo.set_sevdesk_status(a, SevdeskStatus.QUEUED)
+    assert repo.get_invoice(a).review_reason is None
+    repo.set_review(a, "Grund")
+    assert repo.dismiss(a) is True
+    inv = repo.get_invoice(a)
+    assert inv.sevdesk_status == SevdeskStatus.DISMISSED and inv.review_reason is None
+    # claim_for_export bleibt für review nutzbar, für exportierte nicht.
+    repo.set_review(a, "Grund")
+    assert repo.claim_for_export(a) is True
+
+
+@pytest.mark.parametrize(
+    "status", [SevdeskStatus.EXPORTED, SevdeskStatus.EXPORTING, SevdeskStatus.UNCERTAIN]
+)
+def test_set_review_and_dismiss_do_not_override_export_states(tmp_path, status):
+    repo = make_repo(tmp_path)
+    a = _inv(repo, 1)
+    repo.set_sevdesk_status(a, status)
+    assert repo.set_review(a, "x") is False
+    assert repo.dismiss(a) is False
+    assert repo.get_invoice(a).sevdesk_status == status

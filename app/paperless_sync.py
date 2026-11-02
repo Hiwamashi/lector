@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from datetime import UTC, datetime
 import httpx
 
 from .config import Settings
+from .context_classification import same_label
 from .detection import extract_embedded_invoice_xml
 from .girocode import (
     PaymentData,
@@ -33,10 +35,13 @@ from .girocode import (
 from .models import (
     GiroStatus,
     InvoiceEventType,
+    MatchKind,
+    RecipientCache,
     RecipientRow,
     RecipientStatus,
     RecipientSuggestion,
     SevdeskStatus,
+    SevdeskVoucher,
 )
 from .paperless import (
     CF_TYPE_BOOLEAN,
@@ -49,9 +54,19 @@ from .paperless import (
 )
 from .recipient_llm import RecipientSuggester
 from .repository import Repository
-from .sevdesk import SevdeskClient
+from .sevdesk import SevdeskClient, _as_iso_date
+from .sevdesk_export_checks import (
+    ExportBlockers,
+    ExportOutcome,
+    ExportStatus,
+    export_blockers,
+)
+from .sevdesk_matching import compute_matches
 
 log = logging.getLogger("lector.paperless_sync")
+
+# „Alle Rechnungen“ für die Neuberechnung des Abgleichs (list_invoices ist sonst auf 200 begrenzt).
+_ALL_INVOICES = 1_000_000
 
 # Seitengröße der Empfänger-Übersicht.
 RECIPIENT_PAGE_SIZE = 50
@@ -62,6 +77,23 @@ BATCH_ERROR_STREAK = 10
 # Der Lauf meldet Fortschritt höchstens so oft — sonst erzeugt ein Lauf über 1500
 # Dokumente ebenso viele SSE-Ereignisse für jeden verbundenen Client.
 BATCH_PUBLISH_INTERVAL = 2.0
+
+
+def _write_back_error(exc: Exception) -> str:
+    """Gekürzte Fehlermeldung für das Ereignis „Rückschrieb fehlgeschlagen“."""
+    return f"{type(exc).__name__}: {exc}"[:200]
+
+
+def _recipient_cache_complete(cache: RecipientCache | None) -> bool:
+    """Ein Cache-Eintrag gilt als vollständig, wenn ein Vorschlag (Status != ``none``) UND
+    eine IT-Consulting-Einschätzung vorliegen. Alte Einträge aus der Zeit vor der
+    Export-Übersicht haben keinen Wert und werden vom Batch-Lauf nachgeholt. Ein
+    Vorschlag „unbekannt“ mit gültigem Wert ist vollständig."""
+    return (
+        cache is not None
+        and cache.status != RecipientStatus.NONE
+        and cache.it_probability is not None
+    )
 
 
 def _parse_paperless_date(value: str | None) -> datetime | None:
@@ -110,6 +142,8 @@ class PaperlessSync:
         # Serialisiert das Zurückschreiben des Empfängers (manuell vs. KI-Batch), damit
         # ein nebenläufiger Batch-Write keinen gerade manuell gesetzten Empfänger überschreibt.
         self._recipient_write_lock = asyncio.Lock()
+        # Verhindert überlappende Belegabrufe (Worker-Takt vs. Knopf in der Übersicht).
+        self._voucher_lock = asyncio.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -160,8 +194,12 @@ class PaperlessSync:
         return SevdeskClient(self.settings.sevdesk_base_url, self.settings.sevdesk_api_token)
 
     def _suggester(self) -> RecipientSuggester:
+        # Mit Label fordert der Aufruf zusätzlich die IT-Consulting-Wahrscheinlichkeit an;
+        # das Label steht beim Start fest, damit das Prompt-Caching erhalten bleibt.
         return RecipientSuggester(
-            self.settings.anthropic_api_key, self.settings.recipient_llm_model
+            self.settings.anthropic_api_key,
+            self.settings.recipient_llm_model,
+            context_label=self.settings.sevdesk_context_label,
         )
 
     # ---- ID-Auflösung (Doctype, Tags, Custom Fields) ---------------------
@@ -216,20 +254,67 @@ class PaperlessSync:
                     # umbenannter Korrespondent soll sofort im nächsten Lauf stimmen,
                     # nicht erst nach einem Neustart.
                     corr_map = await client.correspondent_map()
-                    await self._sync_invoices(client, ids, corr_map)
-                    await self._sync_sevdesk_tag(client, ids, corr_map)
+                    # Empfänger-Feld ebenfalls einmal je Lauf auflösen (Optionen-ID ->
+                    # Label); fehlt es, bleibt recipient_label lokal unangetastet.
+                    recipient_field = await client.resolve_select_field(
+                        self.settings.cf_recipient
+                    )
+                    if recipient_field is not None:
+                        self._recipient_field = recipient_field
+                        self._recipient_field_resolved = True
+                    await self._sync_invoices(client, ids, corr_map, recipient_field)
+                    await self._sync_sevdesk_tag(client, ids, corr_map, recipient_field)
+                    await self._retry_write_backs(client, ids)
             except httpx.ConnectError as exc:
                 # Paperless (noch) nicht erreichbar — typisch beim Start, wenn der
                 # webserver-Container später hochfährt. Nächster Lauf greift erneut.
                 log.warning("Paperless nicht erreichbar, überspringe Sync: %s", exc)
             except Exception:
                 log.exception("Paperless-Sync fehlgeschlagen")
+        # Gespiegelte Felder (Empfänger, Beleg-Vermerk) und Rechnungen haben sich ggf.
+        # geändert: Treffer neu berechnen — ohne SevDesk-Aufruf, auf Basis des Abzugs.
+        try:
+            self.recompute_matches()
+        except Exception:
+            log.exception("Neuberechnung des Belegabgleichs nach dem Sync fehlgeschlagen")
+
+    def _mirrored_fields(
+        self,
+        client: PaperlessClient,
+        ids: dict[str, int | None],
+        doc: PaperlessDocument,
+        recipient_field: SelectField | None,
+    ) -> dict[str, str | None]:
+        """Paperless-Felder, die lokal gespiegelt werden (Design 2), als ``upsert_invoice``-kwargs.
+
+        Nur Felder, die in Paperless auflösbar sind, kommen vor: Fehlt das Empfänger-Feld
+        oder das Feld „SevDesk-Beleg“, fehlt der kwarg und die lokale Spalte bleibt, wie sie
+        ist (kein NULL aus Unkenntnis). Ist das Feld vorhanden, aber am Dokument leer oder
+        entfernt, ergibt das ``None`` und damit lokal NULL.
+        """
+        mirrored: dict[str, str | None] = {}
+        if recipient_field is not None:
+            option_id = client.select_value(doc, recipient_field.field_id)
+            mirrored["recipient_label"] = (
+                recipient_field.id_to_label.get(option_id) if option_id else None
+            )
+        voucher_field_id = ids.get("cf_sevdesk_id")
+        if voucher_field_id is not None:
+            value: str | None = None
+            for cf in doc.custom_fields:
+                if int(cf.get("field")) == voucher_field_id:
+                    raw = cf.get("value")
+                    value = str(raw).strip() if raw is not None else None
+                    break
+            mirrored["paperless_voucher_ref"] = value or None
+        return mirrored
 
     async def _sync_invoices(
         self,
         client: PaperlessClient,
         ids: dict[str, int | None],
         corr_map: dict[int, str],
+        recipient_field: SelectField | None = None,
     ) -> None:
         doctype_id = ids.get("doctype")
         if doctype_id is None:
@@ -249,6 +334,7 @@ class PaperlessSync:
                 title=doc.title,
                 correspondent=correspondent,
                 document_date=doc.created,
+                **self._mirrored_fields(client, ids, doc, recipient_field),
             )
             is_new = before is None
             if is_new or before.title != doc.title or before.correspondent != correspondent:
@@ -261,6 +347,7 @@ class PaperlessSync:
         client: PaperlessClient,
         ids: dict[str, int | None],
         corr_map: dict[int, str],
+        recipient_field: SelectField | None = None,
     ) -> None:
         tag_id = ids.get("sevdesk_tag")
         if tag_id is None:
@@ -271,13 +358,95 @@ class PaperlessSync:
                 title=doc.title,
                 correspondent=await self._correspondent_name(client, doc, corr_map),
                 document_date=doc.created,
+                **self._mirrored_fields(client, ids, doc, recipient_field),
             )
             inv = self.repo.get_invoice(invoice_id)
-            if inv and inv.sevdesk_status == SevdeskStatus.NONE:
+            if not inv:
+                continue
+            auto_export = self.sevdesk_enabled and self.settings.sevdesk_auto_export
+            # Aus `none` wird vorgemerkt. Eine bereits `queued`e Rechnung wird nur bei
+            # Auto-Export erneut bewertet (sie wartete ggf. auf den ersten Belegabruf).
+            # `review` (Nutzer entscheidet, auch wenn die Gründe inzwischen weggefallen
+            # sind) und `dismissed` bleiben, wie sie sind.
+            was_queued = inv.sevdesk_status == SevdeskStatus.QUEUED
+            if inv.sevdesk_status != SevdeskStatus.NONE and not (was_queued and auto_export):
+                continue
+            # Auto-Export nur mit Abgleich: ohne je erfolgreichen Belegabruf fehlt der Abzug,
+            # gegen den Dubletten erkannt werden — dann nur vormerken (wie ohne Auto-Export).
+            sync_available = self.repo.get_sevdesk_sync_state().last_success_at is not None
+            if was_queued and not sync_available:
+                continue
+            blockers = self._blockers_for(inv)
+            if blockers.hard:
+                # Schon in SevDesk: weder vormerken noch exportieren. Der Status bleibt;
+                # das Ereignis entsteht nur beim ersten Erkennen bzw. wenn sich der
+                # Grund ändert, damit nicht jeder Sync-Lauf eines schreibt.
+                prefix = "nicht exportiert" if was_queued else "nicht vorgemerkt"
+                self._add_event_once(
+                    invoice_id,
+                    InvoiceEventType.SEVDESK_REVIEW,
+                    f"{prefix}: {blockers.hard}",
+                )
+                continue
+            if blockers.reasons:
+                # Rückfragegrund: nie automatisch exportieren, auch nicht bei Auto-Export.
+                reason = "; ".join(blockers.reasons)
+                if self.repo.set_review(invoice_id, reason):
+                    self.repo.add_invoice_event(
+                        invoice_id, InvoiceEventType.SEVDESK_REVIEW, reason
+                    )
+                continue
+            if not was_queued:
                 self.repo.set_sevdesk_status(invoice_id, SevdeskStatus.QUEUED)
                 self.repo.add_invoice_event(invoice_id, InvoiceEventType.SEVDESK_QUEUED)
-                if self.sevdesk_enabled and self.settings.sevdesk_auto_export:
-                    await self.export_invoice(invoice_id)
+            if auto_export and sync_available:
+                outcome = await self.export_invoice(invoice_id)
+                if outcome.status != ExportStatus.EXPORTED:
+                    log.info(
+                        "Auto-Export Rechnung %s: %s (%s)",
+                        invoice_id,
+                        outcome.status.value,
+                        outcome.message,
+                    )
+
+    def _blockers_for(self, inv) -> ExportBlockers:
+        """``export_blockers`` mit den aktuellen Treffern und dem lokalen Belegabzug."""
+        matches = self.repo.list_matches([inv.id])
+        refs = {m.voucher_id for m in matches} | {
+            v.strip()
+            for v in (inv.sevdesk_voucher_id, inv.paperless_voucher_ref)
+            if v and v.strip()
+        }
+        in_cache = {v for v in refs if self.repo.get_voucher(v) is not None}
+        return export_blockers(
+            inv, matches, in_cache, context_label=self.settings.sevdesk_context_label
+        )
+
+    def _add_event_once(
+        self, invoice_id: int, event_type: InvoiceEventType, message: str
+    ) -> None:
+        """Schreibt das Ereignis nur, wenn das letzte gleichartige nicht dieselbe Meldung trägt."""
+        last = next(
+            (
+                e
+                for e in reversed(self.repo.list_invoice_events(invoice_id))
+                if e["event_type"] == event_type.value
+            ),
+            None,
+        )
+        if last is None or last["message"] != message:
+            self.repo.add_invoice_event(invoice_id, event_type, message)
+
+    def dismiss_invoice(self, invoice_id: int) -> bool:
+        """Verwirft einen Prüffall (Status ``dismissed``, Ereignis) für die Oberfläche.
+
+        Wirkungslos (``False``) bei ``exported``/``exporting``/``uncertain``. ``dismissed``
+        wird vom Tag-Weg nicht erneut vorgemerkt.
+        """
+        if not self.repo.dismiss(invoice_id):
+            return False
+        self.repo.add_invoice_event(invoice_id, InvoiceEventType.SEVDESK_DISMISSED)
+        return True
 
     async def _correspondent_name(
         self,
@@ -370,6 +539,82 @@ class PaperlessSync:
             pdata.creditor_name = creditor
         return pdata, source
 
+    # ---- SevDesk-Belegabzug und Abgleich ----------------------------------
+
+    async def sync_vouchers(self) -> bool:
+        """Ruft alle Belege aus SevDesk ab und berechnet danach den Abgleich neu.
+
+        Läuft nur bei aktivem SevDesk-Export und höchstens einmal gleichzeitig (Worker-Takt
+        und „Abgleich aktualisieren“ können sich überlappen). Der Abzug wird ausschließlich
+        nach einem VOLLSTÄNDIG durchgelaufenen Abruf ersetzt; scheitert der Abruf (auch
+        mitten im Blättern), bleibt der alte Abzug stehen und der Fehler landet im
+        Sync-Zustand. Wirft nie nach außen. Liefert ``True`` bei Erfolg.
+        """
+        if not self.sevdesk_enabled:
+            return False
+        async with self._voucher_lock:
+            try:
+                async with self._sevdesk() as sev:
+                    vouchers = await sev.list_vouchers()
+                deleted = self.repo.replace_vouchers(vouchers)
+                self.repo.set_sevdesk_sync_success()
+            except Exception as exc:
+                log.exception("Abruf der SevDesk-Belege fehlgeschlagen")
+                try:
+                    self.repo.set_sevdesk_sync_error(f"{type(exc).__name__}: {exc}"[:500])
+                except Exception:
+                    log.exception("SevDesk-Abrufzustand konnte nicht gespeichert werden")
+                self.repo.notify_vouchers()
+                return False
+            log.info(
+                "SevDesk-Belege abgerufen: %s Belege, %s entfernt", len(vouchers), deleted
+            )
+            try:
+                self.recompute_matches()
+            except Exception:
+                log.exception("Neuberechnung des Belegabgleichs fehlgeschlagen")
+            self.repo.notify_vouchers()
+            return True
+
+    def recompute_matches(self) -> int:
+        """Berechnet die automatischen Treffer aus Rechnungen und lokalem Abzug neu.
+
+        Ohne SevDesk-Aufruf (nach dem Rechnungs-Sync, nach Nutzerentscheidungen, nach einem
+        Export). Ohne bisher erfolgreichen Abruf passiert nichts — ein Teilabzug würde
+        sonst „kein Treffer“ behaupten. Rechnungen, deren Treffer sich geändert haben,
+        erhalten ein Ereignis (das auch deren Detailseite per SSE auffrischt). Liefert die
+        Zahl dieser Rechnungen.
+        """
+        if self.repo.get_sevdesk_sync_state().last_success_at is None:
+            return 0
+        s = self.settings
+        existing = self.repo.list_matches()
+        matches = compute_matches(
+            self.repo.list_invoices(limit=_ALL_INVOICES),
+            self.repo.list_vouchers(),
+            existing,
+            window_days=s.sevdesk_match_window_days,
+            min_score=s.sevdesk_match_min_score,
+        )
+        self.repo.replace_auto_matches(matches)
+
+        def auto_pairs(items) -> set[tuple[int, str, str]]:
+            return {
+                (m.invoice_id, m.voucher_id, m.kind.value)
+                for m in items
+                if m.kind in (MatchKind.ID, MatchKind.SIMILAR)
+            }
+
+        changed = {
+            pair[0]
+            for pair in auto_pairs(existing) ^ auto_pairs(self.repo.list_matches())
+        }
+        for invoice_id in sorted(changed):
+            self.repo.add_invoice_event(invoice_id, InvoiceEventType.VOUCHERS_SYNCED)
+        if changed:
+            self.repo.notify_vouchers()
+        return len(changed)
+
     # ---- UI-Aktionen -----------------------------------------------------
 
     async def save_giro_edits(
@@ -413,15 +658,31 @@ class PaperlessSync:
             except Exception:
                 log.exception("Rückschrieb der GiroCode-Daten fehlgeschlagen")
 
-    async def export_invoice(self, invoice_id: int) -> None:
+    async def export_invoice(self, invoice_id: int, confirmed: bool = False) -> ExportOutcome:
+        """Exportiert eine Rechnung nach SevDesk und meldet das Ergebnis als ``ExportOutcome``.
+
+        Ablauf: Rechnung und aktuelle Treffer laden, ``export_blockers`` auswerten.
+        - harte Sperre → ``blocked``, am Status ändert sich NICHTS (auch nicht bei
+          ``none``/``queued``/``review``);
+        - Rückfragegründe ohne ``confirmed`` → ``needs_confirmation``, nichts exportiert;
+        - sonst Claim und Export wie bisher (``failed`` retrybar, ``uncertain`` nicht).
+        """
         inv = self.repo.get_invoice(invoice_id)
         if inv is None:
-            return
-        if not self.sevdesk_enabled:
-            self.repo.set_sevdesk_status(
-                invoice_id, SevdeskStatus.FAILED, error_message="SevDesk-Export ist deaktiviert"
+            return ExportOutcome(ExportStatus.SKIPPED, "Rechnung nicht gefunden")
+        blockers = self._blockers_for(inv)
+        if blockers.hard:
+            return ExportOutcome(ExportStatus.BLOCKED, blockers.hard)
+        if blockers.reasons and not confirmed:
+            return ExportOutcome(
+                ExportStatus.NEEDS_CONFIRMATION,
+                "Rückfrage nötig: " + "; ".join(blockers.reasons),
+                reasons=list(blockers.reasons),
             )
-            return
+        if not self.sevdesk_enabled:
+            message = "SevDesk-Export ist deaktiviert"
+            self.repo.set_sevdesk_status(invoice_id, SevdeskStatus.FAILED, error_message=message)
+            return ExportOutcome(ExportStatus.FAILED, message)
         # Atomarer Claim: verhindert Doppel-Belege bei gleichzeitigen oder wiederholten
         # Export-Aufrufen (UI-Doppelklick, Auto-Export trifft auf manuellen Klick, Re-Sync).
         if not self.repo.claim_for_export(invoice_id):
@@ -429,7 +690,7 @@ class PaperlessSync:
                 "SevDesk-Export übersprungen — Rechnung %s bereits exportiert oder in Arbeit",
                 invoice_id,
             )
-            return
+            return ExportOutcome(ExportStatus.SKIPPED, "bereits exportiert oder in Arbeit")
         # Datei laden + Temp-Upload erzeugen noch KEINEN Beleg → Fehler sind eindeutig
         # retrybar (Status failed).
         try:
@@ -441,7 +702,19 @@ class PaperlessSync:
         except Exception as exc:
             log.exception("SevDesk-Vorbereitung für Rechnung %s fehlgeschlagen", invoice_id)
             self._mark_export_failed(invoice_id, exc)
-            return
+            return ExportOutcome(ExportStatus.FAILED, str(exc)[:200])
+
+        # Betrag nur bei gesichertem Wert (automatisch ermittelt oder manuell bestätigt) UND
+        # konfiguriertem Konto: SevDesk braucht für die Summe eine Belegposition mit Konto
+        # (Design 9). Nur dann geht die Summe wirklich mit — sonst bleibt der Beleg ohne.
+        account = self.settings.sevdesk_account_datev_id
+        amount = (
+            inv.amount
+            if inv.giro_status in (GiroStatus.READY, GiroStatus.EDITED)
+            else None
+        )
+        position_sent = amount is not None and bool(account)
+        sent_amount = amount if position_sent else None
 
         # saveVoucher legt den Beleg an. Hier ist die Fehlerklassifizierung entscheidend:
         # - HTTPStatusError = Server hat abgelehnt → kein Beleg → retrybar (failed).
@@ -456,6 +729,8 @@ class PaperlessSync:
                     voucher_date=inv.document_date,
                     supplier_name=inv.creditor_name or inv.correspondent,
                     currency=inv.currency,
+                    amount=amount,
+                    account_datev_id=account,
                 )
         except httpx.HTTPStatusError as exc:
             # Nur eindeutige Client-Ablehnungen (4xx) sind retrybar — dabei wurde kein Beleg
@@ -467,20 +742,20 @@ class PaperlessSync:
                     "SevDesk lehnte Beleg für Rechnung %s ab (HTTP %s)", invoice_id, status
                 )
                 self._mark_export_failed(invoice_id, exc)
-            else:
-                log.warning(
-                    "SevDesk-Serverfehler (HTTP %s) für Rechnung %s — mehrdeutig",
-                    status,
-                    invoice_id,
-                )
-                self._mark_export_uncertain(invoice_id, exc)
-            return
+                return ExportOutcome(ExportStatus.FAILED, str(exc)[:200])
+            log.warning(
+                "SevDesk-Serverfehler (HTTP %s) für Rechnung %s — mehrdeutig",
+                status,
+                invoice_id,
+            )
+            self._mark_export_uncertain(invoice_id, exc)
+            return ExportOutcome(ExportStatus.UNCERTAIN, str(exc)[:200])
         except Exception as exc:
             log.exception(
                 "SevDesk-Export für Rechnung %s mehrdeutig fehlgeschlagen", invoice_id
             )
             self._mark_export_uncertain(invoice_id, exc)
-            return
+            return ExportOutcome(ExportStatus.UNCERTAIN, str(exc)[:200])
 
         self.repo.set_sevdesk_status(
             invoice_id, SevdeskStatus.EXPORTED, voucher_id=result.voucher_id
@@ -488,13 +763,70 @@ class PaperlessSync:
         self.repo.add_invoice_event(
             invoice_id, InvoiceEventType.SEVDESK_EXPORTED, f"Beleg {result.voucher_id}"
         )
+        # Den neuen Beleg sofort in den Abzug übernehmen, damit der sichere Treffer ohne
+        # Warten auf den nächsten Abruf da ist. Scheitert das, ist der Export trotzdem
+        # gelungen — der nächste Abruf holt den Beleg dann nach.
+        try:
+            self.repo.upsert_voucher(
+                SevdeskVoucher(
+                    voucher_id=result.voucher_id,
+                    voucher_date=_as_iso_date(inv.document_date),
+                    supplier_name=inv.creditor_name or inv.correspondent,
+                    # Mit Position führt SevDesk den Beleg mit dem gesendeten Betrag; ohne
+                    # Position steht er auf 0 — dann kommt der echte Betrag erst mit dem
+                    # nächsten Abruf.
+                    sum_gross=sent_amount,
+                    currency=inv.currency,
+                    description=inv.title or filename,
+                    status="50",
+                )
+            )
+            self.recompute_matches()
+            self.repo.notify_vouchers()
+        except Exception:
+            log.exception("Beleg %s konnte nicht in den Abzug übernommen werden", result.voucher_id)
         if self.enabled:
             try:
-                await self._write_back_export(inv.paperless_id, result.voucher_id, result.link)
+                await self._write_back_export(
+                    invoice_id, inv.paperless_id, result.voucher_id, result.link
+                )
                 self.repo.mark_written_back(invoice_id)
                 self.repo.add_invoice_event(invoice_id, InvoiceEventType.WRITTEN_BACK)
-            except Exception:
+            except Exception as exc:
+                # written_back_at bleibt leer: der nächste Sync holt den Rückschrieb nach.
+                # Der Fehler steht zusätzlich als Ereignis an der Rechnung (Spec: sichtbar).
                 log.exception("Rückschrieb des SevDesk-Exports fehlgeschlagen")
+                self._add_event_once(
+                    invoice_id, InvoiceEventType.WRITE_BACK_FAILED, _write_back_error(exc)
+                )
+        return ExportOutcome(
+            ExportStatus.EXPORTED, f"Beleg {result.voucher_id}", voucher_id=result.voucher_id
+        )
+
+    async def export_invoices(
+        self, invoice_ids: list[int]
+    ) -> list[tuple[int, ExportOutcome]]:
+        """Mehrfachexport: sequenziell, nur Rechnungen ohne harte Sperre und ohne Rückfragegrund.
+
+        Alle anderen (Sperre oder Rückfragegrund) werden NICHT exportiert und kommen als
+        ``skipped`` mit Grund in ``message``/``reasons`` zurück. Fehlgeschlagene und
+        unklare Exporte behalten ihren Status (``failed``/``uncertain``).
+        """
+        results: list[tuple[int, ExportOutcome]] = []
+        for invoice_id in invoice_ids:
+            try:
+                outcome = await self.export_invoice(invoice_id, confirmed=False)
+            except Exception as exc:
+                log.exception("Mehrfachexport: Rechnung %s fehlgeschlagen", invoice_id)
+                outcome = ExportOutcome(ExportStatus.FAILED, str(exc)[:200])
+            if outcome.status in (ExportStatus.BLOCKED, ExportStatus.NEEDS_CONFIRMATION):
+                outcome = ExportOutcome(
+                    ExportStatus.SKIPPED,
+                    outcome.message,
+                    reasons=outcome.reasons or [outcome.message],
+                )
+            results.append((invoice_id, outcome))
+        return results
 
     def _mark_export_failed(self, invoice_id: int, exc: Exception) -> None:
         """Eindeutiger Fehlschlag ohne angelegten Beleg → retrybar (Status failed)."""
@@ -572,6 +904,20 @@ class PaperlessSync:
     @property
     def recipient_options(self) -> list[str]:
         return self._recipient_field.labels if self._recipient_field else []
+
+    def recipient_option_available(self, label: str) -> bool | None:
+        """Ob die Kontext-Option im Empfänger-Feld existiert — ohne Paperless-Aufruf.
+
+        Liest nur den im Prozess gecachten Feldzustand (gefüllt vom Sync bzw. der
+        Empfänger-Verwaltung). ``None`` = noch nicht aufgelöst, also unbekannt; die Übersicht
+        nimmt die Option dann als vorhanden an. ``False`` nur, wenn das Feld aufgelöst ist
+        und die Option sicher fehlt (oder das Feld selbst fehlt).
+        """
+        if not self._recipient_field_resolved:
+            return None
+        if self._recipient_field is None:
+            return False
+        return any(same_label(label, option) for option in self._recipient_field.label_to_id)
 
     async def count_missing_recipients(self) -> int:
         """Zählt Dokumente ohne gesetzten Empfänger (nur der Zähler, keine Seiteninhalte)."""
@@ -731,7 +1077,7 @@ class PaperlessSync:
                         # Einzelvorschlag). Dann nicht erneut verarbeiten/überschreiben — zählt
                         # aber sichtbar als "übersprungen", nicht stillschweigend gar nicht.
                         cache = self.repo.get_recipient_cache(doc_id)
-                        if cache and cache.status != RecipientStatus.NONE:
+                        if _recipient_cache_complete(cache):
                             self._progress.skipped += 1
                         else:
                             try:
@@ -793,9 +1139,10 @@ class PaperlessSync:
         """Sammelt bis zu ``limit`` IDs von Dokumenten ohne Empfänger und ohne Vorschlag.
 
         Liefert zusätzlich den Rest: wie viele passende Dokumente wegen des Limits
-        **nicht** eingeplant wurden. Bereits gecachte Dokumente (Status != ``none``)
-        werden übersprungen, damit ein wiederholter Lauf tatsächlich neue Dokumente
-        erreicht und nicht an den ersten hängen bleibt.
+        **nicht** eingeplant wurden. Vollständig gecachte Dokumente (Status != ``none``
+        UND ``it_probability`` vorhanden) werden übersprungen, damit ein wiederholter Lauf
+        tatsächlich neue Dokumente erreicht und nicht an den ersten hängen bleibt. Alte
+        Einträge ohne IT-Consulting-Einschätzung werden dagegen nachgeholt.
         """
         ids: list[int] = []
         rest = 0
@@ -809,8 +1156,7 @@ class PaperlessSync:
             page_ids = [d.id for d in page_obj.documents]
             caches = self.repo.get_recipient_caches(page_ids)
             for doc_id in page_ids:
-                cache = caches.get(doc_id)
-                if cache and cache.status != RecipientStatus.NONE:
+                if _recipient_cache_complete(caches.get(doc_id)):
                     continue
                 if len(ids) < limit:
                     ids.append(doc_id)
@@ -855,8 +1201,7 @@ class PaperlessSync:
                 fresh = await client.get_document(doc.id)
                 if client.select_value(fresh, field.field_id):
                     return suggestion
-                cache = self.repo.get_recipient_cache(doc.id)
-                if cache and cache.status != RecipientStatus.NONE:
+                if _recipient_cache_complete(self.repo.get_recipient_cache(doc.id)):
                     return suggestion
             # Im Batch-Lauf (guard_concurrent=True) löst JEDES Dokument sonst zusätzlich zum
             # gedrosselten "batch:recipient"-Ereignis ein eigenes ungedrosseltes "rec:<id>"
@@ -877,6 +1222,7 @@ class PaperlessSync:
                 confidence=suggestion.confidence,
                 reasoning=suggestion.reasoning,
                 status=status,
+                it_probability=suggestion.it_probability,
                 notify=notify,
             )
         return suggestion
@@ -899,20 +1245,136 @@ class PaperlessSync:
             await client.set_custom_fields(paperless_id, values)
 
     async def _write_back_export(
-        self, paperless_id: int, voucher_id: str, link: str | None
+        self, invoice_id: int, paperless_id: int, voucher_id: str, link: str | None
     ) -> None:
         async with self._paperless() as client:
             ids = await self._resolve(client)
-            values: dict[int, object] = {}
-            if ids.get("cf_sevdesk_id") is not None:
-                values[ids["cf_sevdesk_id"]] = voucher_id  # type: ignore[index]
-            if ids.get("cf_exported_at") is not None:
-                values[ids["cf_exported_at"]] = datetime.now(UTC).strftime("%Y-%m-%d")  # type: ignore[index]
-            if values:
-                await client.set_custom_fields(paperless_id, values)
-            if ids.get("tag_sevdesk_done") is not None:
-                await client.add_tags(paperless_id, [ids["tag_sevdesk_done"]])  # type: ignore[list-item]
-            note = f"Nach SevDesk exportiert — Beleg {voucher_id}"
+            await self._apply_export_write_back(
+                client, ids, invoice_id, paperless_id, voucher_id, link
+            )
+
+    async def _apply_export_write_back(
+        self,
+        client: PaperlessClient,
+        ids: dict[str, int | None],
+        invoice_id: int,
+        paperless_id: int,
+        voucher_id: str,
+        link: str | None,
+        *,
+        retry: bool = False,
+    ) -> None:
+        """Rückschrieb eines Exports, idempotent (auch für das Nachholen im Sync).
+
+        Felder setzen und Tag hinzufügen sind wiederholbar; die Notiz entsteht nur, wenn
+        noch keine Notiz „Nach SevDesk exportiert — Beleg <id>“ existiert. Der Empfänger geht
+        auf die Kontext-Option; fehlt sie im Feld, werden die übrigen Felder trotzdem
+        geschrieben und der Hinweis als Ereignis vermerkt.
+
+        Beim Erstexport (``retry=False``) wird der Empfänger gesetzt — dort hat der Nutzer
+        bestätigt. Im Nachholpfad (``retry=True``) liegt der Export womöglich Stunden zurück:
+        das Dokument wird live gelesen und der Empfänger nur gesetzt, wenn das Feld leer ist
+        oder schon der Kontext-Option entspricht. Ein anderer, inzwischen gesetzter Empfänger
+        wird NICHT überschrieben (Ereignis „Hinweis“, einmalig).
+        """
+        values: dict[int, object] = {}
+        if ids.get("cf_sevdesk_id") is not None:
+            values[ids["cf_sevdesk_id"]] = voucher_id  # type: ignore[index]
+        if ids.get("cf_exported_at") is not None:
+            values[ids["cf_exported_at"]] = datetime.now(UTC).strftime("%Y-%m-%d")  # type: ignore[index]
+        label = self.settings.sevdesk_context_label
+        field = await self._recipient_field_cached(client)
+        option_id = None
+        if field is not None:
+            option_id = next(
+                (oid for lbl, oid in field.label_to_id.items() if same_label(lbl, label)), None
+            )
+        set_recipient = option_id is not None
+        if option_id is not None and field is not None and retry:
+            doc = await client.get_document(paperless_id)
+            current = client.select_value(doc, field.field_id)
+            if current is not None and current != option_id:
+                set_recipient = False
+                other = field.id_to_label.get(current, current)
+                hint = (
+                    f"Empfänger nicht überschrieben: am Dokument steht inzwischen „{other}“ "
+                    f"(nicht „{label}“)"
+                )
+                log.warning("Rückschrieb Rechnung %s: %s", invoice_id, hint)
+                self._add_event_once(
+                    invoice_id, InvoiceEventType.WRITTEN_BACK, f"Hinweis: {hint}"
+                )
+        if option_id is None:
+            hint = (
+                f"Empfänger nicht gesetzt: Option „{label}“ fehlt im Feld "
+                f"„{self.settings.cf_recipient}“ bzw. das Feld ist nicht vorhanden"
+            )
+            log.warning("Rückschrieb Rechnung %s: %s", invoice_id, hint)
+            self._add_event_once(invoice_id, InvoiceEventType.WRITTEN_BACK, f"Hinweis: {hint}")
+        elif set_recipient and field is not None:
+            values[field.field_id] = option_id
+        if values:
+            await client.set_custom_fields(paperless_id, values)
+        if set_recipient and option_id is not None:
+            # Erst nach erfolgreichem Schreiben: sonst stünde lokal ein Empfänger, den
+            # Paperless nicht kennt (der nächste Sync würde ihn ohnehin zurücksetzen).
+            self.repo.update_invoice(invoice_id, recipient_label=label)
+        if ids.get("tag_sevdesk_done") is not None:
+            await client.add_tags(paperless_id, [ids["tag_sevdesk_done"]])  # type: ignore[list-item]
+        prefix = f"Nach SevDesk exportiert — Beleg {voucher_id}"
+        existing = await client.get_notes(paperless_id)
+        # Wortgrenze: Beleg „12“ darf nicht durch eine Notiz zu Beleg „123“ als vorhanden gelten.
+        pattern = re.compile(re.escape(prefix) + r"(?!\w)")
+        if not any(pattern.search(n) for n in existing):
+            note = prefix
             if link:
                 note += f" ({link})"
             await client.add_note(paperless_id, note)
+
+    async def _retry_write_backs(
+        self, client: PaperlessClient, ids: dict[str, int | None]
+    ) -> None:
+        """Holt Rückschriebe nach, die beim Export scheiterten (``written_back_at`` leer)."""
+        for inv in self.repo.list_invoices(
+            sevdesk_status=SevdeskStatus.EXPORTED, limit=_ALL_INVOICES
+        ):
+            if inv.written_back_at is not None or not inv.sevdesk_voucher_id:
+                continue
+            try:
+                await self._apply_export_write_back(
+                    client, ids, inv.id, inv.paperless_id, inv.sevdesk_voucher_id, None,
+                    retry=True,
+                )  # fmt: skip
+                self.repo.mark_written_back(inv.id)
+                self.repo.add_invoice_event(
+                    inv.id, InvoiceEventType.WRITTEN_BACK, "Rückschrieb nachgeholt"
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    log.exception(
+                        "Nachholen des Rückschriebs für Rechnung %s fehlgeschlagen", inv.id
+                    )
+                    self._add_event_once(
+                        inv.id, InvoiceEventType.WRITE_BACK_FAILED, _write_back_error(exc)
+                    )
+                    continue
+                # Dokument in Paperless gelöscht: es gibt nichts mehr zurückzuschreiben und
+                # ein erneuter Versuch würde jeden Lauf wieder mit 404 scheitern. Deshalb
+                # als erledigt markieren (written_back_at) und einmalig vermerken.
+                log.warning(
+                    "Rückschrieb Rechnung %s: Dokument %s in Paperless nicht mehr vorhanden",
+                    inv.id,
+                    inv.paperless_id,
+                )
+                self.repo.mark_written_back(inv.id)
+                self._add_event_once(
+                    inv.id,
+                    InvoiceEventType.WRITTEN_BACK,
+                    "Hinweis: Dokument in Paperless nicht mehr vorhanden — "
+                    "Rückschrieb entfällt",
+                )
+            except Exception as exc:
+                log.exception("Nachholen des Rückschriebs für Rechnung %s fehlgeschlagen", inv.id)
+                self._add_event_once(
+                    inv.id, InvoiceEventType.WRITE_BACK_FAILED, _write_back_error(exc)
+                )

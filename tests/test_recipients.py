@@ -209,6 +209,7 @@ async def test_collect_missing_ids_skips_cached_and_reaches_later_docs(tmp_path,
             confidence=0.9,
             reasoning=None,
             status=RecipientStatus.SUGGESTED,
+            it_probability=0.5,  # vollständig: Vorschlag UND Einschätzung
         )
 
     sync = ps.PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo)
@@ -774,7 +775,7 @@ async def test_skipped_documents_are_counted_and_still_publish(tmp_path, monkeyp
     sync, repo = _batch_sync(tmp_path, monkeypatch, [1, 2, 3], _StubSuggester("Sascha", 0.9))
     repo.set_recipient_cache(
         2, suggested_label="Familie", confidence=0.5, reasoning=None,
-        status=RecipientStatus.SUGGESTED,
+        status=RecipientStatus.SUGGESTED, it_probability=0.5,
     )
     publishes: list[None] = []
     monkeypatch.setattr(repo, "notify_batch", lambda: publishes.append(None))
@@ -814,3 +815,155 @@ async def test_remaining_counts_unprocessed_planned_docs_after_stop(tmp_path, mo
     # 3 eingeplante, aber wegen Stopp nicht mehr erreichte Dokumente + 500 jenseits
     # des Limits = 503 tatsaechlich offen — nicht nur die 500 aus "rest".
     assert p.remaining == 503
+
+
+# ---- IT-Consulting-Wahrscheinlichkeit (Kontext-Einstufung) -------------------
+
+
+def _capture_payload(context_label):
+    seen: dict = {}
+
+    def handler(request):
+        import json
+
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json=_ok_payload())
+
+    suggester = rl.RecipientSuggester(
+        "key", "model", transport=httpx.MockTransport(handler), context_label=context_label
+    )
+    return suggester, seen
+
+
+async def test_tool_schema_mit_label_hat_pflichtfeld():
+    suggester, seen = _capture_payload("IT-Consulting")
+    async with suggester:
+        await suggester.suggest(title="t", correspondent=None, content="c", options=["Sascha"])
+    schema = seen["payload"]["tools"][0]["input_schema"]
+    assert schema["properties"]["it_consulting_probability"]["type"] == "number"
+    assert "it_consulting_probability" in schema["required"]
+    assert "IT-Consulting" in seen["payload"]["system"][0]["text"]
+
+
+async def test_tool_schema_ohne_label_unveraendert():
+    suggester, seen = _capture_payload(None)
+    async with suggester:
+        await suggester.suggest(title="t", correspondent=None, content="c", options=["Sascha"])
+    schema = seen["payload"]["tools"][0]["input_schema"]
+    assert "it_consulting_probability" not in schema["properties"]
+    assert schema["required"] == ["recipient", "confidence"]
+    assert "Geschäftskontext" not in seen["payload"]["system"][0]["text"]
+
+
+def test_llm_parse_it_probability_gueltig():
+    s = _parse(
+        {"recipient": "Sascha", "confidence": 0.7, "it_consulting_probability": 0.85},
+        ["Sascha"],
+    )
+    assert s.it_probability == 0.85
+    assert _parse(
+        {"recipient": "Sascha", "confidence": 0.7, "it_consulting_probability": 0}, ["Sascha"]
+    ).it_probability == 0.0
+
+
+@pytest.mark.parametrize("value", [1.4, -0.2, "0.5", None, float("nan"), True])
+def test_llm_parse_it_probability_ungueltig_ist_none(value):
+    s = _parse(
+        {"recipient": "Sascha", "confidence": 0.7, "it_consulting_probability": value},
+        ["Sascha"],
+    )
+    assert s.it_probability is None
+    assert s.label == "Sascha"  # Empfänger-Vorschlag bleibt gültig
+
+
+def test_llm_parse_it_probability_fehlt_ist_none():
+    s = _parse({"recipient": "Sascha", "confidence": 0.7}, ["Sascha"])
+    assert s.it_probability is None
+    assert s.label == "Sascha"
+
+
+# ---- 6.4 Einschätzung IT-Consulting: Batch holt Altbestand nach ----------------
+
+
+async def test_collect_nimmt_alten_eintrag_ohne_einschaetzung_wieder_auf(tmp_path):
+    repo = Repository(tmp_path / "it.db")
+    sync = _sync_for_suggest(repo)
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+    # 1: alter Vorschlag ohne Wert, 2: vollständig, 3: „unbekannt“ mit gültigem Wert (vollständig),
+    # 4: angewendet ohne Wert (Empfänger in Paperless später entfernt), 5: kein Eintrag.
+    repo.set_recipient_cache(1, suggested_label="Sascha", confidence=0.9, reasoning=None,
+                             status=RecipientStatus.SUGGESTED)
+    repo.set_recipient_cache(2, suggested_label="Sascha", confidence=0.9, reasoning=None,
+                             status=RecipientStatus.SUGGESTED, it_probability=0.2)
+    repo.set_recipient_cache(3, suggested_label=None, confidence=0.0, reasoning=None,
+                             status=RecipientStatus.UNKNOWN, it_probability=0.0)
+    repo.mark_recipient_applied(4)
+
+    ids, rest = await sync._collect_missing_ids(
+        _FakeClient([1, 2, 3, 4, 5], page_size=10), field, limit=10
+    )
+    assert ids == [1, 4, 5]
+    assert rest == 0
+
+
+async def test_suggest_speichert_it_probability_im_cache(tmp_path):
+    from app.models import RecipientSuggestion
+
+    repo = Repository(tmp_path / "it2.db")
+    sync = _sync_for_suggest(repo)
+    field = SelectField(field_id=1, label_to_id={"Sascha": "s"}, id_to_label={"s": "Sascha"})
+    client = _WriteCapturingClient([])
+
+    class _Sug:
+        def __init__(self, s):
+            self._s = s
+
+        async def suggest(self, **_):
+            return self._s
+
+    # Einzelvorschlag unter der Auto-Schwelle: bleibt „suggested“, Wert wird gespeichert.
+    await sync._suggest_for_doc(
+        client, _Sug(RecipientSuggestion("Sascha", 0.1, "r", it_probability=0.83)),
+        field, _doc_with_id(7), None,
+    )
+    cache = repo.get_recipient_cache(7)
+    assert cache.status == RecipientStatus.SUGGESTED
+    assert cache.it_probability == 0.83
+
+    # Batch-Weg (guard_concurrent) und „unbekannt“: Wert 0.0 bleibt erhalten, nicht NULL.
+    await sync._suggest_for_doc(
+        client, _Sug(RecipientSuggestion(None, 0.0, None, it_probability=0.0)),
+        field, _doc_with_id(8), None, guard_concurrent=True,
+    )
+    cache = repo.get_recipient_cache(8)
+    assert cache.status == RecipientStatus.UNKNOWN
+    assert cache.it_probability == 0.0
+
+    # Nicht eingeschätzt (None) wird ausdrücklich als NULL gespeichert.
+    await sync._suggest_for_doc(
+        client, _Sug(RecipientSuggestion("Sascha", 0.1, "r")), field, _doc_with_id(9), None,
+    )
+    assert repo.get_recipient_cache(9).it_probability is None
+
+
+async def test_batch_verarbeitet_alten_eintrag_trotz_cache_statt_ihn_zu_ueberspringen(
+    tmp_path, monkeypatch
+):
+    sync, repo = _batch_sync(tmp_path, monkeypatch, [1], _StubSuggester("Sascha", 0.1))
+    repo.set_recipient_cache(1, suggested_label="Familie", confidence=0.5, reasoning=None,
+                             status=RecipientStatus.SUGGESTED)  # alt: ohne Einschätzung
+    await sync.suggest_recipients_batch(limit=10)
+    assert sync.batch_progress.skipped == 0
+    assert sync.batch_progress.done == 1
+
+
+def test_suggester_wird_mit_kontext_label_erzeugt(tmp_path):
+    from app import paperless_sync as ps
+    from app.config import Settings
+
+    settings = Settings(
+        _env_file=None, PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t",
+        ANTHROPIC_API_KEY="k", SEVDESK_CONTEXT_LABEL="Mein-Kontext",
+    )
+    suggester = ps.PaperlessSync(settings, Repository(tmp_path / "s.db"))._suggester()
+    assert suggester._context_label == "Mein-Kontext"

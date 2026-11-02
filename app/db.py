@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS paperless_invoices (
     last_synced_at    TEXT,
     error_message     TEXT,
     document_date     TEXT,
+    recipient_label   TEXT,
+    paperless_voucher_ref TEXT,
+    review_reason     TEXT,
     created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -111,7 +114,51 @@ CREATE TABLE IF NOT EXISTS document_recipients (
     confidence      REAL,
     reasoning       TEXT,
     status          TEXT    NOT NULL DEFAULT 'none',
+    it_probability  REAL,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ----------------------------------------------------------------------------
+-- SevDesk-Abgleich: lokaler Abzug der SevDesk-Belege (Vollabruf), die Zuordnung
+-- Rechnung <-> Beleg und der Zustand des Belegabrufs.
+-- `sevdesk_vouchers` hat bewusst keine Beziehung zu Rechnungen: Der Abzug gehört dem
+-- Abruf und wird als Ganzes ersetzt. `invoice_voucher_matches.voucher_id` hat bewusst
+-- keinen Fremdschlüssel auf den Abzug: Ein `id`-Treffer darf auf einen Beleg zeigen,
+-- der (noch/nicht mehr) im Abzug steht ("Beleg in SevDesk nicht gefunden").
+-- kind: id | similar | confirmed | rejected. Zeitstempel UTC 'YYYY-MM-DD HH:MM:SS'.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sevdesk_vouchers (
+    voucher_id    TEXT PRIMARY KEY,
+    voucher_date  TEXT,
+    supplier_name TEXT,
+    sum_gross     REAL,
+    currency      TEXT,
+    description   TEXT,
+    status        TEXT,
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sevdesk_vouchers_sum ON sevdesk_vouchers(sum_gross);
+
+CREATE TABLE IF NOT EXISTS invoice_voucher_matches (
+    invoice_id INTEGER NOT NULL REFERENCES paperless_invoices(id) ON DELETE CASCADE,
+    voucher_id TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    score      REAL,
+    decided_at TEXT,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (invoice_id, voucher_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_matches_voucher ON invoice_voucher_matches(voucher_id);
+CREATE INDEX IF NOT EXISTS idx_matches_kind ON invoice_voucher_matches(kind);
+
+-- Genau eine Zeile (id = 1): Stand des letzten Belegabrufs.
+CREATE TABLE IF NOT EXISTS sevdesk_sync_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    last_success_at TEXT,
+    last_error      TEXT,
+    last_error_at   TEXT
 );
 
 -- ----------------------------------------------------------------------------
@@ -147,6 +194,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("paperless_invoices", "document_date", "TEXT"),
     ("documents", "page_limit_approved", "INTEGER NOT NULL DEFAULT 0"),
+    ("paperless_invoices", "recipient_label", "TEXT"),
+    ("paperless_invoices", "paperless_voucher_ref", "TEXT"),
+    ("paperless_invoices", "review_reason", "TEXT"),
+    ("document_recipients", "it_probability", "REAL"),
 )
 
 
@@ -157,7 +208,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+# Indizes auf nachgezogene Spalten: Sie dürfen erst nach `_migrate()` angelegt werden,
+# sonst scheitert das Schema in einer bestehenden DB an der noch fehlenden Spalte.
+_POST_MIGRATION_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_invoices_recipient ON paperless_invoices(recipient_label)",
+)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _migrate(conn)
+    for statement in _POST_MIGRATION_INDEXES:
+        conn.execute(statement)
     conn.commit()

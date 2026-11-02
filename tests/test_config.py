@@ -547,3 +547,92 @@ def test_load_session_secret_im_modus_none_ohne_datei(tmp_path):
     s = Settings(_env_file=None, AUTH_MODE="none", DB_PATH=str(tmp_path / "lector.db"))
     assert config.load_session_secret(s) is None
     assert list(tmp_path.iterdir()) == []
+
+
+# --- SevDesk-Export-Übersicht ---------------------------------------------------------
+
+
+def test_sevdesk_uebersicht_standardwerte():
+    s = Settings(_env_file=None)
+    assert s.sevdesk_context_label == "IT-Consulting"
+    assert s.sevdesk_context_min_confidence == 0.75
+    assert s.sevdesk_match_window_days == 14
+    assert s.sevdesk_match_min_score == 0.4
+    assert s.sevdesk_voucher_sync_minutes == 60
+
+
+def _sevdesk_settings(tmp_path, **overrides):
+    return _vollstaendige_documentai_settings(
+        tmp_path,
+        FEATURE_PAPERLESS_SYNC=True,
+        PAPERLESS_URL="http://paperless",
+        PAPERLESS_TOKEN="t",
+        FEATURE_SEVDESK_EXPORT=True,
+        SEVDESK_API_TOKEN="tok-123",
+        **overrides,
+    )
+
+
+def test_sevdesk_uebersicht_gueltige_konfiguration_ohne_beanstandung(tmp_path):
+    assert validate_settings(_sevdesk_settings(tmp_path)) == []
+
+
+@pytest.mark.parametrize(
+    ("env", "wert"),
+    [
+        ("SEVDESK_CONTEXT_MIN_CONFIDENCE", "1.5"),
+        ("SEVDESK_CONTEXT_MIN_CONFIDENCE", "0"),
+        ("SEVDESK_MATCH_MIN_SCORE", "-0.1"),
+        ("SEVDESK_MATCH_WINDOW_DAYS", "0"),
+        ("SEVDESK_VOUCHER_SYNC_MINUTES", "-5"),
+        ("SEVDESK_CONTEXT_LABEL", "  "),
+    ],
+)
+def test_sevdesk_uebersicht_ungueltiger_wert_wird_beanstandet(tmp_path, env, wert):
+    problems = validate_settings(_sevdesk_settings(tmp_path, **{env: wert}))
+    assert len(problems) == 1
+    assert env in problems[0]
+
+
+def test_sevdesk_uebersicht_meldet_alle_beanstandungen_gemeinsam(tmp_path):
+    problems = validate_settings(
+        _sevdesk_settings(
+            tmp_path, SEVDESK_MATCH_MIN_SCORE="2", SEVDESK_MATCH_WINDOW_DAYS="0"
+        )
+    )
+    assert len(problems) == 2
+
+
+def test_sevdesk_uebersicht_grenzwerte_sind_gueltig(tmp_path):
+    s = _sevdesk_settings(
+        tmp_path, SEVDESK_CONTEXT_MIN_CONFIDENCE="1", SEVDESK_MATCH_MIN_SCORE="1"
+    )
+    assert validate_settings(s) == []
+    assert validate_settings(_sevdesk_settings(tmp_path, SEVDESK_MATCH_MIN_SCORE="0")) == []
+
+
+def test_sevdesk_kontext_label_wird_gestrippt():
+    s = Settings(_env_file=None, SEVDESK_CONTEXT_LABEL="  IT-Consulting \t")
+    assert s.sevdesk_context_label == "IT-Consulting"
+
+
+def test_sevdesk_konto_standard_ist_none_und_leer_wird_none():
+    assert Settings(_env_file=None).sevdesk_account_datev_id is None
+    assert Settings(_env_file=None, SEVDESK_ACCOUNT_DATEV_ID="").sevdesk_account_datev_id is None
+    assert Settings(_env_file=None, SEVDESK_ACCOUNT_DATEV_ID="  ").sevdesk_account_datev_id is None
+    assert (
+        Settings(_env_file=None, SEVDESK_ACCOUNT_DATEV_ID=" 4279 ").sevdesk_account_datev_id
+        == "4279"
+    )
+
+
+def test_sevdesk_konto_gueltig_und_leer_ohne_beanstandung(tmp_path):
+    assert validate_settings(_sevdesk_settings(tmp_path, SEVDESK_ACCOUNT_DATEV_ID="4279")) == []
+    assert validate_settings(_sevdesk_settings(tmp_path, SEVDESK_ACCOUNT_DATEV_ID="")) == []
+
+
+@pytest.mark.parametrize("wert", ["42a", "-5", "4.279", "vier"])
+def test_sevdesk_konto_mit_nichtziffern_wird_beanstandet(tmp_path, wert):
+    problems = validate_settings(_sevdesk_settings(tmp_path, SEVDESK_ACCOUNT_DATEV_ID=wert))
+    assert len(problems) == 1
+    assert "SEVDESK_ACCOUNT_DATEV_ID" in problems[0]

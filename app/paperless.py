@@ -417,3 +417,11 @@ class PaperlessClient:
     async def add_note(self, doc_id: int, note: str) -> None:
         resp = await self._client.post(f"/api/documents/{doc_id}/notes/", json={"note": note})
         resp.raise_for_status()
+
+    async def get_notes(self, doc_id: int) -> list[str]:
+        """Liest die Texte aller Notizen eines Dokuments (z. B. für idempotenten Rückschrieb)."""
+        resp = await self._client.get(f"/api/documents/{doc_id}/notes/")
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("results", []) if isinstance(data, dict) else data
+        return [str(n.get("note") or "") for n in items if isinstance(n, dict)]

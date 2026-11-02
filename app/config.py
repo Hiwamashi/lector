@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
@@ -103,6 +103,35 @@ class Settings(BaseSettings):
     sevdesk_tag: str = Field(default="sevdesk", alias="SEVDESK_TAG")
     # true = automatischer Export beim Sync, false = nur Vormerken (manuelle Bestätigung im UI).
     sevdesk_auto_export: bool = Field(default=False, alias="SEVDESK_AUTO_EXPORT")
+    # Export-Übersicht: Option des Empfänger-Felds, die als „IT-Consulting“ gilt (Einstufung,
+    # KI-Prompt, Empfänger-Rückschrieb); Mindest-Konfidenz für den Filter „IT-Consulting“.
+    sevdesk_context_label: str = Field(default="IT-Consulting", alias="SEVDESK_CONTEXT_LABEL")
+    sevdesk_context_min_confidence: float = Field(
+        default=0.75, alias="SEVDESK_CONTEXT_MIN_CONFIDENCE"
+    )
+    # Belegabgleich: Datumsfenster (Tage) und Mindest-Score für ähnliche Treffer sowie
+    # Intervall des Belegabrufs aus SevDesk.
+    sevdesk_match_window_days: int = Field(default=14, alias="SEVDESK_MATCH_WINDOW_DAYS")
+    sevdesk_match_min_score: float = Field(default=0.4, alias="SEVDESK_MATCH_MIN_SCORE")
+    sevdesk_voucher_sync_minutes: int = Field(default=60, alias="SEVDESK_VOUCHER_SYNC_MINUTES")
+    # Buchungskonto (accountDatev-ID) für die Belegposition mit Betrag. Ohne Wert legt der
+    # Export den Beleg weiterhin ohne Summe an (Design 9, Befund 1.1(b)).
+    sevdesk_account_datev_id: str | None = Field(default=None, alias="SEVDESK_ACCOUNT_DATEV_ID")
+
+    @field_validator("sevdesk_context_label", mode="after")
+    @classmethod
+    def _kontext_label_ohne_randleerraum(cls, value: str) -> str:
+        """Randleerraum gehört nicht zum Label (Vergleiche laufen auf dem gestrippten Wert)."""
+        return value.strip()
+
+    @field_validator("sevdesk_account_datev_id", mode="before")
+    @classmethod
+    def _leere_konto_id_ist_none(cls, value: object) -> object:
+        """Leere oder nur aus Leerraum bestehende Angabe heißt „nicht gesetzt“."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     # Namen der Paperless-Custom-Fields / -Tags für den Rückschrieb.
     cf_giro_iban: str = Field(default="Zahlung IBAN", alias="CF_GIRO_IBAN")
@@ -402,6 +431,32 @@ def validate_settings(
                 f"{_env_name('feature_paperless_sync')} ist nicht aktiv (Pflicht bei "
                 f"{schalter}=true — exportierbare Rechnungen entstehen ausschließlich im "
                 "Paperless-Sync)"
+            )
+
+        # Wertebereiche der Export-Übersicht. Hatte eines der Felder einen Typfehler, liegt
+        # es hier auf seinem (gültigen) Standardwert und löst keine Folgebeanstandung aus.
+        if not 0 < settings.sevdesk_context_min_confidence <= 1:
+            problems.append(
+                f"{_env_name('sevdesk_context_min_confidence')} muss größer als 0 und höchstens 1 "
+                f"sein, ist {settings.sevdesk_context_min_confidence}"
+            )
+        if not 0 <= settings.sevdesk_match_min_score <= 1:
+            problems.append(
+                f"{_env_name('sevdesk_match_min_score')} muss zwischen 0 und 1 liegen, "
+                f"ist {settings.sevdesk_match_min_score}"
+            )
+        for feld in ("sevdesk_match_window_days", "sevdesk_voucher_sync_minutes"):
+            if getattr(settings, feld) <= 0:
+                problems.append(
+                    f"{_env_name(feld)} muss größer als 0 sein, ist {getattr(settings, feld)}"
+                )
+        if not settings.sevdesk_context_label.strip():
+            problems.append(f"{_env_name('sevdesk_context_label')} darf nicht leer sein")
+        konto = settings.sevdesk_account_datev_id
+        if konto is not None and not (konto.isascii() and konto.isdigit()):
+            problems.append(
+                f"{_env_name('sevdesk_account_datev_id')} darf nur aus Ziffern bestehen, "
+                f"ist {konto!r}"
             )
 
     if settings.feature_recipient_llm:
