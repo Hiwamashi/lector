@@ -946,7 +946,7 @@ Offen und bewusst nicht umgesetzt:
 - Folge-Change `scan-paperless-verknuepfung`: umgesetzt, siehe Abschnitt „Zusatz-Feature: Scan-Verknüpfung
   mit Paperless“ unten.
 
-## Zusatz-Feature: Scan-Verknüpfung mit Paperless (scan-paperless-verknuepfung) — umgesetzt, Abnahme offen
+## Zusatz-Feature: Scan-Verknüpfung mit Paperless (scan-paperless-verknuepfung) — umgesetzt und abgenommen
 
 Jeder abgelegte Vorgang hält die SHA-256 der Datei fest, die in `consume` liegt. Ein Job sucht das
 Paperless-Dokument über diese Prüfsumme und verknüpft beides. Der Altbestand wird nachgeholt. Für
@@ -955,7 +955,8 @@ und ein enges Zeitfenster, nur bei genau einem Treffer. Die Vorgangsansicht zeig
 Verlauf, die Paperless-Ansicht oder bei fehlender Verknüpfung das lokale Original. Die Dokumente-Liste
 bekommt eine Spalte „Paperless“ und den Schnellfilter „Nicht in Paperless“.
 
-Change: `openspec/changes/scan-paperless-verknuepfung/` (noch nicht archiviert). Doku:
+Change: `openspec/changes/archive/2026-11-03-scan-paperless-verknuepfung/` (archiviert),
+Haupt-Spec `openspec/specs/scan-paperless-verknuepfung/spec.md`. Doku:
 `feature-documentation/paperless-integration/scan-verknuepfung.md` (neu),
 `feature-documentation/paperless-integration/dokumentansicht.md`, `feature-documentation/web-ui-sse.md`,
 `feature-documentation/konfiguration.md`, `feature-documentation/datenhaltung.md` und die Index-READMEs.
@@ -973,10 +974,10 @@ Change: `openspec/changes/scan-paperless-verknuepfung/` (noch nicht archiviert).
 | Dokumente-Liste: Spalte „Paperless“, Schnellfilter „Nicht in Paperless“; ohne Anbindung entfallen beide | ✅ |
 | Befund 1.1: Filter gegen die echte Paperless-Instanz geprüft, Ergebnis in `design.md` (D5) | ✅ (2026-11-02) |
 | CSS und Badges der Verknüpfung; Impeccable-Detector ohne neue Befunde (Aufgabe 5.4, ohne Browser-Prüfung) | ✅ |
-| Tests für Job, Ablage, Repository, Route, Leiste und Liste vorhanden (`tests/test_paperless_link.py`, `tests/test_scan_verknuepfung_web.py`, Erweiterungen in weiteren Testdateien) | ✅ (Gesamtlauf offen, siehe 6.2) |
-| Browser-Prüfung der Leiste bei 1800 und 390 px (Aufgabe 5.4) | ⬜ offen |
-| Gesamtprüfung `uv run pytest`, `uv run ruff check .`, `graphify update .`, `openspec validate` (Aufgabe 6.2) | ⬜ offen |
-| Abnahme auf dem NAS nach Rollout (Aufgabe 6.3): frischer Scan über die Prüfsumme, Altbestand nachgeholt, Leiste für verknüpft, fehlgeschlagen und nicht gefunden, Filter | ⬜ offen |
+| Tests für Job, Ablage, Repository, Route, Leiste und Liste vorhanden (`tests/test_paperless_link.py`, `tests/test_scan_verknuepfung_web.py`, Erweiterungen in weiteren Testdateien) | ✅ |
+| Browser-Prüfung der Leiste bei 1800 und 390 px, hell und dunkel (Aufgabe 5.4) | ✅ (2026-11-03) |
+| Gesamtprüfung `uv run pytest`, `uv run ruff check .`, `graphify update .`, `openspec validate` (Aufgabe 6.2) | ✅ |
+| Abnahme auf dem NAS nach Rollout (Aufgabe 6.3): frischer Scan über die Prüfsumme, Altbestand nachgeholt, Leiste für verknüpft, fehlgeschlagen und nicht gefunden, Filter | ✅ (2026-11-03) |
 
 Keine Datenmigration außer den neuen Spalten (`design.md`, Migration Plan). Ein Rollback auf das
 vorherige Image ist ohne Eingriff möglich; die zusätzlichen Spalten werden dann ignoriert.
@@ -984,8 +985,17 @@ vorherige Image ist ohne Eingriff möglich; die zusätzlichen Spalten werden dan
 Die Abnahme auf dem NAS (Aufgabe 6.3) ruhte, bis der Fix aus dem Change `paperless-sync-ohne-stillstand`
 ausgerollt war (vorher brach die Verknüpfung während des 40-Sekunden-Stillstands des Rechnungs-Syncs ab,
 siehe unten). Stand nach dem Fix: Altbestand nachgeholt, ganz überwiegend über den Dateinamen, wenige über
-die Prüfsumme (E-Rechnungen), einzelne „nicht gefunden“. Offen bleiben der frische Scan (Beleg der
-Prüfsummengleichheit) und die Sichtprüfung der Leiste.
+die Prüfsumme (E-Rechnungen), einzelne „nicht gefunden“. Abnahme am 2026-11-03 (anonymisiert):
+
+- Drei frisch gescannte Dokumente (OCR-Weg) wurden über die Prüfsumme verknüpft, ohne Namens-Ausnahme.
+  Damit ist belegt, dass Paperless die abgelegte Datei unverändert speichert und dieselbe Prüfsumme führt.
+- Leiste geprüft für „verknüpft“ (eingebettete Paperless-Ansicht), „nicht gefunden“ (lokales Original als
+  Vorschau) und „fehlgeschlagen“ (Verlauf aufgeklappt, Original darunter), jeweils bei 1800 und 390 px,
+  hell und dunkel, ohne horizontalen Überlauf.
+- Schnellfilter „Nicht in Paperless“ zeigt die zwei Vorgänge im Zustand „nicht gefunden“ und ist als aktiv
+  markiert.
+- Nicht im Browser geprüft: Erhalt von Verlauf und PDF bei einem SSE-Update, Download eines XML-Originals.
+  Beides ist durch Tests abgedeckt.
 
 Bewusst nicht umgesetzt: Gegenrichtung (Paperless-Dokumente ohne Lector-Vorgang), manuelle Zuordnung
 nicht gefundener Dokumente, Abfrage über die Paperless-Tasks-API.
