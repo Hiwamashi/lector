@@ -9,9 +9,8 @@ Filter `paperless=missing`), Templates `partials/document_panel.html`,
 `partials/document_original.html`, `partials/paperless_badge.html`, `partials/back_field.html`,
 `partials/history_rows.html`, `dashboard.html`.
 
-Change: `openspec/changes/scan-paperless-verknuepfung/` (Spec, Design, Aufgaben). Der Change ist
-noch nicht archiviert; die Abnahme auf dem NAS (Aufgabe 6.3) steht aus, siehe
-[Grenzen und Offenes](#grenzen-und-offenes).
+Change: `openspec/changes/archive/2026-11-03-scan-paperless-verknuepfung/` (Spec, Design, Aufgaben), archiviert nach der Abnahme am
+2026-11-03. Haupt-Spec: `openspec/specs/scan-paperless-verknuepfung/spec.md`.
 
 ## Zweck
 
@@ -21,8 +20,8 @@ außerdem das lokale Original.
 
 Dafür wird jeder abgelegte Vorgang über die SHA-256-Prüfsumme der abgelegten Datei mit dem
 Paperless-Dokument verbunden. Paperless speichert diese Prüfsumme als `checksum`. Laut
-`openspec/changes/scan-paperless-verknuepfung/design.md` (Abschnitt „Context“) ist das an einem echten
-Dokument geprüft; die Gleichheit bei einem frisch abgelegten Scan belegt erst Aufgabe 6.3. Für den Altbestand ohne gespeicherte Prüfsumme gibt es eine gekennzeichnete Ausnahme über
+`openspec/changes/archive/2026-11-03-scan-paperless-verknuepfung/design.md` (Abschnitt „Context“) ist das an einem echten
+Dokument geprüft. Die Abnahme (Aufgabe 6.3) hat die Gleichheit auch für frisch abgelegte Scans belegt. Für den Altbestand ohne gespeicherte Prüfsumme gibt es eine gekennzeichnete Ausnahme über
 den Dateinamen und ein enges Zeitfenster.
 
 Entscheidungen im Code:
@@ -399,16 +398,14 @@ und kein Filter sind sichtbar, und die Vorgangsansicht zeigt das lokale Original
   in dieser Richtung ist nicht Teil des Changes.
 - **Keine manuelle Zuordnung** nicht gefundener Dokumente und keine Abfrage über die Paperless-Tasks-API.
 - **Veränderte Datei in Paperless:** Vorgänge mit Prüfsumme haben keinen Namens-Fallback. Ändert
-  Paperless die Datei beim Ablegen, bleibt der Vorgang nach 24 Stunden `not_found`. Befund 1.1 prüft
-  die Filter, nicht die Prüfsumme eines frisch abgelegten Scans. Dieser Nachweis steht in Aufgabe 6.3
-  aus (laut `design.md`, D5).
+  Paperless die Datei beim Ablegen, bleibt der Vorgang nach 24 Stunden `not_found`. Bei der Abnahme
+  wurden frische Scans über die Prüfsumme verknüpft; Paperless hat die Dateien also unverändert
+  gespeichert.
 - **Wiederholversuch:** Eine zweite Datei in `consume` ist möglich (siehe Ablage).
 - **Altbestand im Filter:** Abgeschlossene Vorgänge mit `NULL` erscheinen im Filter „Nicht in Paperless“
   erst, nachdem der Nachhol-Lauf sie geprüft hat.
-- **Browser-Prüfung** (Aufgabe 5.4): Leiste bei 1800 und 390 px, offen. Der Impeccable-Detector meldet
-  keine neuen Befunde.
-- **Abnahme auf dem NAS** (Aufgabe 6.3): Frischer Scan, Altbestand, Leiste und Filter, offen. Die
-  Ergebnisse werden anonymisiert in `prd/PROGRESS.md` festgehalten.
+- **Nicht abgenommen:** Erhalt von aufgeklapptem Verlauf und PDF bei einem SSE-Update und der
+  Download eines XML-Originals wurden bei der Abnahme nicht im Browser geprüft. Beides decken Tests ab.
 
 Bewusst so entschieden (2026-11-02):
 
