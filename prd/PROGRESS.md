@@ -3,7 +3,7 @@
 > Fortlaufend gepflegter Stand der MVP-Umsetzung (siehe `PRD_Lector.md`).
 > Legende: ✅ umgesetzt · 🚧 in Arbeit · ⬜ offen
 
-**Stand:** 2026-11-02
+**Stand:** 2026-11-03
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
 
@@ -1044,6 +1044,30 @@ einschließlich Abruf aus Paperless, Belegabgleich unter 0,2 s. Der erste Lauf n
 geänderte Rechnungen (einmaliger Abgleich). Die Scan-Verknüpfung lief ohne Abbruch mit vollen Stapeln und
 hat den Altbestand abgearbeitet. Die Abnahme der Scan-Verknüpfung (Aufgabe 6.3) kann fortgesetzt werden.
 
-**Bekannt, nicht Teil des Changes:** Scheitert die Auflösung eines Korrespondentennamens (ID fehlt in der
-je Lauf geladenen Liste und der Einzelabruf schlägt fehl), wird der Korrespondent der Rechnung bis zum
-nächsten Lauf geleert. Das Verhalten bestand schon vorher; es fällt jetzt als Änderung mit Ereignis auf.
+**Erledigt:** Der bekannte Punkt zum geleerten Korrespondenten (Einzelabruf schlägt fehl) ist im Change
+`korrespondent-bei-aufloesungsfehler-behalten` behoben, siehe unten.
+
+## Korrespondent bleibt bei nicht auflösbarem Namen (Change korrespondent-bei-aufloesungsfehler-behalten) – umgesetzt, Abnahme auf dem NAS ausstehend
+
+**Ursache:** Scheiterte die Auflösung eines Korrespondentennamens (ID fehlt in der je Lauf geladenen Karte und
+der Einzelabruf schlägt fehl), lieferte `_correspondent_name` `None`. Der Rechnungs-Sync leerte den gespeicherten
+Korrespondenten. Seit `paperless-sync-ohne-stillstand` fiel das zusätzlich als Änderung mit `synced`-Ereignis
+und Live-Signal auf.
+
+**Fix:**
+
+- `_correspondent_for_sync` in `app/paperless_sync.py` unterscheidet „kein Korrespondent“ (`None`) von „nicht
+  auflösbar“ (`_UNSET`). Jede Ausnahme des Einzelabrufs, auch HTTP 404, gilt als nicht auflösbar und wird als
+  Warnung geloggt.
+- `_UNSET` in `InvoiceUpsert.correspondent` lässt das Feld in Vergleich und `UPDATE` weg. Neue Rechnungen werden
+  ohne Korrespondent angelegt; ein späterer Lauf trägt den Namen nach.
+- Der Korrespondent allein löst kein Schreiben, kein `synced`-Ereignis und kein Live-Signal aus. Hat das Dokument
+  keinen Korrespondenten, wird das Feld wie bisher geleert.
+- GiroCode-Kreditor und Empfänger-Vorschlag verhalten sich unverändert („kein Name“), loggen die Warnung aber ebenfalls.
+
+**Tests:** 13 neue Tests, Suite 1089 grün.
+
+Doku: `feature-documentation/paperless-integration/sync-und-aktionen.md`. Keine Migration, keine neue Konfiguration.
+Rollback: Revert des Commits.
+
+**Abnahme:** auf dem NAS ausstehend.

@@ -56,7 +56,7 @@ from .paperless import (
     SelectField,
 )
 from .recipient_llm import RecipientSuggester
-from .repository import InvoiceUpsert, Repository, UpsertResult
+from .repository import _UNSET, InvoiceUpsert, Repository, UpsertResult, _Unset
 from .sevdesk import SevdeskClient, _as_iso_date
 from .sevdesk_export_checks import (
     ExportBlockers,
@@ -505,9 +505,13 @@ class PaperlessSync:
         for doc, row in zip(docs, rows, strict=True):
             outcome = outcomes[doc.id]
             before = outcome.before
-            if before is None or (
-                before.title != doc.title or before.correspondent != row.correspondent
-            ):
+            # ``_UNSET`` (Name nicht auflösbar) zählt nicht als Korrespondentenwechsel.
+            corr_changed = (
+                not isinstance(row.correspondent, _Unset)
+                and before is not None
+                and before.correspondent != row.correspondent
+            )
+            if before is None or before.title != doc.title or corr_changed:
                 self.repo.add_invoice_event(outcome.invoice_id, InvoiceEventType.SYNCED)
             if before is None or before.giro_status == GiroStatus.NONE:
                 await self._extract_and_store(client, ids, outcome.invoice_id, doc, corr_map)
@@ -524,7 +528,7 @@ class PaperlessSync:
         return InvoiceUpsert(
             paperless_id=doc.id,
             title=doc.title,
-            correspondent=await self._correspondent_name(client, doc, corr_map),
+            correspondent=await self._correspondent_for_sync(client, doc, corr_map),
             document_date=doc.created,
             **self._mirrored_fields(client, ids, doc, recipient_field),
         )
@@ -653,14 +657,32 @@ class PaperlessSync:
         übergeben — wie beim Einzelvorschlag für genau ein Dokument —, greift der bisherige
         Einzelabruf als Rückfall, damit der Name nicht stillschweigend verloren geht.
         """
+        result = await self._correspondent_for_sync(client, doc, corr_map)
+        return None if isinstance(result, _Unset) else result
+
+    async def _correspondent_for_sync(
+        self,
+        client: PaperlessClient,
+        doc: PaperlessDocument,
+        corr_map: dict[int, str] | None = None,
+    ) -> str | None | _Unset:
+        """Wie ``_correspondent_name``, trennt aber „kein Korrespondent“ von „nicht auflösbar“.
+
+        ``None``: das Dokument hat keinen Korrespondenten. ``_UNSET``: er hat einen, der Name
+        ist aber nicht zu ermitteln (jede Ausnahme des Einzelabrufs, auch HTTP 404) — der
+        Rechnungs-Sync lässt den gespeicherten Namen dann stehen, statt ihn zu leeren.
+        """
         if not doc.correspondent_id:
             return None
         if corr_map is not None and doc.correspondent_id in corr_map:
             return corr_map[doc.correspondent_id]
         try:
             return await client.get_correspondent_name(doc.correspondent_id)
-        except Exception:
-            return None
+        except Exception as exc:
+            log.warning(
+                "Korrespondent %s nicht auflösbar: %s", doc.correspondent_id, type(exc).__name__
+            )
+            return _UNSET
 
     async def _extract_and_store(
         self,

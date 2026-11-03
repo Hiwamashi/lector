@@ -15,7 +15,7 @@ from app.models import (
 )
 from app.paperless import PaperlessClient
 from app.paperless_sync import PaperlessSync
-from app.repository import InvoiceUpsert, Repository, UpsertResult
+from app.repository import _UNSET, InvoiceUpsert, Repository, UpsertResult
 
 
 def make_repo(tmp_path):
@@ -1026,3 +1026,202 @@ def test_upsert_invoices_doppelte_paperless_id_erstes_ergebnis_gilt(tmp_path):
     assert result[1].result == UpsertResult.NEW
     assert result[1].before is None
     assert tokens == [f"inv:{result[1].invoice_id}"]
+
+
+# ---- Nicht auflösbarer Korrespondent (Change korrespondent-bei-aufloesungsfehler-behalten) ----
+
+
+def test_upsert_unset_korrespondent_allein_gilt_als_unveraendert(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    inv_id = repo.upsert_invoice(paperless_id=1, title="A", correspondent="Acme")
+    _stamp(repo, inv_id)
+    tokens.clear()
+    before = repo._conn.total_changes
+
+    result = repo.upsert_invoices(
+        [InvoiceUpsert(paperless_id=1, title="A", correspondent=_UNSET)]
+    )
+
+    assert result[1].result == UpsertResult.UNCHANGED
+    assert repo._conn.total_changes == before
+    assert tokens == []
+    assert _synced_at(repo, inv_id) == "2020-01-01 00:00:00"
+    assert repo.get_invoice(inv_id).correspondent == "Acme"
+
+
+def test_upsert_neuer_titel_mit_unset_korrespondent_behaelt_korrespondent(tmp_path):
+    repo, tokens = _repo_mit_tokens(tmp_path)
+    inv_id = repo.upsert_invoice(paperless_id=1, title="A", correspondent="Acme")
+    tokens.clear()
+
+    result = repo.upsert_invoices(
+        [InvoiceUpsert(paperless_id=1, title="B", correspondent=_UNSET)]
+    )
+
+    assert result[1].result == UpsertResult.CHANGED
+    inv = repo.get_invoice(inv_id)
+    assert inv.title == "B"
+    assert inv.correspondent == "Acme"
+    assert tokens == [f"inv:{inv_id}"]
+
+
+def test_upsert_einzelweg_akzeptiert_unset_korrespondent(tmp_path):
+    repo, _ = _repo_mit_tokens(tmp_path)
+    inv_id = repo.upsert_invoice(paperless_id=1, title="A", correspondent="Acme")
+
+    repo.upsert_invoice(paperless_id=1, title="B", correspondent=_UNSET)
+
+    inv = repo.get_invoice(inv_id)
+    assert (inv.title, inv.correspondent) == ("B", "Acme")
+
+
+def test_upsert_neuanlage_mit_unset_korrespondent_speichert_null(tmp_path):
+    repo, _ = _repo_mit_tokens(tmp_path)
+
+    result = repo.upsert_invoices(
+        [InvoiceUpsert(paperless_id=1, title="A", correspondent=_UNSET)]
+    )
+
+    assert result[1].result == UpsertResult.NEW
+    assert repo.get_invoice(result[1].invoice_id).correspondent is None
+
+
+# ---- _correspondent_for_sync und Sync bei fehlschlagendem Einzelabruf ---------------------
+
+
+class _FailingCorrClient(_CorrCountingClient):
+    """Einzelabruf wirft; ``error`` bestimmt die Ausnahme (Standard: Verbindungsfehler)."""
+
+    def __init__(self, docs, corr_map, error=None):
+        super().__init__(docs, corr_map)
+        self.error = error or RuntimeError("boom")
+
+    async def get_correspondent_name(self, correspondent_id):
+        self.single_lookup_calls.append(correspondent_id)
+        raise self.error
+
+
+def _neu_sync(tmp_path):
+    repo = make_repo(tmp_path)
+    return PaperlessSync(Settings(PAPERLESS_URL="http://x", PAPERLESS_TOKEN="t"), repo), repo
+
+
+async def test_correspondent_for_sync_findet_name_in_karte(tmp_path):
+    sync, _ = _neu_sync(tmp_path)
+    doc = _corr_doc(1)
+    client = _CorrCountingClient([doc], {})
+
+    name = await sync._correspondent_for_sync(client, doc, {173: "Stadtwerke"})
+
+    assert name == "Stadtwerke"
+    assert client.single_lookup_calls == []
+
+
+async def test_correspondent_for_sync_einzelabruf_liefert_name(tmp_path):
+    sync, _ = _neu_sync(tmp_path)
+    doc = _corr_doc(1, correspondent_id=999)
+    client = _CorrCountingClient([doc], {999: "Ganz neu"})
+
+    name = await sync._correspondent_for_sync(client, doc, {173: "Stadtwerke"})
+
+    assert name == "Ganz neu"
+    assert client.single_lookup_calls == [999]
+
+
+async def test_correspondent_for_sync_ausnahme_liefert_unset_und_warnung(tmp_path, caplog):
+    sync, _ = _neu_sync(tmp_path)
+    doc = _corr_doc(1, correspondent_id=999)
+    client = _FailingCorrClient([doc], {})
+
+    with caplog.at_level("WARNING", logger="app.paperless_sync"):
+        name = await sync._correspondent_for_sync(client, doc, {})
+
+    assert name is _UNSET
+    warnungen = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnungen) == 1
+    assert "999" in warnungen[0].getMessage()
+    assert "RuntimeError" in warnungen[0].getMessage()
+
+
+async def test_correspondent_for_sync_http_404_liefert_unset(tmp_path):
+    import httpx
+
+    sync, _ = _neu_sync(tmp_path)
+    doc = _corr_doc(1, correspondent_id=999)
+    request = httpx.Request("GET", "http://x/api/correspondents/999/")
+    error = httpx.HTTPStatusError(
+        "404", request=request, response=httpx.Response(404, request=request)
+    )
+    client = _FailingCorrClient([doc], {}, error=error)
+
+    assert await sync._correspondent_for_sync(client, doc, {}) is _UNSET
+
+
+async def test_correspondent_for_sync_ohne_korrespondent_liefert_none(tmp_path):
+    sync, _ = _neu_sync(tmp_path)
+    doc = _corr_doc(1, correspondent_id=None)
+    client = _CorrCountingClient([doc], {})
+
+    assert await sync._correspondent_for_sync(client, doc, {}) is None
+    assert client.single_lookup_calls == []
+
+
+async def test_correspondent_name_loggt_fehlschlag_genau_einmal(tmp_path, caplog):
+    sync, _ = _neu_sync(tmp_path)
+    doc = _corr_doc(1, correspondent_id=999)
+    client = _FailingCorrClient([doc], {})
+
+    with caplog.at_level("WARNING", logger="app.paperless_sync"):
+        name = await sync._correspondent_name(client, doc, {})
+
+    assert name is None
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+async def test_sync_fehlgeschlagener_einzelabruf_behaelt_korrespondent_ohne_ereignis(
+    tmp_path, monkeypatch
+):
+    sync, repo = _neu_sync(tmp_path)
+    monkeypatch.setattr(sync, "_extract_and_store", lambda *_a, **_k: _noop())
+    inv_id = repo.upsert_invoice(paperless_id=1, title="Rechnung 1", correspondent="Stadtwerke")
+    repo.add_invoice_event(inv_id, InvoiceEventType.SYNCED)
+    client = _FailingCorrClient([_corr_doc(1, correspondent_id=999)], {})
+
+    stats = await sync._sync_invoices(client, {"doctype": 1}, {})
+
+    assert stats.changed == 0
+    assert repo.get_invoice(inv_id).correspondent == "Stadtwerke"
+    assert len(repo.list_invoice_events(inv_id)) == 1
+
+
+async def test_sync_neue_rechnung_ohne_aufloesung_bekommt_name_im_folgelauf(
+    tmp_path, monkeypatch
+):
+    sync, repo = _neu_sync(tmp_path)
+    monkeypatch.setattr(sync, "_extract_and_store", lambda *_a, **_k: _noop())
+    docs = [_corr_doc(1, correspondent_id=999)]
+
+    await sync._sync_invoices(_FailingCorrClient(docs, {}), {"doctype": 1}, {})
+    inv = repo.get_invoice_by_paperless(1)
+    assert inv.correspondent is None
+    assert len(repo.list_invoice_events(inv.id)) == 1
+
+    stats = await sync._sync_invoices(
+        _CorrCountingClient(docs, {999: "Ganz neu"}), {"doctype": 1}, {}
+    )
+
+    assert stats.changed == 1
+    assert repo.get_invoice(inv.id).correspondent == "Ganz neu"
+    assert len(repo.list_invoice_events(inv.id)) == 2
+
+
+async def test_sync_dokument_ohne_korrespondent_leert_das_feld(tmp_path, monkeypatch):
+    sync, repo = _neu_sync(tmp_path)
+    monkeypatch.setattr(sync, "_extract_and_store", lambda *_a, **_k: _noop())
+    inv_id = repo.upsert_invoice(paperless_id=1, title="Rechnung 1", correspondent="Stadtwerke")
+    client = _CorrCountingClient([_corr_doc(1, correspondent_id=None)], {})
+
+    stats = await sync._sync_invoices(client, {"doctype": 1}, {})
+
+    assert stats.changed == 1
+    assert repo.get_invoice(inv_id).correspondent is None

@@ -212,7 +212,8 @@ class InvoiceUpsert:
 
     paperless_id: int
     title: str | None
-    correspondent: str | None
+    # ``_UNSET``: Name nicht ermittelbar — gespeicherter Wert bleibt stehen (beim INSERT NULL).
+    correspondent: str | None | _Unset
     document_date: str | None = None
     recipient_label: str | None | _Unset = _UNSET
     paperless_voucher_ref: str | None | _Unset = _UNSET
@@ -908,7 +909,7 @@ class Repository:
         *,
         paperless_id: int,
         title: str | None,
-        correspondent: str | None,
+        correspondent: str | None | _Unset,
         document_date: str | None = None,
         recipient_label: str | None | _Unset = _UNSET,
         paperless_voucher_ref: str | None | _Unset = _UNSET,
@@ -920,7 +921,8 @@ class Repository:
         ``recipient_label`` und ``paperless_voucher_ref`` spiegeln Paperless-Felder: Wird ein
         Wert übergeben, ersetzt er den lokalen — ``None`` heißt „in Paperless leer“ und setzt
         die Spalte auf NULL. Wird das Argument weggelassen, bleibt die Spalte unangetastet
-        (bestehende Aufrufer, die die Felder nicht kennen, löschen so nichts).
+        (bestehende Aufrufer, die die Felder nicht kennen, löschen so nichts). Dasselbe gilt
+        für ``correspondent=_UNSET`` („Name nicht ermittelbar“); ``None`` leert das Feld.
 
         Geschrieben wird nur, wenn die Rechnung neu ist oder sich eine übergebene Angabe
         (in der gespeicherten Form) unterscheidet. Eine unveränderte Rechnung löst weder einen
@@ -981,9 +983,10 @@ class Repository:
         """Vergleichen und ggf. schreiben — ohne Commit; der Aufrufer hält ``self._lock``."""
         values: dict[str, object] = {
             "title": row.title,
-            "correspondent": row.correspondent,
             "document_date": _normalize_doc_date(row.document_date),
         }
+        if not isinstance(row.correspondent, _Unset):
+            values["correspondent"] = row.correspondent
         for name, value in (
             ("recipient_label", row.recipient_label),
             ("paperless_voucher_ref", row.paperless_voucher_ref),
