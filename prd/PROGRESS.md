@@ -3,7 +3,7 @@
 > Fortlaufend gepflegter Stand der MVP-Umsetzung (siehe `PRD_Lector.md`).
 > Legende: ✅ umgesetzt · 🚧 in Arbeit · ⬜ offen
 
-**Stand:** 2026-11-03
+**Stand:** 2026-11-04
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
 
@@ -1047,7 +1047,7 @@ hat den Altbestand abgearbeitet. Die Abnahme der Scan-Verknüpfung (Aufgabe 6.3)
 **Erledigt:** Der bekannte Punkt zum geleerten Korrespondenten (Einzelabruf schlägt fehl) ist im Change
 `korrespondent-bei-aufloesungsfehler-behalten` behoben, siehe unten.
 
-## Korrespondent bleibt bei nicht auflösbarem Namen (Change korrespondent-bei-aufloesungsfehler-behalten) – umgesetzt, Abnahme auf dem NAS ausstehend
+## Korrespondent bleibt bei nicht auflösbarem Namen (Change korrespondent-bei-aufloesungsfehler-behalten) – umgesetzt und abgenommen
 
 **Ursache:** Scheiterte die Auflösung eines Korrespondentennamens (ID fehlt in der je Lauf geladenen Karte und
 der Einzelabruf schlägt fehl), lieferte `_correspondent_name` `None`. Der Rechnungs-Sync leerte den gespeicherten
@@ -1070,4 +1070,7 @@ und Live-Signal auf.
 Doku: `feature-documentation/paperless-integration/sync-und-aktionen.md`. Keine Migration, keine neue Konfiguration.
 Rollback: Revert des Commits.
 
-**Abnahme:** auf dem NAS ausstehend.
+**Abnahme (04.11.):** Nach dem Rollout `/healthz` fünf Minuten lang alle 10 s abgefragt (ein 502 während des
+Neustarts, danach durchgehend 200). In der Rechnungsliste ist bei allen 200 Rechnungen der Korrespondent gefüllt.
+Seit dem Rollout kein neuer Verlaufseintrag; der einzige Eintrag des Tages stammt von einer vorher neu angelegten
+Rechnung. Der Fehlerfall selbst (Einzelabruf scheitert) ist im Betrieb nicht gezielt auslösbar und durch Tests abgedeckt.
