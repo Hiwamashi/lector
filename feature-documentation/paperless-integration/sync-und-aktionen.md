@@ -22,7 +22,8 @@ URL + Token). Per `asyncio.Lock` gegen Überlappung gesichert.
 1. `_sync_invoices` — Dokumente mit dem Rechnungs-Dokumententyp listen und zweiphasig
    gesammelt schreiben (`upsert_invoices`, siehe „Änderungserkennung“ unten). Ein `synced`-Event
    wird nur bei echter Änderung geschrieben (Neuanlage bzw. geänderter Titel/Korrespondent —
-   Vergleich mit dem Stand vor dem Schreiben), damit `invoice_events` bei Idle-Syncs nicht
+   Vergleich mit dem Stand vor dem Schreiben; ein nicht auflösbarer Korrespondent zählt nicht,
+   siehe „Korrespondenten-Auflösung“), damit `invoice_events` bei Idle-Syncs nicht
    unbegrenzt wächst. Bei
    `giro_status == none`: Zahldaten extrahieren (E-Rechnung aus XML bzw. eingebetteter XML via
    `detection.extract_embedded_invoice_xml`, sonst OCR-Heuristik), speichern und — falls
@@ -62,12 +63,39 @@ Zwei bewusste Entscheidungen dabei:
   weil der Korrespondent in Paperless erst NACH dem Bau der Karte angelegt wurde), holt
   `_correspondent_name` den Namen trotzdem per Einzelabruf (`get_correspondent_name`) — sonst
   würde der Name still als „kein Korrespondent" in der Rechnung landen.
+- **Fehlschlag des Einzelabrufs.** Jede Ausnahme des Einzelabrufs gilt als „nicht auflösbar“,
+  auch HTTP 404 (etwa wenn der Korrespondent zwischen Kartenbau und Abruf gelöscht wurde). Die
+  Hilfsfunktion `_correspondent_for_sync(client, doc, corr_map=None)` in `app/paperless_sync.py`
+  liefert dann `_UNSET` statt `None`. Sie unterscheidet drei Fälle:
+  - `None`: das Dokument hat keinen Korrespondenten,
+  - der Name: Karte oder Einzelabruf haben ihn geliefert,
+  - `_UNSET`: das Dokument hat einen Korrespondenten, der Name ist aber nicht zu ermitteln.
+
+  Der Rechnungs-Sync (`_upsert_row`) nutzt `_correspondent_for_sync` direkt. `_correspondent_name`
+  ruft sie auf und gibt `_UNSET` als `None` zurück. GiroCode-Kreditor (`_extract_and_store`) und
+  Empfänger-Vorschlag (`suggest_recipient`, `suggest_recipients_batch`) behandeln einen
+  Fehlschlag weiter als „kein Name“. Die Warnung im Log erscheint dabei ebenfalls.
 - **Der Einzelvorschlagspfad bleibt einzeln.** `suggest_recipient(paperless_id)` (Vorschlag
   für genau EIN Dokument) ruft `_correspondent_name` ohne Karte auf — die vollständige Karte
   für ein einzelnes Dokument zu holen wäre teurer als der direkte Einzelabruf. Der
   KI-Batch-Lauf (`suggest_recipients_batch`) dagegen holt — analog zu `sync_once()` — seine
   eigene, unabhängige Karte einmal für den gesamten Batch (nur wenn tatsächlich Dokumente
   anstehen); Sync-Lauf und Batch-Lauf sind getrennte Läufe mit je eigener Karte.
+
+#### Verhalten des Rechnungs-Syncs bei nicht auflösbarem Korrespondenten
+
+- Der gespeicherte Korrespondent bleibt unverändert. `_upsert_invoice_locked` in
+  `app/repository.py` lässt das Feld bei `_UNSET` aus Vergleich und `UPDATE` weg.
+- Allein dieser Fall löst kein Schreiben, kein `synced`-Ereignis und kein Live-Signal aus.
+- Andere geänderte Angaben, etwa der Titel, werden wie gewohnt geschrieben. Der Korrespondent
+  bleibt dabei stehen.
+- Eine neue Rechnung wird ohne Korrespondent angelegt (`NULL`). Ein späterer Lauf mit erfolgreicher
+  Auflösung trägt den Namen nach. Das gilt als Änderung und erzeugt ein `synced`-Ereignis.
+- Hat das Paperless-Dokument keinen Korrespondenten, wird das Feld geleert (`None`).
+- Der Fehlschlag wird als Warnung im Logger `lector.paperless_sync` protokolliert:
+  `Korrespondent <id> nicht auflösbar: <Fehlertyp>`. Die Zeile nennt die Korrespondenten-ID und
+  erscheint je Dokument. Bei mehreren Dokumenten desselben Korrespondenten kann sie sich im
+  selben Lauf wiederholen. Das ist anders als die Laufzeit-Logzeile unten, die keine IDs nennt.
 
 ### Tag-Weg (`_sync_sevdesk_tag`)
 
@@ -123,7 +151,8 @@ Thread ist nicht Teil des Changes.
   Offset entfernt, wie beim Schreiben). Bei `recipient_label` und `paperless_voucher_ref` sind leerer
   Text und `None` dasselbe; gespeichert wird `None`. Titel und Korrespondent werden ohne diese
   Umwandlung übernommen.
-- Nicht auflösbare Felder bleiben unberührt. Fehlt das Empfänger-Feld oder das Feld „SevDesk-Beleg“
+- Nicht auflösbare Felder bleiben unberührt. Das gilt auch für einen nicht auflösbaren Korrespondenten
+  (`_UNSET`, siehe „Korrespondenten-Auflösung“): Er wird weder verglichen noch geschrieben. Fehlt das Empfänger-Feld oder das Feld „SevDesk-Beleg“
   in Paperless, wird der Parameter nicht übergeben (`_mirrored_fields` in `app/paperless_sync.py`).
   Die lokale Spalte bleibt dann stehen und zählt nicht als Änderung. Ist das Feld vorhanden, am
   Dokument aber leer, ergibt das `None` und damit eine Änderung auf NULL.
@@ -159,7 +188,8 @@ Vergleichslogik und committet nur bei Änderung.
    Dokumente (beim Paginieren nach `-created` können sich Seiten verschieben); im Stapel gilt ohnehin
    das erste Vorkommen einer `paperless_id`.
 3. **Folgeschritte je Dokument** (Vergleich mit `before` aus Schritt 2):
-   - `SYNCED`-Ereignis nur bei Neuanlage oder geändertem Titel/Korrespondenten.
+   - `SYNCED`-Ereignis nur bei Neuanlage oder geändertem Titel/Korrespondenten. Ein nicht auflösbarer
+     Korrespondent (`_UNSET`) zählt nicht als Änderung.
    - `_extract_and_store` bei Neuanlage **oder** `giro_status == none`. Der wiederholte Zahldaten-Versuch
      für `none` bleibt also auch bei unveränderten Rechnungen bestehen. Das ist bewusst nicht Teil des
      Changes.
