@@ -67,7 +67,7 @@ services:
       USERMAP_GID: 1000
 
   gotenberg:
-    image: docker.io/gotenberg/gotenberg:8.25
+    image: docker.io/gotenberg/gotenberg:8.40
     restart: unless-stopped
     command:
       - "gotenberg"
@@ -233,7 +233,7 @@ services:
   #   Der Dienst braucht ihn nur fuer die semantische Suche, die aus bleibt.
   # - Oeffentlich nur ueber den Reverse-Proxy (HTTPS) unter PAPERLESS_MCP_HOST.
   paperless-mcp:
-    image: ghcr.io/orellbuehler/paperless-mcp:1.4.1
+    image: ghcr.io/orellbuehler/paperless-mcp:1.6.0
     restart: unless-stopped
     depends_on:
       - webserver
