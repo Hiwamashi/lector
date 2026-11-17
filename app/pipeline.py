@@ -142,7 +142,12 @@ def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) 
     repo.update_document(doc.id, total_pages=total, ocr_engine=adapter.name, processed_pages=0)
 
     repo.add_event(doc.id, EventType.PREPROCESSING, f"{total} Seite(n) vorverarbeiten")
-    preprocessed = [preprocess_page(img, settings) for img in images]
+    prepared = [preprocess_page(img, settings) for img in images]
+    # Die Rohseiten werden nicht mehr gebraucht; der Speicher bleibt bei großen Scans knapp.
+    del images
+    # OCR bekommt das aufbereitete (ggf. graustufige) Bild, das PDF zeigt die Seite in Farbe.
+    ocr_images = [p.ocr for p in prepared]
+    visible_images = [p.visible for p in prepared]
 
     def on_progress(processed: int, from_cache: bool = False) -> None:
         repo.set_progress(doc.id, processed)
@@ -178,11 +183,11 @@ def _handle_ocr(doc, repo: Repository, settings: Settings, adapter: OcrAdapter) 
                 )
             )
 
-    ocr = adapter.process(preprocessed, on_progress, store)
+    ocr = adapter.process(ocr_images, on_progress, store)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_pdf = Path(tmp) / _output_pdf_name(doc.original_filename)
-        build_sandwich_pdf(preprocessed, ocr, tmp_pdf)
+        build_sandwich_pdf(visible_images, ocr, tmp_pdf)
         repo.add_event(doc.id, EventType.BUILT_PDF, "Sandwich-PDF erzeugt")
         renamed = tmp_pdf.with_name(_output_pdf_name(doc.original_filename))
         if renamed != tmp_pdf:

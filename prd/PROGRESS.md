@@ -3,7 +3,7 @@
 > Fortlaufend gepflegter Stand der MVP-Umsetzung (siehe `PRD_Lector.md`).
 > Legende: ✅ umgesetzt · 🚧 in Arbeit · ⬜ offen
 
-**Stand:** 2026-11-04
+**Stand:** 2026-11-17
 
 ## Getroffene Entscheidungen (vormals offene Fragen)
 
@@ -1074,3 +1074,29 @@ Rollback: Revert des Commits.
 Neustarts, danach durchgehend 200). In der Rechnungsliste ist bei allen 200 Rechnungen der Korrespondent gefüllt.
 Seit dem Rollout kein neuer Verlaufseintrag; der einzige Eintrag des Tages stammt von einer vorher neu angelegten
 Rechnung. Der Fehlerfall selbst (Einzelabruf scheitert) ist im Betrieb nicht gezielt auslösbar und durch Tests abgedeckt.
+
+## Bildebene in Farbe (Change `sichtbare-ebene-in-farbe`) — in Umsetzung
+
+**Problem:** Dokumente auf dem OCR-Weg kamen in Graustufen bei Paperless an. Dasselbe aufbereitete Bild
+(Deskew + CLAHE-Graustufen) ging an Document AI und als sichtbare Ebene ins Sandwich-PDF. Stempel, farbige
+Logos, blaue Unterschriften und Textmarker gingen im Archivbild verloren.
+
+**Lösung:** `preprocess_page` liefert ein Bildpaar `PreparedPage(visible, ocr)`. Der Deskew läuft einmal und
+gilt für beide Bilder, damit der Textlayer deckungsgleich bleibt. `visible` ist das Original in Farbe, nur
+schieflagenkorrigiert, und geht ins PDF. `ocr` erhält bei `PREPROCESS_CONTRAST` Graustufen + CLAHE und geht nur
+an die OCR-Engine. `PREPROCESS_CONTRAST` wirkt damit nur noch auf die OCR-Eingabe. Der Chunk-Fingerabdruck
+bleibt unverändert, weil die OCR-Eingabe bitgleich bleibt; bewahrte Blockergebnisse bleiben gültig.
+
+**Bewusste Abweichung vom PRD §3.1:** Dort steht „(vorverarbeitetes) Originalbild als sichtbare Ebene“.
+Umgesetzt ist: Original in Farbe, nur Deskew. Kontrast und Graustufen gelten nur für die OCR-Eingabe.
+
+**Auswirkung:** Ergebnis-PDFs mit farbigen Vorlagen werden größer (die verlustfreie Einbettung bleibt).
+Blasse Scans wirken im Archiv blasser als bisher; die Suche hängt am Textlayer, nicht am Bildkontrast.
+
+**Offen:**
+
+- Größenvergleich vorher/nachher an echten Scans (farbig, grau, Handyfoto) steht noch aus. Er wird in der
+  Abnahme gemessen und hier nachgetragen.
+- Bereits importierte Dokumente in Paperless bleiben grau. Eine Nachverarbeitung ist nicht vorgesehen.
+
+Doku: `feature-documentation/bildvorverarbeitung.md`, `feature-documentation/sandwich-pdf.md`.

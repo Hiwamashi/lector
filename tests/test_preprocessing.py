@@ -39,10 +39,46 @@ def test_enhance_contrast_returns_grayscale():
     assert out.mode == "L"
 
 
+def _colored_page() -> Image.Image:
+    page = _text_page()
+    ImageDraw.Draw(page).rectangle([400, 20, 560, 70], fill=(220, 30, 30))
+    return page
+
+
 def test_preprocess_page_respects_flags():
     page = _text_page()
     settings = Settings(PREPROCESS_DESKEW="false", PREPROCESS_CONTRAST="false")
     out = preprocess_page(page, settings)
-    # Ohne aktive Schritte bleibt das Bild unverändert (gleiche Größe, RGB)
-    assert out.size == page.size
-    assert out.mode == "RGB"
+    # Ohne aktive Schritte bleiben beide Bilder unverändert (gleiche Größe, RGB)
+    for img in (out.visible, out.ocr):
+        assert img.size == page.size
+        assert img.mode == "RGB"
+        assert np.array_equal(np.array(img), np.array(page))
+
+
+def test_contrast_only_affects_the_ocr_image():
+    page = _colored_page()
+    settings = Settings(PREPROCESS_DESKEW="false", PREPROCESS_CONTRAST="true")
+    out = preprocess_page(page, settings)
+    assert out.ocr.mode == "L"
+    assert out.visible.mode == "RGB"
+    assert out.visible.getpixel((480, 45)) == (220, 30, 30)
+
+
+def test_visible_layer_ignores_the_contrast_switch():
+    page = _colored_page()
+    an = preprocess_page(page, Settings(PREPROCESS_CONTRAST="true"))
+    aus = preprocess_page(page, Settings(PREPROCESS_CONTRAST="false"))
+    assert np.array_equal(np.array(an.visible), np.array(aus.visible))
+
+
+def test_deskew_applies_identically_to_both_images():
+    skewed = _colored_page().rotate(-7, expand=False, fillcolor="white")
+    out = preprocess_page(skewed, Settings(PREPROCESS_DESKEW="true", PREPROCESS_CONTRAST="true"))
+    assert out.visible.size == out.ocr.size == skewed.size
+    assert out.visible.mode == "RGB"
+    for img in (out.visible, out.ocr):
+        assert abs(estimate_skew_angle(np.array(img.convert("L")))) < 2.0
+    # Gleiche Geometrie: Die OCR-Eingabe ist exakt die Graustufen-/CLAHE-Fassung der
+    # sichtbaren Ebene.
+    assert np.array_equal(np.array(out.ocr), np.array(enhance_contrast(out.visible)))

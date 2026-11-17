@@ -1,5 +1,5 @@
-"""Sandwich-PDF-Bau: vorverarbeitetes Bild als sichtbare Ebene + unsichtbarer,
-durchsuchbarer Textlayer aus den OCR-Token (siehe PRD §3.1).
+"""Sandwich-PDF-Bau: Seitenbild in Farbe (schieflagenkorrigiert) als sichtbare Ebene +
+unsichtbarer, durchsuchbarer Textlayer aus den OCR-Token (siehe PRD §3.1).
 
 Die OCR-Token liegen in normalisierten Seitenkoordinaten (0..1, Ursprung oben-links). Die
 PDF-Seitengröße wird auf die Bildpixel (1 px = 1 pt) gesetzt; Bild und Text werden auf diese

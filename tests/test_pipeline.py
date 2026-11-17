@@ -88,6 +88,36 @@ def test_ocr_path_produces_searchable_pdf(tmp_path):
     assert "Wort" in PdfReader(str(out[0])).pages[0].extract_text()
 
 
+def test_visible_layer_keeps_color_while_ocr_gets_grayscale(tmp_path):
+    from PIL import Image
+
+    s = _settings(tmp_path, PREPROCESS_CONTRAST="true")
+    repo = Repository(s.db_path)
+    src = s.watch_dir / "farbig.png"
+    img = Image.new("RGB", (400, 560), "white")
+    img.paste((220, 20, 20), (100, 200, 300, 400))
+    img.save(src)
+    doc_id = repo.create_document(original_filename="farbig.png", source_path=str(src))
+
+    class ModeRecorder(FakeAdapter):
+        modes: list[str] = []
+
+        def process(self, pages, progress=None, store=None):
+            self.modes = [p.mode for p in pages]
+            return super().process(pages, progress, store)
+
+    adapter = ModeRecorder()
+    run_pipeline(doc_id, repo, s, adapter)
+
+    assert repo.get_document(doc_id).status == DocStatus.DONE
+    assert adapter.modes == ["L"]
+    out = list(s.consume_dir.glob("*.pdf"))
+    assert len(out) == 1
+    embedded = PdfReader(str(out[0])).pages[0].images[0].image.convert("RGB")
+    r, g, b = embedded.getpixel((200, 300))
+    assert r > 150 and g < 100 and b < 100
+
+
 def test_erechnung_bypass(tmp_path):
     s = _settings(tmp_path)
     repo = Repository(s.db_path)
