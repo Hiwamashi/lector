@@ -30,7 +30,7 @@ Lector ist ein lokaler Backend-Service (zusätzlicher Docker-Container im besteh
 - **UI:** serverseitige Jinja2-Templates + offline-CSS + Vanilla-JS (**kein** Node-Buildchain,
   **kein** HTMX/Tailwind zur Laufzeit — bewusste Abweichung vom PRD, siehe `PROGRESS.md`)
 - **Live-Status:** Server-Sent Events (SSE)
-- **Bildvorverarbeitung:** OpenCV + Pillow (Deskew, Kontrast/Graustufen; Orientierung übernimmt Document AI)
+- **Bildvorverarbeitung:** OpenCV + Pillow (Deskew; Kontrast/Graustufen nur für die OCR-Eingabe; Orientierung übernimmt Document AI)
 - **PDF-Handling:** pypdf / pikepdf (Split/Merge, eingebettete Dateien) + reportlab (Textlayer)
 - **OCR-Engine:** google-cloud-documentai, hinter einem austauschbaren Adapter-Interface
 - **Watch-Folder:** watchdog
@@ -43,7 +43,7 @@ Lector ist ein lokaler Backend-Service (zusätzlicher Docker-Container im besteh
 - **CPU vs. I/O:** CPU-lastige Schritte (OpenCV-Vorverarbeitung, PDF-Bau) laufen in einem Thread-/Process-Pool, damit das UI responsiv bleibt. Die Document-AI-Aufrufe sind netzwerk-I/O-gebunden.
 - **OCR-Adapter-Interface:** Jeder OCR-Adapter kennt sein eigenes Seitenlimit und chunkt **intern**. Bildvorverarbeitung und Sandwich-PDF-Bau sind engine-**unabhängig** und liegen gemeinsam darüber. Spätere Engines (Cloud Vision, AWS Textract) docken über dasselbe Interface an.
 - **Chunking:** Dokumente werden lokal in Blöcke von ≤ 15 Seiten zerlegt (Online-Limit von Document AI), blockweise verarbeitet und anschließend wieder zu **einem** Gesamt-PDF zusammengeführt — ohne Google-Cloud-Storage-Roundtrip.
-- **Sandwich-PDF:** Vorverarbeitetes Originalbild als sichtbare Ebene + unsichtbarer, durchsuchbarer Textlayer aus den OCR-Token-/Bounding-Box-Daten.
+- **Sandwich-PDF:** Seitenbild in Farbe (nur schieflagenkorrigiert) als sichtbare Ebene + unsichtbarer, durchsuchbarer Textlayer aus den OCR-Token-/Bounding-Box-Daten. Kontrast/Graustufen wirken nur auf die OCR-Eingabe.
 
 ### Verarbeitungs-Pipeline (Soll)
 

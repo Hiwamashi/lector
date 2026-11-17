@@ -2,8 +2,20 @@
 
 **Modul:** `app/pdfbuilder.py` · **Funktion:** `build_sandwich_pdf(images, ocr, output_path)`
 
-Erzeugt ein PDF mit dem vorverarbeiteten Originalbild als sichtbare Ebene und einem
-**unsichtbaren** Textlayer aus den OCR-Token (PRD §3.1). reportlab als PDF-Writer.
+Erzeugt ein PDF mit dem Seitenbild in Farbe als sichtbare Ebene und einem **unsichtbaren**
+Textlayer aus den OCR-Token (PRD §3.1). reportlab als PDF-Writer.
+
+## Sichtbare Ebene
+
+- Die sichtbare Ebene ist das **Seitenbild in Farbe, nur schieflagenkorrigiert** (`visible`
+  aus `preprocess_page`, siehe `bildvorverarbeitung.md`). Kontrast und Graustufen wirken nicht
+  auf das Archivbild, nur auf die OCR-Eingabe.
+- Die Seite wird vor dem Zeichnen nach RGB gewandelt (`image.convert("RGB")`). Ein Graustufen-
+  Eingang bleibt grau, wird aber als RGB eingebettet.
+- Die Einbettung bleibt verlustfrei. Farbige Seiten machen das PDF **größer** als die
+  graue Fassung, weil Farbe bei Scanrauschen schlechter komprimiert.
+- Die Geometrie der sichtbaren Ebene ist dieselbe wie die des OCR-Bildes. Deshalb liegt der
+  Textlayer deckungsgleich über dem sichtbaren Bild.
 
 ## Verfahren je Seite
 

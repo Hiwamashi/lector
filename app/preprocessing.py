@@ -4,6 +4,12 @@ Deskew (Schieflagenkorrektur) und Kontrast/Graustufen.
 Alle Schritte sind über die Settings-Flags einzeln schaltbar. Funktionen arbeiten auf
 PIL-Bildern; intern wird für OpenCV nach numpy konvertiert.
 
+Pro Seite entstehen zwei Bilder (`PreparedPage`): die sichtbare Ebene für das Sandwich-PDF
+und die Eingabe für die Texterkennung. Die Schieflagenkorrektur läuft genau einmal und gilt
+für beide, damit der Textlayer deckungsgleich über dem sichtbaren Bild liegt. Die
+Kontrast-/Graustufenanpassung wirkt nur auf die OCR-Eingabe — das Archivbild behält die
+Farben des Originals (Change `sichtbare-ebene-in-farbe`).
+
 Hinweis zur Orientierung: Eine lokale Auto-Rotate-Heuristik gibt es bewusst nicht mehr.
 Die frühere Variante über das horizontale Projektionsprofil konnte 0° und 180° (bzw. 90°
 und 270°) prinzipiell nicht unterscheiden — die Varianz der Zeilensummen ist für eine Seite
@@ -14,6 +20,8 @@ Quellseiten sind ohnehin bereits korrekt ausgerichtet.
 """
 
 from __future__ import annotations
+
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -68,10 +76,16 @@ def enhance_contrast(img: Image.Image) -> Image.Image:
     return Image.fromarray(out)
 
 
-def preprocess_page(img: Image.Image, settings: Settings) -> Image.Image:
-    result = img
-    if settings.preprocess_deskew:
-        result = deskew(result)
-    if settings.preprocess_contrast:
-        result = enhance_contrast(result)
-    return result
+class PreparedPage(NamedTuple):
+    """Aufbereitete Seite: `visible` geht als sichtbare Ebene ins PDF, `ocr` an die Engine.
+
+    Beide Bilder haben dieselbe Geometrie (gleiche Drehung, gleiche Abmessungen)."""
+
+    visible: Image.Image
+    ocr: Image.Image
+
+
+def preprocess_page(img: Image.Image, settings: Settings) -> PreparedPage:
+    base = deskew(img) if settings.preprocess_deskew else img
+    ocr = enhance_contrast(base) if settings.preprocess_contrast else base
+    return PreparedPage(visible=base, ocr=ocr)

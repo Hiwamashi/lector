@@ -12,16 +12,35 @@ Wandelt die Eingangsdatei in eine Liste von PIL-Bildern (eine pro Seite):
 
 ## Vorverarbeitung pro Seite (`preprocess_page`)
 
-Schaltbar über die `PREPROCESS_*`-Flags (PRD §3.1). Reihenfolge: Deskew → Kontrast.
+Schaltbar über die `PREPROCESS_*`-Flags (PRD §3.1). `preprocess_page` liefert pro Seite ein
+Bildpaar `PreparedPage(visible, ocr)` (`app/preprocessing.py`). Reihenfolge: Deskew → Bildpaar.
 
-- **Deskew:** Schieflagenwinkel über `cv2.minAreaRect` der Textpixel (Otsu-Schwelle).
+- **Deskew** (`PREPROCESS_DESKEW`): Schieflagenwinkel über `cv2.minAreaRect` der Textpixel
+  (Otsu-Schwelle). Läuft **einmal** auf dem Farbbild; das Ergebnis gilt für beide Bilder.
   Hinweis: `np.where` liefert (row, col); `minAreaRect` interpretiert sie als (x, y), daher
   wird mit **negativem** Winkel zurückgedreht (sonst Korrektur in falsche Richtung — wurde per
   Test abgesichert).
-- **Kontrast:** Graustufen + CLAHE (lokaler Kontrastausgleich).
+- **`visible`** (sichtbare Ebene): das schieflagenkorrigierte Originalbild **in Farbe**. Es geht
+  als sichtbare Ebene in das Sandwich-PDF (`build_sandwich_pdf`).
+- **`ocr`** (Eingabe für die Texterkennung): bei `PREPROCESS_CONTRAST` Graustufen + CLAHE
+  (lokaler Kontrastausgleich) auf dem korrigierten Bild. Ohne den Schalter ist `ocr` dasselbe
+  Farbbild wie `visible`. Es geht nur an die OCR-Engine.
 
-Die vorverarbeiteten Bilder gehen sowohl an die OCR-Engine als auch als sichtbare Ebene in das
-Sandwich-PDF.
+**Warum zwei Bilder:** Kontrastanhebung hilft der Texterkennung, kostet im Archivbild aber die
+Farben (Stempel, Logos, Unterschriften, Textmarker). Das Archivbild soll die Farben des
+Originals behalten; der Kontrast ist für die Maschine gedacht.
+
+**Geometrie:** Beide Bilder stammen aus demselben Drehschritt und haben dieselben Abmessungen.
+CLAHE ändert nur Pixelwerte, nicht die Geometrie. Der unsichtbare Textlayer aus den
+OCR-Koordinaten liegt daher deckungsgleich über der sichtbaren Ebene.
+
+**Auswirkung auf die Flags:** `PREPROCESS_CONTRAST` wirkt nur auf die OCR-Eingabe.
+`PREPROCESS_DESKEW` wirkt auf beide Bilder. Der Chunk-Fingerabdruck (`chunk_fingerprint`) bleibt
+unverändert, weil die OCR-Eingabe bitgleich zu vorher ist; bewahrte Blockergebnisse bleiben
+gültig.
+
+**Speicher:** Bei aktiver Kontrastanpassung liegen pro Seite zwei Bilder im Speicher (Farbe und
+Graustufen). Die Rohseiten werden nach der Aufbereitung in `_handle_ocr` freigegeben.
 
 ## Orientierung: kein lokales Auto-Rotate (bewusste Entscheidung)
 
